@@ -1,130 +1,139 @@
-# macOS-native build
+# 🤖 Shellhouse
 
-A Swift app that runs the whole stack natively: no Docker, no Homebrew, no
-Python at runtime. Apple Silicon, macOS 14+.
+**A little office of AI agents that live on your Mac.**
 
-Architecture, decisions, and risks: **`../docs/MACOS-NATIVE.md`**.
-Project setup: **`XCODE-SETUP.md`**.
+Not one chatbot — a *roster*. Each bot gets its own name, its own
+personality, its own persistent Linux sandbox, and its own model (a local
+Ollama model by default, or any OpenAI-compatible endpoint if you want one
+bot to reach further than the rest). They remember things. They schedule
+their own reminders. They talk to *each other* when a job is outside their
+lane. And when you're not looking, they keep working — the app lives in
+your menu bar, not just your Dock.
 
-## Status
+```
+┌─────────────┐        message_bot         ┌─────────────┐
+│  Mr. Smith   │ ─────────────────────────▶ │  Tai Lung    │
+│ Project Mgr  │ ◀───────────────────────── │ Main Engineer│
+└──────┬───────┘                            └──────┬───────┘
+       │                                           │
+       │              group chat: "VirusProgramming"
+       │        ┌──────────────┬──────────────┬────┘
+       ▼        ▼              ▼              ▼
+   own chat   Bugbot        Dr. EggBot       Cleo
+  (private)  (debugging)  (bot creation)  (marketing)
+```
 
-This is a skeleton, and unlike the Python build it has **not even been
-compiled** — it was written on a Linux machine with no Swift toolchain. Treat
-every file as a reviewed design sketch, not working code.
+Every bot in that picture is a real, independent agent — its own sandbox,
+its own memory, its own opinions about whether it needs to say anything at
+all.
 
-| Component | File | State |
-|---|---|---|
-| Sandbox protocol | `Sources/AgentCore/Sandbox/SandboxProvider.swift` | Ported from Python, complete |
-| VM provider | `Sources/AgentCore/Sandbox/VirtualizationSandbox.swift` | Written, unbuilt — the critical unknown |
-| Guest channel | `Sources/AgentCore/Sandbox/GuestAgentClient.swift` | Written, unbuilt |
-| Guest agent | `guest-agent/guest-agent.py` | Written, parses (Python, runs in the VM) |
-| Model gateway | `Sources/AgentCore/Model/ModelGateway.swift` | Ollama backend written; MLX deliberately unimplemented |
-| Memory | `Sources/AgentCore/Memory/{MemoryStore,Evidence}.swift` | Written, unbuilt |
-| Secrets | `Sources/AgentCore/SecretStore.swift` | Written, unbuilt |
-| Policy | `Sources/AgentCore/PolicyEngine.swift` | Ported verbatim from Python |
-| Computer view | `Sources/AgentApp/ComputerView.swift` | Written, unbuilt |
-| **Agent runtime** | — | **Not ported yet.** The state machine, budgets, compaction, and tool dispatch still live only in Python. |
-| Task store | — | Not written. GRDB migrations needed. |
-| Tool registry | — | Not written. 17 tools to port. |
-| XPC helper | `Sources/SandboxHelper/` | Placeholder that compiles; not implemented |
-| SwiftUI shell | `Sources/AgentApp/` (target `AgentUI`) | Only ComputerView exists |
-| CLI | `Sources/AgentCLI/` | `aic doctor` written; other commands stubbed |
-| Tests | `Tests/AgentCoreTests/` | Policy + path-safety tests written |
+## Why this exists
 
-## Before anything else
+Most "AI agent" demos are one model with a system prompt bolted on. This is
+what happens when you take that idea seriously enough to ask: *what if the
+agents had to coordinate with each other, remember things across sessions,
+and act while you're at lunch?* That's a very different, much harder
+product — and this is the part of the codebase where all of that friction
+actually got solved.
+
+## What a bot can actually do
+
+| Capability | How |
+|---|---|
+| **Drive a real Linux desktop** | Its own persistent sandbox over SSH — screenshots, clicks, typing, shell, files. Not a text-only stub. |
+| **Remember durable facts** | `remember` / `recall_memory` — proactive, deduped, capped, resent every conversation. |
+| **Carry a task across contexts** | `remember_task` / `complete_task` — a job assigned in your private chat is still visible if that same bot gets @mentioned in a group later. |
+| **Schedule its own future** | `create_routine` — "remind me," "check this daily," "post a standup every morning" — fires even if you're not watching. |
+| **Ask another bot for help** | `message_bot` — delegates privately, waits for the answer, relays it back. Both sides remember the exchange happened. |
+| **Recruit a specialist** | `create_bot` — spins up a brand-new bot, its own sandbox included, when nobody on the roster fits the job. |
+| **Know when to shut up** | Group chats are opt-in per turn — a bot only speaks when @mentioned or when it genuinely has something to add. Everyone else stays quiet, on purpose. |
+| **Keep a long-running conversation cheap** | Once a chat's history gets big, it's auto-summarized behind the scenes — you can still scroll back through everything; the *model* just doesn't have to re-read all of it every time. |
+
+## The pieces
+
+```
+macos/
+├── App/AICompute/        ← the actual app (SwiftUI + the Bot/GroupChat logic)
+├── Sources/AgentCore/     ← the agent loop, tools, model backends, sandbox protocol
+├── Sources/AgentUI/       ← shared UI components
+└── Sources/AgentCLI/      ← aic — a command-line doctor/debug tool
+```
+
+- **`AgentRuntime`** — the ReAct loop. Call the model → dispatch tool
+  calls → repeat until `finish_task`. Plain text alone never ends a
+  turn, on purpose — a model narrating intent instead of doing the
+  work is the single most common failure mode of agent loops, and this
+  one refuses to let that count as "done."
+- **`ToolRegistry`** — everything a bot can reach: filesystem, shell,
+  screenshots, GUI input, plus the memory/task/routine/bot-directory
+  tools above.
+- **`PolicyEngine`** — every tool is `.allow`, `.requireApproval`, or
+  `.deny`. Nothing risky runs without you seeing an approval card first.
+- **Skills** (`../skills/*.md`, 47 and counting) — lazily-loaded
+  playbooks a bot pulls in only when the task actually calls for it,
+  instead of stuffing every possible instruction into every prompt.
+- **The Debug Console** (Settings → Debug) — a live, filterable feed of
+  every bot's raw activity: status, tool calls, token stream — including
+  the group turns and delegations that are otherwise invisible black
+  boxes in the normal chat UI.
+
+## Requirements
+
+- Apple Silicon Mac, macOS 14+
+- [Ollama](https://ollama.com) (native, Metal-accelerated — the app
+  supervises it for you, no need to run `ollama serve` by hand)
+- A Linux host reachable over SSH, running the sandbox-manager service
+  from the root of this repo (each bot's "computer" lives there)
+
+## Building
 
 ```bash
 cd macos
-swift build          # expect compile errors - none of this has been compiled
-swift test           # policy + path-safety tests
-swift run aic doctor # host support + Ollama check
+xcodegen generate        # regenerates the .xcodeproj from project.yml
+open "Shellhouse.xcodeproj"
 ```
 
-Get `swift build` clean before opening Xcode. Debugging Swift syntax with
-code-signing problems layered on top is significantly worse.
+Build and run from Xcode with your own signing team — the app is
+sandboxed (`com.apple.security.app-sandbox`), so it needs a real
+provisioning profile, not just a debug build.
 
-## Do this first: the VM spike
+First launch: add the sandbox-manager's shared token in Settings, pull a
+tool-calling-capable model (`qwen2.5:7b-instruct`, `llama3.1:8b-instruct`,
+or similar), and add your first bot from the sidebar `+` menu.
 
-Nothing else matters if a Linux VM won't boot and answer on vsock on your
-machine. That is one day of work and it de-risks the entire project. Build
-*only* this:
+## What makes the multi-agent part hard (and what's actually handled)
 
-1. A throwaway SwiftUI app with the `com.apple.security.virtualization`
-   entitlement.
-2. `VirtualizationSandbox.create(taskID:persistent:)` against a Debian ARM64
-   image.
-3. `ComputerView` showing the guest desktop.
-4. One `exec("uname -a")` over vsock returning a result.
+If you've tried building something like this yourself, you already know
+where it gets ugly. This codebase has explicit, deliberate answers for:
 
-If that works, the rest is porting. If it doesn't, you'll know before writing
-an agent runtime in a second language.
+- **One bot's "Stop" button cancelling a *different* bot's work** — a
+  delegation or group turn runs as an independent task, immune to the
+  requesting chat's own cancellation.
+- **Two runs racing for the same sandbox** — a FIFO run-lock, with
+  cancellation-while-queued handled correctly (no double-released locks,
+  no orphaned continuations).
+- **A model that forgets to call `finish_task`** — forced to retry, and
+  explicitly told to reuse its own already-good answer instead of
+  drifting into a worse one on the second try.
+- **Duplicate everything** — routines, bots, remembered facts, and
+  delegation memories are all checked for exact duplicates before being
+  created, not just cleaned up after the fact.
+- **A pending approval card outliving the run that raised it** — tagged
+  by which run owns it, so "Stop" only ever resolves *its own* chat's
+  approval, never someone else's mid-delegation.
+- **A deleted bot resurrecting its own files** — an in-flight task or a
+  pending routine timer used to keep a "deleted" bot's data alive on
+  disk; both get shut down before deletion now.
 
-### Guest image
+None of this is theoretical. Every item on that list was a real bug,
+found by actually running this thing with several bots talking to each
+other, and fixed in place.
 
-You need an ARM64 Linux disk image with a desktop and the guest agent. Fastest
-path for the spike:
+## Status
 
-```bash
-# A Debian ARM64 cloud image, converted to raw for Virtualization.framework.
-# (qemu-img via Homebrew is fine for a one-off — it isn't a runtime dependency.)
-qemu-img convert -f qcow2 -O raw debian-arm64.qcow2 agent-base.img
-qemu-img resize -f raw agent-base.img 20G
-```
-
-Then boot it once, and inside the guest install:
-
-- `xfce4` or `openbox` + `chromium` + `xfce4-terminal` + `thunar` (the same
-  package list as `../sandbox/Dockerfile`)
-- `xdotool`, `wmctrl`, `scrot` (the computer-use tools depend on these)
-- `guest-agent/guest-agent.py` as a systemd unit (install notes are at the
-  bottom of that file)
-
-Keep the result as your golden image; `create()` clones it per VM with APFS
-`clonefile`, which is instant and costs no extra disk until written.
-
-You also need a kernel and (usually) an initrd extracted from the guest, since
-`VZLinuxBootLoader` boots a kernel directly rather than the disk's bootloader.
-Copy `/boot/vmlinuz-*` and `/boot/initrd.img-*` out of the image.
-
-**[unverified]** Whether the distro's stock kernel has `CONFIG_VSOCKETS` and
-`CONFIG_VIRTIO_VSOCKETS` enabled. Debian's does as modules; confirm with
-`modprobe vsock` inside the guest before assuming the agent can be reached.
-
-## Running the model
-
-```bash
-brew install ollama          # or the .dmg
-ollama serve
-ollama pull qwen2.5:7b-instruct
-ollama pull nomic-embed-text
-```
-
-Native Ollama is Metal-accelerated, which is the whole reason not to keep it
-in a container on a Mac.
-
-## Porting order
-
-The Python build is the reference implementation and the test oracle. Port in
-this order, checking each step against it:
-
-1. `TaskStore` (GRDB + migrations) — the Python build has no migrations, so
-   this is a chance to fix that properly rather than inherit the gap.
-2. `AgentRuntime` — the state machine, budgets, cancel, compaction. This is the
-   largest single piece: ~500 lines of Python.
-3. `ToolRegistry` + the 17 tools.
-4. Wire `SecretStore` and `MemoryStore` in.
-5. SwiftUI shell: task list, trace, approvals, computer panel.
-6. XPC split: move `VirtualizationSandbox` behind `SMAppService` so the app
-   process drops its virtualization entitlement.
-
-Step 6 is easy to defer and important not to skip — it's the privilege
-boundary from `../docs/SECURITY.md`. Doing it last is fine; doing it never
-means the component handling untrusted web content can drive a hypervisor.
-
-## Reusing the eval suites
-
-`../evals/suites/*.json` are transport-agnostic. The runner talks HTTP to the
-Python API; for the Swift build, point the `aic` CLI target at the same suite
-files and score them the same way. Keeping the suites identical is what lets
-you answer "is the Swift port as good as the Python one" with a number instead
-of an impression.
+Actively developed, self-hosted, no cloud model calls — same principle as
+the Python/Docker reference build at the repo root, just running natively
+on the Mac instead of in containers. See `../docs/MACOS-NATIVE.md` for the
+original design notes (some now superseded by what's actually built) and
+`../docs/SECURITY.md` for the privilege split between the app and the
+sandbox host.

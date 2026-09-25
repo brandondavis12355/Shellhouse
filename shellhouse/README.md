@@ -1,9 +1,17 @@
 # Local AI Computer (self-hosted AI agent computer)
 
-> **Two builds live here.** The Docker/Python stack (root) is the working
-> reference implementation. `macos/` is an in-progress native Swift port
-> targeting a signed Mac app — see `docs/MACOS-NATIVE.md`. The Python build
-> stays as the reference and test oracle during the port.
+> **Two builds live here, both real.**
+> - **`macos/` — [Shellhouse](macos/README.md)**, a native Swift/SwiftUI Mac
+>   app. This is where active development is happening: a roster of
+>   independent agent bots, each with its own persistent sandbox, memory,
+>   scheduled routines, and the ability to delegate to and coordinate with
+>   each other. Start there if you're on a Mac.
+> - **Docker/Python stack (this root)** — the original reference
+>   implementation this whole project grew out of: a single-agent loop
+>   behind a web UI, containerized, with the fuller Phase 0–5 feature set
+>   below (Firecracker microVMs, Qdrant memory, MCP, evals). Still the
+>   design oracle for anything the macOS build hasn't ported yet — see
+>   `docs/MACOS-NATIVE.md` for how the two relate.
 
 A self-hosted "give an agent a goal and a controlled computer" platform,
 built entirely from open-source / free components. It talks **only** to a
