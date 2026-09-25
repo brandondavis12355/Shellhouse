@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- The spawned `ssh -L ...` (SSHTunnel.swift) inherits this app's
+	     sandbox as a child process, and `-L` needs to bind/listen on each
+	     forwarded loopback port (manager, noVNC, and the whole
+	     6100-6131 per-bot range) — a *server*-side sandbox permission,
+	     separate from network.client's outbound-only access. Without it,
+	     every listen() the tunnel tries comes back EPERM. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.shellhouse.app</string>
+	</array>
+</dict>
+</plist>

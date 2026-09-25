@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- The privilege split from docs/SECURITY.md, expressed in entitlements.
+         ONLY this helper can touch a VM. The app process - which handles
+         untrusted web content and model output - cannot.
+
+         If you end up granting com.apple.security.virtualization to the main
+         app "just for now", you have removed the boundary. Don't. -->
+    <key>com.apple.security.virtualization</key>
+    <true/>
+
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- VM disk images live in the helper's container. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Deliberately ABSENT:
+         - network.client: the helper never makes network requests. The guest
+           VM's own NAT networking is provided by the hypervisor, not by this
+           process, so it needs no network entitlement of its own.
+         - keychain-access-groups: the helper never reads secrets. Values
+           arrive as exec parameters from the app and pass straight through
+           to the guest. -->
+</dict>
+</plist>

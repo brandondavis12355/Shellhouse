@@ -1,0 +1,4 @@
+# Seed data for the sandbox VM's /home/box and /workspace. May contain real
+# credentials, session state, or business data — never commit this.
+/box/
+/workspace/

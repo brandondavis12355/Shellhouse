@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <!-- Compact, dark-ish decorations with the classic
+       shade / minimize / maximize / close button row, matching the
+       reference environment's window titlebars. -->
+  <theme>
+    <name>Clearlooks</name>
+    <titleLayout>NLIMC</titleLayout>
+    <keepBorder>yes</keepBorder>
+    <animateIconify>no</animateIconify>
+    <font place="ActiveWindow">
+      <name>Sans</name>
+      <size>8</size>
+      <weight>Normal</weight>
+    </font>
+    <font place="InactiveWindow">
+      <name>Sans</name>
+      <size>8</size>
+      <weight>Normal</weight>
+    </font>
+  </theme>
+
+  <desktops>
+    <number>1</number>
+    <firstdesk>1</firstdesk>
+    <names><name>Workspace</name></names>
+  </desktops>
+
+  <resize>
+    <drawContents>yes</drawContents>
+  </resize>
+
+  <!-- No focus-follows-mouse: the agent moves the pointer programmatically and
+       we don't want stray focus changes mid-task. -->
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+    <focusLast>yes</focusLast>
+  </focus>
+
+  <applications>
+    <application class="*">
+      <decor>yes</decor>
+    </application>
+  </applications>
+
+  <keyboard>
+    <keybind key="A-F4"><action name="Close"/></keybind>
+    <keybind key="A-Tab"><action name="NextWindow"/></keybind>
+  </keyboard>
+
+  <mouse>
+    <context name="Titlebar">
+      <mousebind button="Left" action="Drag"><action name="Move"/></mousebind>
+      <mousebind button="Left" action="DoubleClick"><action name="ToggleMaximize"/></mousebind>
+    </context>
+    <context name="Frame">
+      <mousebind button="A-Left" action="Drag"><action name="Move"/></mousebind>
+    </context>
+    <context name="Client">
+      <mousebind button="Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+    </context>
+    <context name="Close">
+      <mousebind button="Left" action="Click"><action name="Close"/></mousebind>
+    </context>
+    <context name="Maximize">
+      <mousebind button="Left" action="Click"><action name="ToggleMaximize"/></mousebind>
+    </context>
+    <context name="Iconify">
+      <mousebind button="Left" action="Click"><action name="Iconify"/></mousebind>
+    </context>
+  </mouse>
+</openbox_config>

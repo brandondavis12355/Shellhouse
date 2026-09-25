@@ -1,0 +1,3 @@
+# Launches are handled by /usr/local/bin/start-desktop.sh so that supervisor
+# owns their lifecycle. Keep this file for anything that must be a child of
+# the openbox session itself.

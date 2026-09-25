@@ -1,0 +1,59 @@
+# Run the Sandbox Manager as a host service instead of a container.
+#
+# Use this when SANDBOX_BACKEND=firecracker. The Firecracker backend needs
+# /dev/kvm, loop mounts, and tap device creation — capabilities that would make
+# the manager container roughly equivalent to host root, defeating the point of
+# the split. As a host unit it can be confined properly with systemd's own
+# sandboxing directives below.
+#
+# Install:
+#   sudo cp agent-sandbox-manager.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now agent-sandbox-manager
+#
+# Then in .env set MANAGER_SOCKET=/run/sandbox-manager/manager.sock and
+# bind-mount /run/sandbox-manager into the api container in place of the
+# manager_socket volume.
+
+[Unit]
+Description=Agent Sandbox Manager (privileged sandbox lifecycle service)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=/opt/agent-sandbox-manager
+EnvironmentFile=/etc/agent-sandbox-manager.env
+ExecStart=/opt/agent-sandbox-manager/.venv/bin/uvicorn main:app \
+          --uds /run/sandbox-manager/manager.sock --no-access-log --log-level warning
+# uvicorn has no socket-permission flag, so the umask decides: 0117 -> 0660.
+UMask=0117
+RuntimeDirectory=sandbox-manager
+RuntimeDirectoryMode=0750
+LogsDirectory=sandbox-manager
+Restart=on-failure
+RestartSec=2
+
+# --- confinement -----------------------------------------------------------
+# Firecracker needs tap devices (NET_ADMIN) and loop mounts (SYS_ADMIN).
+# Everything else is denied.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/agent-vm /run/sandbox-manager /var/log/sandbox-manager
+DeviceAllow=/dev/kvm rw
+DeviceAllow=/dev/net/tun rw
+# AF_UNIX for its own socket, AF_INET for SSH into guests, AF_NETLINK for `ip`.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
+SystemCallFilter=@system-service @mount
+SystemCallErrorNumber=EPERM
+LockPersonality=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

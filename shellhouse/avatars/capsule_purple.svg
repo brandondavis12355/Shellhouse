@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+<defs><filter id="s"><feDropShadow dx="0" dy="3" stdDeviation="2.5" flood-opacity=".25"/></filter>
+<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#7C3AED"/><stop offset="1" stop-color="#7C3AED" stop-opacity=".72"/></linearGradient></defs>
+<g class="avatar" filter="url(#s)"><g class="body" style="animation-duration:2.1s;animation-delay:-0.84s"><g fill="url(#g)"><rect x="18" y="24" width="64" height="52" rx="26"/></g>
+<g class="eyes"><rect x="35" y="43" width="7" height="14" rx="3.5" fill="white"/><rect x="58" y="43" width="7" height="14" rx="3.5" fill="white"/></g></g></g>
+<style>
+.avatar{transform-box:fill-box;transform-origin:center}
+.body{transform-box:fill-box;transform-origin:center;animation:move 2.1s ease-in-out infinite}
+.eyes{transform-origin:center;animation:blink 5.18s infinite}
+@keyframes move{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+@keyframes blink{0%,89%,100%{transform:scaleY(1)}92%{transform:scaleY(.08)}95%{transform:scaleY(1)}}
+</style></svg>

@@ -1,0 +1,28 @@
+# Small centered bottom dock with just launchers, matching the reference desktop.
+# Fixed width (not 0%/auto) so the dock stays small and centered regardless of
+# whether this tint2 build treats 0 as "fit to content".
+panel_items = L
+panel_size = 220 44
+panel_margin = 0 0
+panel_padding = 8 4 8
+panel_position = bottom center horizontal
+panel_background_id = 1
+panel_layer = bottom
+autohide = 0
+strut_policy = none
+
+# Background 1: nearly invisible, so the icons appear to float on the wallpaper
+rounded = 8
+border_width = 0
+background_color = #000000 0
+border_color = #000000 0
+
+launcher_icon_size = 30
+launcher_padding = 6 2 8
+launcher_background_id = 0
+launcher_icon_theme = Adwaita
+launcher_tooltip = 1
+
+launcher_item_app = /usr/share/applications/chromium.desktop
+launcher_item_app = /usr/share/applications/thunar.desktop
+launcher_item_app = /usr/share/applications/xfce4-terminal.desktop

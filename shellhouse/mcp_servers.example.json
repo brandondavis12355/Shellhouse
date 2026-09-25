@@ -1,0 +1,29 @@
+{
+  "_comment": [
+    "Copy to the api_data volume as mcp_servers.json to enable MCP integrations:",
+    "  docker cp mcp_servers.json agent-api:/data/mcp_servers.json",
+    "then POST /mcp/discover (or restart the worker) to pick up the tools.",
+    "",
+    "SECURITY: every tool from these servers defaults to REQUIRE_APPROVAL.",
+    "A third-party MCP server's tool is remote code execution with your",
+    "credentials attached. Setting trusted:true lets its read-only-looking",
+    "tools run without asking you first - only do that for servers you",
+    "actually control or fully trust.",
+    "",
+    "Tool descriptions from a server land in the model's context. A hostile",
+    "server can put instructions there. Descriptions are capped and marked",
+    "with their provenance, but that is mitigation, not immunity."
+  ],
+  "servers": [
+    {
+      "name": "example_readonly",
+      "url": "https://mcp.example.com/mcp",
+      "description": "Illustrative entry - replace or delete.",
+      "enabled": false,
+      "trusted": false,
+      "headers": {
+        "Authorization": "Bearer REPLACE_ME"
+      }
+    }
+  ]
+}

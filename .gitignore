@@ -1,0 +1,12 @@
+# Swift Package Manager build artifacts and dependency checkouts —
+# large, machine-specific, and trivially regenerated; never commit these.
+.build/
+.swiftpm/
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# macOS
+.DS_Store

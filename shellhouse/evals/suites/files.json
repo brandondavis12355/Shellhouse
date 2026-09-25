@@ -1,0 +1,37 @@
+{
+  "name": "File manipulation",
+  "description": "Workspace file operations. No network, so these isolate tool-calling accuracy from web flakiness.",
+  "tasks": [
+    {
+      "name": "create and read back",
+      "goal": "Write a file called hello.txt containing exactly the text 'agent was here', then read it back and tell me what it says.",
+      "timeout_seconds": 240,
+      "expect": {
+        "files_created": ["hello.txt"],
+        "file_contains": {"hello.txt": ["agent was here"]},
+        "tools_used": ["write_file", "read_file"],
+        "answer_contains": ["agent was here"],
+        "max_iterations": 8
+      }
+    },
+    {
+      "name": "csv generation",
+      "goal": "Create a CSV file named fruit.csv with a header row 'name,color' and three rows: apple/red, banana/yellow, grape/purple.",
+      "timeout_seconds": 300,
+      "expect": {
+        "files_created": ["fruit.csv"],
+        "file_contains": {"fruit.csv": ["name,color", "apple", "banana", "grape"]},
+        "max_iterations": 10
+      }
+    },
+    {
+      "name": "listing and reasoning",
+      "goal": "List the files in your workspace and tell me how many there are.",
+      "timeout_seconds": 240,
+      "expect": {
+        "tools_used": ["list_files"],
+        "max_iterations": 6
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+<defs><filter id="s"><feDropShadow dx="0" dy="3" stdDeviation="2.5" flood-opacity=".25"/></filter>
+<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#EC4899"/><stop offset="1" stop-color="#EC4899" stop-opacity=".72"/></linearGradient></defs>
+<g class="avatar" filter="url(#s)"><g class="body" style="animation-duration:2.2s;animation-delay:-0.98s"><g fill="url(#g)"><path d="M28 70 C17 69 13 60 17 52 C20 45 27 42 34 43 C37 29 48 23 59 27 C67 29 72 35 73 43 C82 43 87 49 87 57 C87 65 80 71 71 71 Z"/></g>
+<g class="eyes"><rect x="35" y="43" width="7" height="14" rx="3.5" fill="white"/><rect x="58" y="43" width="7" height="14" rx="3.5" fill="white"/></g></g></g>
+<style>
+.avatar{transform-box:fill-box;transform-origin:center}
+.body{transform-box:fill-box;transform-origin:center;animation:move 2.2s ease-in-out infinite}
+.eyes{transform-origin:center;animation:blink 5.65s infinite}
+@keyframes move{0%,100%{transform:rotate(-5deg) translateX(-2px)}50%{transform:rotate(5deg) translateX(2px)}}
+@keyframes blink{0%,89%,100%{transform:scaleY(1)}92%{transform:scaleY(.08)}95%{transform:scaleY(1)}}
+</style></svg>

@@ -1,0 +1,54 @@
+name: Shellhouse
+options:
+  bundleIdPrefix: com.shellhouse
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  Shellhouse:
+    path: .
+
+targets:
+  Shellhouse:
+    type: application
+    platform: macOS
+    sources:
+      - App/AICompute
+      # Rewritten skill playbooks (see SkillLibrary.swift) — a folder
+      # reference, so the whole directory is copied into the app bundle's
+      # Resources at build time and read back via Bundle.main.
+      - path: ../skills
+        type: folder
+        buildPhase: resources
+      # 64 pre-built animated avatar SVGs (8 shapes x 8 colors), one CSS
+      # keyframe animation each — see `BotAvatar.swift`'s `AnimatedAvatarView`,
+      # which plays them in a small transparent WKWebView since AppKit/
+      # SwiftUI have no renderer for CSS-animated SVG.
+      - path: ../avatars
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.shellhouse.app
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        CODE_SIGN_STYLE: Automatic
+        # Pinned so `xcodegen generate` stops resetting the signing team to
+        # ad-hoc on every regenerate (it otherwise has no team of its own to
+        # remember) — this is the developer's personal team,
+        # found via `security find-identity -v -p codesigning`. Needed for
+        # entitlements (network.server, keychain-access-groups) to actually
+        # apply; an ad-hoc-signed build silently runs unsandboxed-in-the-
+        # wrong-way instead.
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_ENTITLEMENTS: Resources/AgentApp.entitlements
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_CFBundleDisplayName: "Shellhouse"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.0"
+    dependencies:
+      - package: Shellhouse
+        product: AgentCore
+      - package: Shellhouse
+        product: AgentUI

@@ -1,0 +1,39 @@
+{
+  "name": "Research",
+  "description": "Web research, evidence capture, and file output. The first end-to-end benchmark from the architecture doc, scaled down to run in minutes.",
+  "tasks": [
+    {
+      "name": "single-fact lookup with citation",
+      "goal": "Find out what license PostgreSQL is released under. Save the finding with save_evidence including the source URL, then write a one-line summary to license.md.",
+      "timeout_seconds": 420,
+      "expect": {
+        "files_created": ["license.md"],
+        "file_contains": {"license.md": ["postgresql"]},
+        "tools_used": ["write_file"],
+        "max_iterations": 12,
+        "no_policy_denials": true
+      }
+    },
+    {
+      "name": "multi-source comparison",
+      "goal": "Compare three open-source vector databases (Qdrant, Weaviate, Milvus) on their license and primary language. Record each finding with save_evidence, then write a markdown table to vectordbs.md.",
+      "timeout_seconds": 900,
+      "expect": {
+        "files_created": ["vectordbs.md"],
+        "file_contains": {"vectordbs.md": ["qdrant", "weaviate", "milvus"]},
+        "tools_used": ["save_evidence", "write_file"],
+        "max_iterations": 30
+      }
+    },
+    {
+      "name": "memory recall",
+      "goal": "Use search_memory to check what you already know about vector database licenses, and report what you found. Do not search the web.",
+      "timeout_seconds": 300,
+      "expect": {
+        "tools_used": ["search_memory"],
+        "tools_not_used": ["web_search"],
+        "max_iterations": 8
+      }
+    }
+  ]
+}

@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Local AI Computer</title>
+<style>
+  :root {
+    --bg: #0e0e10; --panel: #17171a; --border: #2a2a2f;
+    --text: #e6e6e8; --muted: #8a8a92; --accent: #6ea8fe; --warn: #d6b24a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: .8rem 1rem; border-bottom: 1px solid var(--border);
+           display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+  .vm-badge { font-family: ui-monospace, monospace; font-size: .75rem;
+              color: var(--muted); border: 1px solid var(--border);
+              padding: .15rem .5rem; border-radius: 999px; }
+  main { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(0,1fr);
+         gap: 1rem; padding: 1rem; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border);
+          border-radius: 10px; overflow: hidden; }
+  .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
+             color: var(--muted); margin: 0; padding: .6rem .8rem;
+             border-bottom: 1px solid var(--border); display: flex;
+             justify-content: space-between; align-items: center; }
+  .card .body { padding: .8rem; }
+  /* The computer view: 1280x800 desktop, scaled to fit */
+  .screen { position: relative; width: 100%; aspect-ratio: 16 / 10;
+            background: #000; }
+  .screen iframe { position: absolute; inset: 0; width: 100%; height: 100%;
+                   border: 0; }
+  textarea { width: 100%; background: #101013; color: var(--text);
+             border: 1px solid var(--border); border-radius: 8px; padding: .6rem;
+             font: inherit; resize: vertical; }
+  select, button { background: #101013; color: var(--text);
+                   border: 1px solid var(--border); border-radius: 8px;
+                   padding: .45rem .7rem; font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); color: #0b0b0d; border-color: transparent;
+                   font-weight: 600; }
+  .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .6rem; }
+  .muted { color: var(--muted); font-size: .8rem; }
+  #events { height: 300px; overflow-y: auto; font-family: ui-monospace, monospace;
+            font-size: .78rem; white-space: pre-wrap; line-height: 1.45; }
+  .ev { padding-bottom: .55rem; }
+  .ev-type { color: var(--accent); }
+  .status { font-family: ui-monospace, monospace; font-size: .75rem;
+            padding: .1rem .5rem; border-radius: 999px; border: 1px solid var(--border); }
+  .approval { background: #2a2310; border: 1px solid var(--warn);
+              border-radius: 8px; padding: .8rem; margin: .8rem 1rem; }
+  .approval pre { background: #0d0d0f; padding: .5rem; border-radius: 6px;
+                  overflow-x: auto; font-size: .75rem; }
+  #files { list-style: none; margin: 0; padding: 0; font-size: .8rem;
+           max-height: 160px; overflow-y: auto; }
+  #files li { padding: .18rem 0; font-family: ui-monospace, monospace; }
+  #files .dir { color: var(--accent); }
+  #result { white-space: pre-wrap; font-size: .85rem; line-height: 1.5; }
+  button.tab { padding: .15rem .45rem; font-size: .7rem; margin-left: .2rem; }
+  button.tab.active { background: var(--accent); color: #0b0b0d; border-color: transparent; }
+  .item { border-bottom: 1px solid var(--border); padding: .45rem 0; font-size: .8rem;
+          display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
+  .item:last-child { border-bottom: 0; }
+  .item .goal { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+                cursor: pointer; }
+  .item .goal:hover { color: var(--accent); }
+  .mem { border-bottom: 1px solid var(--border); padding: .4rem 0; font-size: .78rem; }
+  .mem .src { color: var(--muted); font-size: .7rem; }
+  input { background: #101013; color: var(--text); border: 1px solid var(--border);
+          border-radius: 8px; padding: .45rem; font: inherit; flex: 1; }
+  .warn { color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🖥️ Local AI Computer</h1>
+  <span class="vm-badge" id="vmBadge">sandbox</span>
+  <span class="muted">local Ollama only — no cloud model calls</span>
+  <span style="flex:1"></span>
+  <span class="status" id="taskStatus">idle</span>
+</header>
+
+<main>
+  <!-- LEFT: the agent's actual desktop -->
+  <div>
+    <div class="card">
+      <h2>
+        <span>Computer — live desktop</span>
+        <span class="muted" id="screenHint">click inside to take control</span>
+      </h2>
+      <div class="screen">
+        <iframe id="vnc" title="Agent desktop" allow="clipboard-read; clipboard-write"></iframe>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
+      <h2><span>/workspace</span><button id="refreshFiles" style="padding:.15rem .5rem">Refresh</button></h2>
+      <div class="body"><ul id="files"><li class="muted">—</li></ul></div>
+    </div>
+  </div>
+
+  <!-- RIGHT: task control + trace -->
+  <div>
+    <div class="card">
+      <h2>New task</h2>
+      <div class="body">
+        <textarea id="goal" rows="3" placeholder="e.g. Open the browser, find three open-source vector databases, and write a comparison to notes.md"></textarea>
+        <div class="row">
+          <select id="model"></select>
+          <select id="computer" title="Which computer to run on">
+            <option value="ephemeral">Fresh computer (disposable)</option>
+            <option value="persistent">My AI Computer (persistent)</option>
+          </select>
+        </div>
+        <div class="row">
+          <button class="primary" id="submit">Run</button>
+          <button id="cancel">Cancel</button>
+          <span class="muted" id="budget"></span>
+        </div>
+        <div class="muted" id="modelWarn" style="margin-top:.4rem"></div>
+      </div>
+    </div>
+
+    <div id="approvalBox"></div>
+
+    <div class="card" style="margin-top:1rem">
+      <h2>Execution trace</h2>
+      <div class="body"><div id="events" class="muted">No task running.</div></div>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
+      <h2>Result</h2>
+      <div class="body"><div id="result" class="muted">—</div></div>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
+      <h2>
+        <span id="panelTitle">History</span>
+        <span>
+          <button class="tab" data-panel="history">History</button>
+          <button class="tab" data-panel="computers">Computers</button>
+          <button class="tab" data-panel="memory">Memory</button>
+        </span>
+      </h2>
+      <div class="body">
+        <div id="panel-history"></div>
+        <div id="panel-computers" style="display:none"></div>
+        <div id="panel-memory" style="display:none">
+          <div class="row">
+            <input id="memQuery" placeholder="Search what the agent remembers" />
+            <button id="memSearch">Search</button>
+          </div>
+          <div id="memResults" class="muted" style="margin-top:.5rem">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = window.location.protocol + '//' + window.location.hostname + ':8000';
+let currentTaskId = null, sinceIndex = 0, pollTimer = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+let currentVncUrl = null;
+
+// Each task gets its own computer on its own noVNC port, so the desktop view
+// follows the active task rather than pointing at one fixed URL.
+async function initSandbox(taskId) {
+  try {
+    const q = taskId ? ('?task_id=' + encodeURIComponent(taskId)) : '';
+    const info = await (await fetch(API + '/sandbox/info' + q)).json();
+    if (info.novnc_url && info.novnc_url !== currentVncUrl) {
+      $('vnc').src = info.novnc_url;
+      currentVncUrl = info.novnc_url;
+    }
+    $('vmBadge').textContent = (info.container || 'sandbox') +
+      (info.persistent ? ' (persistent)' : ' (ephemeral)');
+  } catch {
+    $('screenHint').textContent = 'desktop unavailable';
+  }
+}
+
+async function loadModels() {
+  try {
+    const r = await fetch(API + '/models');
+    const data = await r.json();
+    const sel = $('model');
+    sel.innerHTML = '';
+    (data.models || []).forEach(m => {
+      const o = document.createElement('option');
+      o.value = m; o.textContent = m; sel.appendChild(o);
+    });
+    if (!(data.models || []).length) {
+      $('modelWarn').textContent = 'No local models yet — run: docker exec agent-ollama ollama pull qwen2.5:7b-instruct';
+    }
+  } catch {
+    $('modelWarn').textContent = 'Could not reach the API / Ollama yet.';
+  }
+}
+
+async function loadFiles(taskId) {
+  try {
+    const q = taskId ? ('?task_id=' + encodeURIComponent(taskId)) : '';
+    const r = await fetch(API + '/sandbox/files' + q);
+    const data = await r.json();
+    const ul = $('files');
+    ul.innerHTML = '';
+    if (!data.entries.length) { ul.innerHTML = '<li class="muted">empty</li>'; return; }
+    data.entries.forEach(e => {
+      const li = document.createElement('li');
+      li.className = e.is_dir ? 'dir' : '';
+      li.textContent = (e.is_dir ? '📁 ' : '📄 ') + e.name +
+        (e.size != null ? '  (' + e.size + ' B)' : '');
+      ul.appendChild(li);
+    });
+  } catch {}
+}
+
+function renderEvent(ev) {
+  const div = document.createElement('div');
+  div.className = 'ev';
+  let body;
+  if (ev.type === 'model.completed') {
+    body = (ev.payload.content || '').slice(0, 900);
+    const calls = ev.payload.tool_calls || [];
+    if (calls.length) body += '\n→ ' + calls.map(t => t.function.name).join(', ');
+  } else {
+    body = JSON.stringify(ev.payload, null, 2).slice(0, 1200);
+  }
+  div.innerHTML = '<span class="ev-type">[' + esc(ev.type) + ']</span>\n' + esc(body);
+  return div;
+}
+
+async function poll() {
+  if (!currentTaskId) return;
+  const r = await fetch(API + '/tasks/' + currentTaskId + '/events?since=' + sinceIndex);
+  const data = await r.json();
+  const box = $('events');
+  if (data.events.length && box.classList.contains('muted')) {
+    box.classList.remove('muted'); box.innerHTML = '';
+  }
+  data.events.forEach(ev => box.appendChild(renderEvent(ev)));
+  if (data.events.length) box.scrollTop = box.scrollHeight;
+  sinceIndex = data.next;
+
+  const task = await (await fetch(API + '/tasks/' + currentTaskId)).json();
+  $('taskStatus').textContent = task.status;
+  // Follow this task's own computer.
+  if (task.sandbox_id) initSandbox(currentTaskId);
+  const steps = task.iterations || 0, toks = task.tokens_used || 0;
+  $('budget').textContent = steps ? (steps + ' steps · ' + toks.toLocaleString() + ' tokens') : '';
+  if (task.result) $('result').textContent = task.result;
+  if (task.error) $('result').textContent = 'Error: ' + task.error;
+
+  if (task.status === 'WAITING_FOR_APPROVAL') await renderApproval();
+  else $('approvalBox').innerHTML = '';
+
+  loadFiles(currentTaskId);
+
+  if (['COMPLETED','FAILED','CANCELLED','BLOCKED'].includes(task.status)) {
+    clearInterval(pollTimer); pollTimer = null;
+  }
+}
+
+async function renderApproval() {
+  const data = await (await fetch(API + '/tasks/' + currentTaskId + '/approvals/pending')).json();
+  const box = $('approvalBox');
+  if (!data.approval) { box.innerHTML = ''; return; }
+  const a = data.approval;
+  box.innerHTML =
+    '<div class="approval"><b>Approval required</b>' +
+    '<div class="muted" style="margin:.3rem 0">Agent wants to run <code>' + esc(a.tool_name) + '</code></div>' +
+    '<pre>' + esc(a.arguments_summary || '') + '</pre>' +
+    '<button class="primary" id="ok">Approve</button> <button id="no">Deny</button></div>';
+  $('ok').onclick = () => decide(a.id, true);
+  $('no').onclick = () => decide(a.id, false);
+}
+
+async function decide(id, approve) {
+  await fetch(API + '/tasks/' + currentTaskId + '/approvals/' + id, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ approve })
+  });
+  $('approvalBox').innerHTML = '';
+  if (!pollTimer) pollTimer = setInterval(poll, 1200);
+}
+
+$('submit').onclick = async () => {
+  const goal = $('goal').value.trim();
+  if (!goal) return;
+  $('events').innerHTML = ''; $('events').classList.add('muted');
+  $('result').textContent = '—'; sinceIndex = 0;
+  const task = await (await fetch(API + '/tasks', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      goal,
+      model: $('model').value || null,
+      persistent_computer: $('computer').value === 'persistent'
+    })
+  })).json();
+  currentTaskId = task.id;
+  $('taskStatus').textContent = task.status;
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(poll, 1200);
+};
+
+$('cancel').onclick = async () => {
+  if (!currentTaskId) return;
+  await fetch(API + '/tasks/' + currentTaskId + '/cancel', { method: 'POST' });
+  poll();
+};
+
+$('refreshFiles').onclick = () => loadFiles(currentTaskId);
+
+// --- panels ---------------------------------------------------------------
+
+let activePanel = 'history';
+
+document.querySelectorAll('button.tab').forEach(btn => {
+  btn.onclick = () => {
+    activePanel = btn.dataset.panel;
+    document.querySelectorAll('button.tab').forEach(b =>
+      b.classList.toggle('active', b === btn));
+    ['history','computers','memory'].forEach(p =>
+      $('panel-' + p).style.display = (p === activePanel ? '' : 'none'));
+    $('panelTitle').textContent = btn.textContent;
+    refreshPanel();
+  };
+});
+
+async function refreshPanel() {
+  if (activePanel === 'history') return loadHistory();
+  if (activePanel === 'computers') return loadComputers();
+}
+
+async function loadHistory() {
+  try {
+    const tasks = await (await fetch(API + '/tasks')).json();
+    const box = $('panel-history');
+    if (!tasks.length) { box.innerHTML = '<span class="muted">No tasks yet.</span>'; return; }
+    box.innerHTML = '';
+    tasks.slice(0, 25).forEach(t => {
+      const div = document.createElement('div');
+      div.className = 'item';
+      const steps = t.iterations ? (' · ' + t.iterations + ' steps') : '';
+      div.innerHTML =
+        '<span class="goal" title="' + esc(t.goal) + '">' + esc(t.goal.slice(0, 70)) + '</span>' +
+        '<span class="status">' + esc(t.status) + '</span>' +
+        '<span class="muted">' + steps + '</span>';
+      // Clicking a past task re-attaches the trace and its desktop.
+      div.querySelector('.goal').onclick = () => attachTask(t.id);
+      box.appendChild(div);
+    });
+  } catch {
+    $('panel-history').innerHTML = '<span class="muted">Could not load history.</span>';
+  }
+}
+
+async function loadComputers() {
+  const box = $('panel-computers');
+  try {
+    const data = await (await fetch(API + '/sandboxes')).json();
+    if (!data.sandboxes.length) {
+      box.innerHTML = '<span class="muted">No computers running.</span>';
+      return;
+    }
+    box.innerHTML = '';
+    data.sandboxes.forEach(sb => {
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.innerHTML =
+        '<span class="goal">' + esc(sb.id) + '</span>' +
+        '<span class="status">' + (sb.persistent ? 'persistent' : 'ephemeral') + '</span>' +
+        '<span class="muted">' + esc(sb.provider) + '</span>';
+      // Clicking a computer points the desktop view at it.
+      div.querySelector('.goal').onclick = () => {
+        if (sb.vnc_url) { $('vnc').src = sb.vnc_url; currentVncUrl = sb.vnc_url;
+                          $('vmBadge').textContent = sb.id; }
+      };
+      box.appendChild(div);
+    });
+  } catch {
+    box.innerHTML = '<span class="muted">Sandbox Manager unreachable.</span>';
+  }
+}
+
+$('memSearch').onclick = async () => {
+  const q = $('memQuery').value.trim();
+  if (!q) return;
+  const box = $('memResults');
+  box.textContent = 'Searching…';
+  try {
+    const data = await (await fetch(API + '/memory/search?q=' + encodeURIComponent(q))).json();
+    if (!data.results.length) { box.textContent = 'Nothing found.'; return; }
+    box.classList.remove('muted');
+    box.innerHTML = '';
+    data.results.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'mem';
+      const ref = (r.original_reference && (r.original_reference.url || r.original_reference.path)) || '';
+      div.innerHTML = esc(r.finding || '') +
+        '<div class="src">confidence ' + (r.confidence ?? '?') +
+        (r.timestamp ? ' · ' + esc(String(r.timestamp).slice(0,10)) : '') +
+        (ref ? ' · ' + esc(ref) : '') + '</div>';
+      box.appendChild(div);
+    });
+  } catch (e) {
+    box.textContent = 'Memory unavailable (is Qdrant running?).';
+  }
+};
+
+// Re-attach to an existing task: replay its trace and follow its computer.
+async function attachTask(taskId) {
+  currentTaskId = taskId;
+  sinceIndex = 0;
+  $('events').innerHTML = '';
+  $('events').classList.add('muted');
+  $('result').textContent = '—';
+  if (pollTimer) clearInterval(pollTimer);
+  await poll();
+  const task = await (await fetch(API + '/tasks/' + taskId)).json();
+  if (!['COMPLETED','FAILED','CANCELLED','BLOCKED','TIMED_OUT'].includes(task.status)) {
+    pollTimer = setInterval(poll, 1200);
+  }
+}
+
+document.querySelector('button.tab').classList.add('active');
+initSandbox(); loadModels(); loadFiles(); loadHistory();
+setInterval(refreshPanel, 8000);
+setInterval(() => loadFiles(currentTaskId), 10000);
+</script>
+</body>
+</html>

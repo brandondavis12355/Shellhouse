@@ -1,0 +1,34 @@
+{
+  "name": "Computer use",
+  "description": "Desktop/GUI operation. Expect these to be the weakest suite on small local models - that is the signal they exist to give you.",
+  "tasks": [
+    {
+      "name": "observe the desktop",
+      "goal": "Take a screenshot of your desktop and tell me which application windows are currently open.",
+      "timeout_seconds": 300,
+      "expect": {
+        "tools_used": ["screenshot", "list_windows"],
+        "max_iterations": 8
+      }
+    },
+    {
+      "name": "launch an application",
+      "goal": "Open the Chromium browser to example.com, then take a screenshot to confirm it loaded.",
+      "timeout_seconds": 420,
+      "expect": {
+        "tools_used": ["open_app", "screenshot"],
+        "max_iterations": 12
+      }
+    },
+    {
+      "name": "shell in the sandbox",
+      "goal": "Use the shell to find out which Linux distribution and kernel version your computer is running, and report both.",
+      "timeout_seconds": 300,
+      "expect": {
+        "tools_used": ["run_shell"],
+        "answer_contains": ["debian"],
+        "max_iterations": 10
+      }
+    }
+  ]
+}
