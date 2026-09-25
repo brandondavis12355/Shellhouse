@@ -1,7 +1,7 @@
 # Local AI Computer (self-hosted AI agent computer)
 
 > **Two builds live here, both real.**
-> - **`macos/` — [Shellhouse](macos/README.md)**, a native Swift/SwiftUI Mac
+> - **`macos/` — [Shellhouse](shellhouse/macos/README.md)**, a native Swift/SwiftUI Mac
 >   app. This is where active development is happening: a roster of
 >   independent agent bots, each with its own persistent sandbox, memory,
 >   scheduled routines, and the ability to delegate to and coordinate with
@@ -11,7 +11,7 @@
 >   behind a web UI, containerized, with the fuller Phase 0–5 feature set
 >   below (Firecracker microVMs, Qdrant memory, MCP, evals). Still the
 >   design oracle for anything the macOS build hasn't ported yet — see
->   `docs/MACOS-NATIVE.md` for how the two relate.
+>   `shellhouse/docs/MACOS-NATIVE.md` for how the two relate.
 
 A self-hosted "give an agent a goal and a controlled computer" platform,
 built entirely from open-source / free components. It talks **only** to a
@@ -19,7 +19,7 @@ local Ollama server — there is no code path anywhere in this repo that calls
 a cloud model API.
 
 This is the MVP slice of the larger architecture in
-`docs/ARCHITECTURE.md` (Phases 0–2, plus permissions and loop detection):
+`shellhouse/docs/ARCHITECTURE.md` (Phases 0–2, plus permissions and loop detection):
 
 ```
 Prompt -> Agent -> Model (local Ollama) -> Tools (sandboxed) -> Observation -> Agent -> Result
@@ -33,11 +33,11 @@ Prompt -> Agent -> Model (local Ollama) -> Tools (sandboxed) -> Observation -> A
 | Agent runtime     | FastAPI + Python, custom agent loop        |
 | Durable state     | SQLite via SQLAlchemy (swap to Postgres later, same models) |
 | Sandbox (dev)     | Debian 13 (trixie) **graphical desktop** container: Xvfb + openbox + tint2 dock + Thunar + xfce4-terminal + Chromium, non-root user `box`, `/workspace` home |
-| Sandbox (prod)    | **Firecracker microVMs** — per-task VM, own kernel, jailed VMM, CoW rootfs, snapshot pause/resume (`docs/FIRECRACKER.md`) |
+| Sandbox (prod)    | **Firecracker microVMs** — per-task VM, own kernel, jailed VMM, CoW rootfs, snapshot pause/resume (`shellhouse/docs/FIRECRACKER.md`) |
 | Desktop streaming | x11vnc + noVNC (embedded in the UI; click in to take control) |
 | Tools             | filesystem (list/read/write), `run_shell` (in-sandbox), `web_search` (DuckDuckGo via `ddgs`), `fetch_url` (requests + BeautifulSoup), and computer use: `screenshot`, `list_windows`, `focus_window`, `open_app`, `click`, `type_text`, `press_key` (xdotool/wmctrl/scrot) |
 | Permissions       | Policy engine: ALLOW / REQUIRE_APPROVAL / DENY per tool |
-| Privilege split   | **Sandbox Manager** — the only component with the Docker socket; the agent loop has none (`docs/SECURITY.md`) |
+| Privilege split   | **Sandbox Manager** — the only component with the Docker socket; the agent loop has none (`shellhouse/docs/SECURITY.md`) |
 | Durability        | Redis queue + worker processes; tasks survive an API restart and interrupted tasks are recovered |
 | Memory            | Qdrant + local `nomic-embed-text` embeddings; structured evidence with provenance, confidence and relationships |
 | Secrets           | Encrypted store (Fernet); values injected as sandbox env vars, never into model context |
@@ -54,7 +54,7 @@ larger local models.
 
 ```bash
 git clone <this-repo>
-cd shellhouse
+cd Shellhouse/shellhouse
 ./setup.sh                 # generates MANAGER_TOKEN, detects the docker GID
 docker compose up -d --build
 
@@ -126,7 +126,7 @@ Firecracker needs one-time host setup (and a host with `/dev/kvm` — most
 standard cloud VMs can't do this):
 
 ```bash
-cd sandbox/firecracker/scripts
+cd shellhouse/sandbox/firecracker/scripts
 sudo ./setup-host.sh      # firecracker + jailer, bridge, NAT, nftables egress policy
 sudo ./build-kernel.sh    # -> /var/lib/agent-vm/vmlinux
 sudo ./build-rootfs.sh    # -> /var/lib/agent-vm/rootfs.ext4 (same desktop image)
@@ -134,7 +134,7 @@ sudo ./build-rootfs.sh    # -> /var/lib/agent-vm/rootfs.ext4 (same desktop image
 
 The guest image is built from the *same* desktop Dockerfile, so the agent's
 computer looks identical either way — only the isolation boundary changes.
-Read `docs/FIRECRACKER.md` before enabling it: it covers the staged rollout,
+Read `shellhouse/docs/FIRECRACKER.md` before enabling it: it covers the staged rollout,
 the isolation checks you should actually run, the leaked-VM reaping gap, and
 why VM control belongs in a separate Sandbox Manager rather than in the API
 container.
@@ -142,7 +142,7 @@ container.
 ## How it maps to the bigger architecture doc
 
 This repo intentionally does **not** implement everything in
-`docs/ARCHITECTURE.md` — Firecracker microVMs, multi-agent orchestration,
+`shellhouse/docs/ARCHITECTURE.md` — Firecracker microVMs, multi-agent orchestration,
 Qdrant/vector memory, MCP, billing, Cloudflare edge, etc. Those are the
 "Phase 3+" items. What's here is the smallest version of the loop that
 proves the concept end-to-end and is structured so each later phase slots in
@@ -160,7 +160,7 @@ without a rewrite:
 
 ## Security notes (read before exposing this beyond localhost)
 
-Full write-up in **`docs/SECURITY.md`**, including commands to verify the
+Full write-up in **`shellhouse/docs/SECURITY.md`**, including commands to verify the
 claims below yourself. The short version:
 
 - **The agent loop holds no host privilege.** The API container has no Docker
@@ -221,15 +221,15 @@ Ports are all bound to `127.0.0.1`.
 
 **Nothing here has been executed.** Everything is syntax-checked and
 cross-checked (tools↔schemas↔policy all reconcile), but a first build will
-find real issues. `docs/BUILD-NOTES.md` lists what I expect to break and in
+find real issues. `shellhouse/docs/BUILD-NOTES.md` lists what I expect to break and in
 what order to debug it.
 
 ## Evaluation
 
 ```bash
-python evals/run_evals.py --all --model qwen2.5:7b-instruct --out baseline.json
+python shellhouse/evals/run_evals.py --all --model qwen2.5:7b-instruct --out baseline.json
 # after changing a model, prompt, or tool:
-python evals/run_evals.py --all --compare baseline.json
+python shellhouse/evals/run_evals.py --all --compare baseline.json
 ```
 
 Checks are deterministic — files created, strings present, tools called,
