@@ -103,6 +103,44 @@ services:
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
+  # Group relay: lets friends' apps share a group chat with you. OFF by
+  # default (compose profile "relay"); start it with
+  #   docker compose --profile relay up -d --build group-relay
+  # Reachable only on RELAY_BIND (default loopback) — set RELAY_BIND to the
+  # host's address on the network your friends are on. Needs a TLS cert in
+  # ./group-relay/certs (see group-relay/README.md). No Docker socket, no
+  # access to sandboxes, bot memory or prompts: it only stores identities,
+  # friendships, group membership and the shared message log.
+  # ---------------------------------------------------------------------------
+  group-relay:
+    profiles: ["relay"]
+    build:
+      context: .
+      dockerfile: group-relay/Dockerfile
+    container_name: agent-group-relay
+    restart: unless-stopped
+    ports:
+      - "${RELAY_BIND:-127.0.0.1}:${RELAY_PORT:-8443}:8443"
+    environment:
+      - RELAY_DB=/data/relay.db
+      - RELAY_MAX_HUMANS=${RELAY_MAX_HUMANS:-20}
+      - "RELAY_REGISTRATION_TOKEN=${RELAY_REGISTRATION_TOKEN:-}"
+      - RELAY_ALLOW_PLAINTEXT=${RELAY_ALLOW_PLAINTEXT:-0}
+    volumes:
+      - relay_data:/data
+      - ./group-relay/certs:/certs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
   # Sandbox Manager: the single privileged component.
   #
   # It holds the Docker socket so that `api` does not have to. It listens on a
@@ -284,6 +322,7 @@ services:
     logging: *default-logging
 
 volumes:
+  relay_data:
   ollama_models:
   api_data:
   workspace:

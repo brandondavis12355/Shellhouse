@@ -22,3 +22,5 @@ box/cli-config
 **/id_rsa*
 **/*secrets*.json
 sandbox-manager-run
+group-relay/certs
+group-relay/tests

@@ -8,3 +8,6 @@
 sandbox-manager-run/
 *.db
 *.sqlite
+group-relay/certs/
+__pycache__/
+.pytest_cache/
