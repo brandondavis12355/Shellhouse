@@ -13,77 +13,6 @@ let managerTokenName = "SANDBOX_MANAGER_TOKEN"
 /// Local end of the SSH tunnel (owned by `AppDelegate`'s `SSHTunnel`).
 let managerBaseURL = URL(string: "http://127.0.0.1:8765")!
 
-/// Split out of `defaultSystemPrompt` so it can also be force-appended to
-/// bots that already have a customized `systemPromptText` predating this
-/// requirement — see `Bot.withToolVerificationRequirement`. Checked for
-/// verbatim as the marker of "this bot already has it," so don't reword
-/// this in place; add a differently-worded update as a separate paragraph
-/// instead if the guidance itself needs to change later.
-let toolVerificationRequirement = """
-Before calling finish_task on any task where you used tools to actually \
-change or produce something (an edit, a script, a form submission, a \
-click sequence, a purchase, anything with a real outcome to get right) — \
-run at least 3 separate checks confirming the actual result, not just that \
-the tool call itself returned without an error. "The command exited 0" or \
-"the click didn't error" is not confirmation; re-reading the file you \
-edited, re-running the test or script, taking a fresh screenshot, or \
-re-querying the state you changed are. Vary what each check actually \
-looks at rather than repeating the identical check three times — the goal \
-is confidence the outcome is right, not a rerun count. If any check comes \
-back wrong, fix it and re-verify with 3 more before finishing, and if you \
-can't get a clean 3 for 3, say so honestly in finish_task's summary rather \
-than reporting success anyway.
-"""
-
-/// Starting point for the editable system-prompt field — not a fixed
-/// constant the agent is stuck with, just what the text field is
-/// pre-populated with.
-let defaultSystemPrompt = """
-You are an AI agent with full control of a Linux desktop sandbox through tools. \
-Your working directory is /workspace. Use run_shell for command-line work; \
-screenshot, click, type_text, press_key, scroll, list_windows, focus_window, and \
-open_app for GUI interaction; and list_files, read_file, write_file for the \
-filesystem. Before your first GUI action of a task, load the "gui-automation" \
-skill via use_skill for coordinate conventions and how to verify a click or \
-type actually landed.
-
-How this task ends: call finish_task with the complete result the moment you \
-have it, or the moment you're genuinely blocked. There is no other way to \
-end — plain text alone is always treated as "keep going," never as "done." \
-So if you're not calling a tool, you'd better be calling finish_task; \
-anything else just continues the task. Before calling finish_task, briefly \
-re-check your own last few actions against what was actually asked — don't \
-call it on a stated intent ("I'll check X") or a partial result.
-
-\(toolVerificationRequirement)
-
-Proactively use the remember tool for any fact, preference, or detail \
-that's durable and worth carrying forward — don't wait to be explicitly \
-asked to remember something. This matters most for anything you might \
-need again while acting in a group chat, handling another bot's delegated \
-request, or firing a routine: those all run in a fresh, isolated context \
-with no access to this conversation's own history, so the only way \
-something from here reaches you there is if you've already saved it. When \
-in doubt about whether something's worth keeping, remember it.
-
-The moment you're given a concrete task to carry out — not a standing \
-preference, an actual "do X" — call remember_task proactively, the same \
-way you'd use remember for a durable fact. This is what lets a task \
-assigned in this private chat still be visible if you're @mentioned about \
-it in a group or asked about it through a delegation later; without it, \
-that task simply doesn't exist anywhere else. Call complete_task the \
-moment it's actually finished — don't let done tasks sit there.
-
-To check your own current routines or settings (name, tagline, model, \
-skills, group memberships, etc.), call list_routines or get_profile — \
-both read live, so they're the right way to confirm something actually \
-took effect (e.g. right after create_routine) or to check what's already \
-scheduled before creating a duplicate. Don't use recall_memory for this — \
-it only searches what you've explicitly remembered, not your routines or \
-settings, and repeatedly calling it hoping for a different answer will \
-just get the run aborted for looping.
-"""
-
 /// A small fixed palette for bot avatars — cycled through as bots are
 /// added, matching the reference screenshots' colored-blob-per-bot look
 /// without needing a color picker for a first pass.
@@ -238,6 +167,9 @@ struct ContentView: View {
                                     Button("Delete…", role: .destructive) { pendingDeleteBot = bot }
                                 }
                         }
+                        .onMove { source, destination in
+                            moveBots(inSection: section.group, from: source, to: destination)
+                        }
                     }
                 }
                 if !groupChats.isEmpty {
@@ -250,6 +182,10 @@ struct ContentView: View {
                                     Divider()
                                     Button("Delete…", role: .destructive) { pendingDeleteGroup = group }
                                 }
+                        }
+                        .onMove { source, destination in
+                            groupChats.move(fromOffsets: source, toOffset: destination)
+                            saveGroupChats()
                         }
                     }
                 }
@@ -456,9 +392,8 @@ struct ContentView: View {
             if !saved.isEmpty {
                 bots = saved.map { Bot(config: $0, permissions: runShellPermissions, botDirectory: botDirectory) }
                 selectedItemID = bots.first.map { "bot:\($0.id)" }
-                // `Bot(config:...)` force-migrates `systemPromptText` to
-                // include `toolVerificationRequirement` in memory (see
-                // `Bot.withToolVerificationRequirement`) — persist that
+                // `Bot(config:...)` migrates `systemPromptText` down to just the
+                // user's own text (see `BuiltInSystemPrompt.userPortion`) — persist that
                 // right away rather than leaving it to only ever land on
                 // disk if the user happens to touch this bot's Settings
                 // sheet later.
@@ -512,6 +447,19 @@ struct ContentView: View {
 
     private func startNewGroupChat() {
         showingCreateGroup = true
+    }
+
+    /// Drag-to-reorder within a sidebar section. Sections are just `bots`
+    /// grouped by `Bot.group`, so the new order is written back into the
+    /// SAME slots those bots already occupy in `bots` — other sections'
+    /// positions are untouched — then saved like any other bot-list change.
+    private func moveBots(inSection group: String, from source: IndexSet, to destination: Int) {
+        var sectionBots = bots.filter { $0.group == group }
+        sectionBots.move(fromOffsets: source, toOffset: destination)
+        var reordered = sectionBots.makeIterator()
+        bots = bots.map { $0.group == group ? (reordered.next() ?? $0) : $0 }
+        botDirectory.sync(bots)
+        saveBots()
     }
 
     private func saveGroupChats() {
@@ -1272,14 +1220,19 @@ private struct BotSettingsTab: View {
             VStack(alignment: .leading, spacing: 16) {
                 identitySection
 
-                DisclosureGroup("System Prompt") {
-                    TextEditor(text: $bot.systemPromptText)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(height: 120)
-                        .disabled(bot.hasStarted)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                DisclosureGroup("Custom Instructions") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Optional. Added to the built-in behavior (tools, how tasks finish, verification), which every bot always has and which can't be edited here.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $bot.systemPromptText)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(height: 120)
+                            .disabled(bot.hasStarted)
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    }
                 }
-                .help(bot.hasStarted ? "Locked in for this conversation — start a new one to use a different prompt." : "")
+                .help(bot.hasStarted ? "Locked in for this conversation — start a new one to use different instructions." : "")
 
                 DisclosureGroup("Skills (\(bot.selectedSkillIDs.count) of \(bot.availableSkills.count) selected)") {
                     ScrollView {

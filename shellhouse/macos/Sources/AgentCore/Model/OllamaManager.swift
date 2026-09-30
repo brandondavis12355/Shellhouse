@@ -40,7 +40,7 @@ public final class OllamaManager: @unchecked Sendable {
                 "/opt/homebrew/bin/ollama",
                 "/usr/local/bin/ollama",
             ],
-            numParallel: Int = 4,
+            numParallel: Int = 6,
             maxLoadedModels: Int = 3
         ) {
             self.port = port

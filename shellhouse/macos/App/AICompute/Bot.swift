@@ -212,7 +212,10 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// cleared back to "" by `persistRemoteAPIKeyIfChanged()` when the
     /// settings sheet closes.
     var remoteAPIKeyInput = ""
-    var systemPromptText = defaultSystemPrompt
+    /// ONLY what the user (or `create_bot`) added — the built-in prompt
+    /// (`BuiltInSystemPrompt.text`) is always applied separately and is not
+    /// editable. See `fullSystemPrompt`.
+    var systemPromptText = ""
 
     /// Loaded once from the bundled `skills/` folder (see `SkillLibrary`).
     /// Defaults to everything selected — the index alone is cheap (see
@@ -294,19 +297,6 @@ final class Bot: Identifiable, @unchecked Sendable {
         loadPersistedTranscriptAndMemory()
     }
 
-    /// Force-migrates any already-saved or imported `systemPromptText` —
-    /// including one the user hand-edited — to also carry the
-    /// tool-verification requirement, not just prompts freshly seeded
-    /// from `defaultSystemPrompt`. Idempotent (checked verbatim, so
-    /// re-running this on a bot that already has it is a no-op) and
-    /// additive — never rewrites or removes anything the user wrote,
-    /// only appends what's missing.
-    private static func withToolVerificationRequirement(_ prompt: String) -> String {
-        guard !prompt.contains(toolVerificationRequirement) else { return prompt }
-        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return toolVerificationRequirement }
-        return prompt + "\n\n" + toolVerificationRequirement
-    }
-
     /// Reconstructs a bot from a saved `BotConfig` — same as the plain
     /// `init`, plus every other field `BotStore` persists. Used by
     /// `ContentView` on launch instead of `init` when there's a saved
@@ -317,7 +307,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             tagline: config.tagline, group: config.group, permissions: permissions, botDirectory: botDirectory
         )
         avatarStyle = config.avatarStyle
-        systemPromptText = Self.withToolVerificationRequirement(config.systemPromptText)
+        systemPromptText = BuiltInSystemPrompt.userPortion(of: config.systemPromptText)
         selectedSkillIDs = config.selectedSkillIDs
         selectedModel = config.selectedModel
         modelHasVision = config.modelHasVision
@@ -341,7 +331,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             tagline: template.tagline, group: template.group, permissions: permissions, botDirectory: botDirectory
         )
         avatarStyle = template.avatarStyle
-        systemPromptText = Self.withToolVerificationRequirement(template.systemPromptText)
+        systemPromptText = BuiltInSystemPrompt.userPortion(of: template.systemPromptText)
         selectedSkillIDs = template.selectedSkillIDs
         selectedModel = template.selectedModel
         modelHasVision = template.modelHasVision
@@ -1370,14 +1360,10 @@ final class Bot: Identifiable, @unchecked Sendable {
         guard let newBot = botDirectory.createBot(name, tagline) else {
             return ["error": "couldn't create a new bot right now"]
         }
-        // The provided prompt leads, with the new bot's default system
-        // prompt appended after it — that default is where the actual
-        // tool inventory and the finish_task rule live (see
-        // `defaultSystemPrompt`); a role-specific prompt from `create_bot`
-        // isn't expected to repeat those, so overwriting it outright would
-        // leave the new bot without them.
+        // The role prompt becomes the new bot's custom instructions; the
+        // built-in prompt (tools, finish_task rule) is always applied on top.
         if let systemPrompt, !systemPrompt.isEmpty {
-            newBot.systemPromptText = systemPrompt + "\n\n---\n\n" + newBot.systemPromptText
+            newBot.systemPromptText = systemPrompt
         }
         return ["id": newBot.id, "name": newBot.name, "tagline": newBot.tagline]
     }
@@ -1982,7 +1968,11 @@ final class Bot: Identifiable, @unchecked Sendable {
         if !tagline.isEmpty {
             result += " Your role: \(tagline)."
         }
-        result += "\n\n" + systemPromptText
+        result += "\n\n" + BuiltInSystemPrompt.text
+        let custom = systemPromptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty {
+            result += "\n\n---\n\nAdditional instructions from the user for this bot (in addition to everything above):\n\n" + custom
+        }
         let selected = availableSkills.filter { selectedSkillIDs.contains($0.id) }
         if !selected.isEmpty {
             result += "\n\n---\n\nSkills available via the use_skill tool. Each is a playbook for a specific "
