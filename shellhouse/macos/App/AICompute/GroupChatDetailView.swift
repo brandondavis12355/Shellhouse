@@ -59,15 +59,7 @@ struct GroupChatDetailView: View {
                 mentionColors: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.name.lowercased(), $0.colorHex) })
             )
 
-            if let speakerName = group.currentSpeakerName, let speakerColorHex = group.currentSpeakerColorHex {
-                RespondingIndicatorView(name: speakerName, colorHex: speakerColorHex)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else if !group.status.isEmpty {
-                Text(group.status)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            BotStatusStrip(bots: resolvedMembers)
 
             if !mentionSuggestionItems.isEmpty {
                 ScrollViewReader { scrollProxy in

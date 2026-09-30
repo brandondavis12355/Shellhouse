@@ -75,7 +75,27 @@ _registry: dict[str, SandboxHandle] = {}
 # Audit
 # ---------------------------------------------------------------------------
 
+_SECRET_PATTERNS = [
+    (re.compile(r"(?i)(authorization:\s*(?:bearer|basic|token)\s+)\S+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\b((?:api[_-]?key|token|secret|passwd|password|access[_-]?key)\w*\s*[=:]\s*)['\"]?[^\s'\"&;]+"), r"\1[REDACTED]"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "[REDACTED]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), "[REDACTED]"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[REDACTED]"),
+]
+
+
+def redact(value):
+    """Best-effort scrub of secrets that ended up inside a logged command or
+    path, so the audit log doesn't become a credential store."""
+    if not isinstance(value, str):
+        return value
+    for pattern, replacement in _SECRET_PATTERNS:
+        value = pattern.sub(replacement, value)
+    return value
+
+
 def audit(op: str, outcome: str, **fields) -> None:
+    fields = {key: redact(val) for key, val in fields.items()}
     entry = {
         "ts": time.time(),
         "op": op,

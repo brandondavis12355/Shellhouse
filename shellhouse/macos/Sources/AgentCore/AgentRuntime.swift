@@ -356,11 +356,15 @@ public actor AgentRuntime {
             let binary = call.name == "run_shell"
                 ? call.arguments["command"]?.asString.flatMap(RunShellPermissions.extractBinary(fromCommand:))
                 : nil
-            if call.name == "run_shell", await permissions.isBlanketAllowed(botID: sandboxID) {
+            // A command that asks for Keychain secrets is never auto-approved,
+            // whatever grants exist: injected instructions could otherwise
+            // exfiltrate a secret (encoded past output masking) unattended.
+            let usesSecrets = !(call.arguments["use_secrets"]?.asStringArray ?? []).isEmpty
+            if call.name == "run_shell", !usesSecrets, await permissions.isBlanketAllowed(botID: sandboxID) {
                 await execute(call, repeatCount: repeatCount)
                 return true
             }
-            if let binary, await permissions.isAllowed(binary) {
+            if let binary, !usesSecrets, await permissions.isAllowed(binary) {
                 await execute(call, repeatCount: repeatCount)
                 return true
             }

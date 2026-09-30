@@ -23,9 +23,12 @@ app = FastAPI(title="Local AI Computer - Agent API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # dev-only; restrict in production
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Only the bundled web UI may call this API from a browser. A wildcard
+    # lets ANY web page you visit fetch() the local API (create tasks,
+    # approve tool calls). Override with WEB_ORIGINS="https://a,https://b".
+    allow_origins=[o.strip() for o in os.environ.get("WEB_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 

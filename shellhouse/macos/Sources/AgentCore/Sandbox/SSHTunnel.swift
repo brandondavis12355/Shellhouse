@@ -112,13 +112,25 @@ public final class SSHTunnel: @unchecked Sendable {
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3",
             "-o", "StrictHostKeyChecking=accept-new",
-            "-L", "\(config.localManagerPort):\(config.managerSocketPath)",
-            "-L", "\(config.novncLocalPort):localhost:\(config.novncRemotePort)",
+            // Explicit loopback bind: never depend on the ssh client's
+            // GatewayPorts default to keep forwards off the network.
+            "-L", "127.0.0.1:\(config.localManagerPort):\(config.managerSocketPath)",
+            "-L", "127.0.0.1:\(config.novncLocalPort):localhost:\(config.novncRemotePort)",
         ]
         for offset in 0..<config.ephemeralPortCount {
             let port = config.ephemeralPortBase + offset
-            task.arguments?.append(contentsOf: ["-L", "\(port):localhost:\(port)"])
+            task.arguments?.append(contentsOf: ["-L", "127.0.0.1:\(port):localhost:\(port)"])
         }
+        // A user/host starting with "-" would be parsed as an ssh option;
+        // refuse anything that isn't a plain hostname/IP and username, and
+        // end option parsing before the destination regardless.
+        let plainName = #"^[A-Za-z0-9._][A-Za-z0-9._@-]*$"#
+        guard config.user.range(of: plainName, options: .regularExpression) != nil,
+              config.host.range(of: plainName, options: .regularExpression) != nil else {
+            print("[ssh tunnel] refusing to start: invalid host or user in tunnel config")
+            return
+        }
+        task.arguments?.append("--")
         task.arguments?.append("\(config.user)@\(config.host)")
 
         let errPipe = Pipe()

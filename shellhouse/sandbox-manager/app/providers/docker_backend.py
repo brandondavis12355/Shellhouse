@@ -32,7 +32,10 @@ convention only), which the web/API stack needs to serve screenshots.
 """
 import asyncio
 import base64
+import hashlib
 import os
+import secrets
+import string
 from typing import Optional
 
 import docker
@@ -44,6 +47,8 @@ SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "agent-desktop:local")
 SANDBOX_USER = os.environ.get("SANDBOX_USER", "box")
 WORKSPACE = "/workspace"
 WORKSPACE_VOLUME = os.environ.get("WORKSPACE_VOLUME", "shellhouse_workspace")
+ISOLATE_NETWORK = os.environ.get("SANDBOX_ISOLATE_NETWORK", "1").lower() in ("1", "true", "yes")
+SANDBOX_NETWORK = "agent-sandboxes"
 PER_BOT_VOLUMES = os.environ.get("SANDBOX_PER_BOT_VOLUMES", "1").lower() in ("1", "true", "yes")
 NOVNC_URL = os.environ.get(
     "NOVNC_URL", "http://localhost:6080/vnc.html?autoconnect=1&resize=scale"
@@ -68,6 +73,24 @@ LABEL_EPHEMERAL = "agent.ephemeral"
 def _q(value: str) -> str:
     """Single-quote a value for safe use inside a shell command."""
     return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _safe_task(task_id: str) -> str:
+    """Container/volume-safe form of a task id. Ids up to 32 characters are
+    unchanged (so existing bots keep their containers/volumes); longer ones
+    are shortened WITH a hash suffix so two ids sharing a 32-char prefix can
+    never collapse onto the same container and workspace."""
+    cleaned = "".join(c for c in task_id if c.isalnum() or c in "-_")
+    if len(cleaned) <= 32:
+        return cleaned
+    digest = hashlib.sha256(task_id.encode()).hexdigest()[:8]
+    return f"{cleaned[:23]}-{digest}"
+
+
+def _new_vnc_password() -> str:
+    """8 characters: classic VNC auth ignores anything past 8."""
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(8))
 
 
 class DockerBackend:
@@ -111,6 +134,38 @@ class DockerBackend:
             return await self.start(SHARED_CONTAINER)
         return await self._create_or_attach(task_id, persistent=persistent)
 
+    def _ensure_sandbox_network(self) -> Optional[str]:
+        """A dedicated bridge with inter-container communication disabled, so
+        one compromised sandbox can't reach another bot's desktop/VNC port
+        over the bridge. (It can still reach the host gateway and the LAN;
+        blocking that needs firewall rules on the host.) Blocking call."""
+        if not ISOLATE_NETWORK:
+            return None
+        client = self._docker()
+        try:
+            client.networks.get(SANDBOX_NETWORK)
+        except docker.errors.NotFound:
+            try:
+                client.networks.create(
+                    SANDBOX_NETWORK, driver="bridge",
+                    options={"com.docker.network.bridge.enable_icc": "false"},
+                    labels={LABEL_MANAGED: "true"},
+                )
+            except Exception:
+                return None   # fall back to the default bridge rather than fail creation
+        return SANDBOX_NETWORK
+
+    def _vnc_password_of(self, name: str) -> Optional[str]:
+        """The per-container noVNC password, from the container's own env."""
+        try:
+            env = self._get(name).attrs.get("Config", {}).get("Env") or []
+        except Exception:
+            return None
+        for item in env:
+            if item.startswith("VNC_PASSWORD="):
+                return item.split("=", 1)[1]
+        return None
+
     def _ensure_bot_volume(self, safe_task: str) -> str:
         """Create this task's own workspace volume if it doesn't exist yet,
         seeding it once from the legacy shared volume's `<task>/` directory.
@@ -151,7 +206,7 @@ class DockerBackend:
         return vol_name
 
     async def _create_or_attach(self, task_id: str, persistent: bool) -> SandboxHandle:
-        safe_task = "".join(c for c in task_id if c.isalnum() or c in "-_")[:32]
+        safe_task = _safe_task(task_id)
         name = f"agent-sandbox-{safe_task}"
         port = await self._alloc_port(name)
         self._persistent[name] = persistent
@@ -181,13 +236,20 @@ class DockerBackend:
         else:
             workspace_volumes = {WORKSPACE_VOLUME: {"bind": "/workspaces", "mode": "rw"}}
 
+        network_name = await asyncio.to_thread(self._ensure_sandbox_network)
+        vnc_password = _new_vnc_password()
+
         def _run():
             return self._docker().containers.run(
                 SANDBOX_IMAGE,
                 name=name,
                 detach=True,
                 hostname=f"shellhouse-vm-{safe_task}",
-                environment={"SCREEN_GEOM": os.environ.get("SCREEN_GEOM", "1280x800x24")},
+                network=network_name,
+                environment={
+                    "SCREEN_GEOM": os.environ.get("SCREEN_GEOM", "1280x800x24"),
+                    "VNC_PASSWORD": vnc_password,
+                },
                 ports={"6080/tcp": ("127.0.0.1", port)},    # loopback only
                 volumes=workspace_volumes,
                 shm_size="1g",
@@ -235,6 +297,10 @@ class DockerBackend:
             NOVNC_URL if name == SHARED_CONTAINER
             else f"http://{NOVNC_HOST}:{port}/vnc.html?autoconnect=1&resize=scale"
         )
+        if name != SHARED_CONTAINER:
+            password = self._vnc_password_of(name)
+            if password:
+                vnc += f"&password={password}"
         return SandboxHandle(
             id=name,
             provider=self.name,

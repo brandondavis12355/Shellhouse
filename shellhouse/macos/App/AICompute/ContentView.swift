@@ -231,7 +231,7 @@ struct ContentView: View {
                 GroupChatDetailView(group: group, allBots: bots, onOpenSettings: { groupSettingsTarget = group })
                     .id(group.id)
             } else if let bot = selectedBot {
-                BotDetailView(bot: bot, onOpenSettings: { botSettingsTarget = bot })
+                BotDetailView(bot: bot, onOpenSettings: { botSettingsTarget = bot }, allBots: bots)
                     // Forces a fresh view identity per bot so `.onAppear`
                     // in `BotDetailView` actually fires on every switch —
                     // without this, SwiftUI treats switching which bot is
@@ -425,7 +425,7 @@ struct ContentView: View {
         // sibling has no such interaction: it's an ordinary, fully
         // clipped part of this same window's layout.
         if DebugSettings.shared.isEnabled {
-            DebugConsoleView()
+            DebugConsoleView(bots: bots)
                 .frame(minWidth: 260, idealWidth: 380, maxWidth: 700)
                 .background(Color(nsColor: .windowBackgroundColor))
         }
@@ -511,6 +511,7 @@ struct ContentView: View {
         // existed in memory up to this point — see `Bot.init(id:template:)`.
         if !bot.memories.isEmpty { BotMemoryStore.save(id: bot.id, bot.memories) }
         if !bot.routines.isEmpty { RoutineStore.save(id: bot.id, bot.routines) }
+        bot.activateRoutines()
         Task {
             await bot.persistRemoteAPIKeyIfChanged()
             await bot.boot()
@@ -576,9 +577,19 @@ struct ContentView: View {
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.begin { response in
-            guard response == .OK, let url = panel.urls.first,
-                  let template = try? BotTemplate.load(from: url) else { return }
-            startNewBotDraft(from: template)
+            guard response == .OK, let url = panel.urls.first else { return }
+            do {
+                let template = try BotTemplate.load(from: url).sanitizedForImport()
+                startNewBotDraft(from: template)
+                if !template.routines.isEmpty {
+                    let alert = NSAlert()
+                    alert.messageText = "Imported routines are turned off"
+                    alert.informativeText = "\(template.routines.count) routine(s) came with this template and were imported disabled. Review their instructions in the new bot's Settings before enabling any of them."
+                    alert.runModal()
+                }
+            } catch {
+                showExportError("Couldn't import that template.", error)
+            }
         }
     }
 

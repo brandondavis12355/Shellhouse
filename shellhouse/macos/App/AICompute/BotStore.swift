@@ -72,9 +72,41 @@ struct BotTemplate: Codable {
     /// with `.xml` output), the standard Foundation-native way to get a
     /// real, readable `.xml` file out of a `Codable` type without hand-
     /// rolling an XML schema for this one struct.
+    static let maxImportBytes = 2_000_000
+
     static func load(from url: URL) throws -> BotTemplate {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= maxImportBytes else {
+            throw NSError(domain: "BotTemplate", code: 1, userInfo: [NSLocalizedDescriptionKey: "That file is too large to be a bot template."])
+        }
         let data = try Data(contentsOf: url)
         return try PropertyListDecoder().decode(BotTemplate.self, from: data)
+    }
+
+    /// A template from someone else is untrusted input: it can carry a
+    /// persistent prompt injection, scheduled routines, and a model endpoint.
+    /// Bound the sizes, switch every routine off until the user reviews it,
+    /// and only accept an https (or local) remote model URL so chat traffic
+    /// can't be silently pointed at a plain-http or arbitrary attacker host.
+    func sanitizedForImport() -> BotTemplate {
+        var copy = self
+        copy.systemPromptText = String(systemPromptText.prefix(20_000))
+        copy.memories = Array(memories.prefix(100).map { String($0.prefix(2_000)) })
+        copy.routines = Array(routines.prefix(50)).map { routine in
+            var routine = routine
+            routine.isEnabled = false
+            routine.lastFiredAt = nil
+            routine.instruction = String(routine.instruction.prefix(4_000))
+            return routine
+        }
+        if let urlText = remoteBaseURLText, !urlText.isEmpty {
+            let url = URL(string: urlText)
+            let isLocal = ["localhost", "127.0.0.1", "::1"].contains(url?.host ?? "")
+            if !(url?.scheme == "https" || (url?.scheme == "http" && isLocal)) {
+                copy.remoteBaseURLText = nil
+            }
+        }
+        return copy
     }
 
     /// XML plist bytes. NUL characters are the one thing the XML plist

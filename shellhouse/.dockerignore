@@ -1,0 +1,24 @@
+# Build context is the repo root (sandbox/Dockerfile copies from box/ and
+# workspace/). Keep credentials and internals out of image layers — a later
+# `RUN rm` does NOT remove them from an earlier layer.
+.git
+.env
+.env.*
+!.env.example
+**/.DS_Store
+macos
+web
+api
+evals
+docs
+box/.config/gh
+box/agent-data
+box/sand-data
+box/sand-host
+box/deps
+box/cli-config
+**/*.pem
+**/*.key
+**/id_rsa*
+**/*secrets*.json
+sandbox-manager-run

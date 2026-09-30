@@ -9,8 +9,11 @@ Firecracker microVM), and file tools are scoped to that sandbox's /workspace.
 import asyncio
 import concurrent.futures
 import contextvars
+import ipaddress
 import os
 import re
+import socket
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -191,11 +194,49 @@ def tool_web_search(arguments: dict) -> dict:
     return {"results": results}
 
 
+def _is_public_address(host: str) -> bool:
+    """True only if EVERY address `host` resolves to is a public unicast one
+    (no loopback, private, link-local, multicast, reserved, or metadata)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if (address.is_private or address.is_loopback or address.is_link_local
+                or address.is_multicast or address.is_reserved or address.is_unspecified):
+            return False
+    return bool(infos)
+
+
+def _safe_get(url: str, max_redirects: int = 5):
+    """`requests.get` with SSRF guards: http(s) only, public addresses only,
+    re-validated on every redirect hop (no auto-follow). Blocks reaching
+    internal services (this API, redis, qdrant, ollama) or cloud metadata."""
+    for _ in range(max_redirects + 1):
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("fetch_url only supports http(s) URLs")
+        if not _is_public_address(parsed.hostname):
+            raise ValueError("fetch_url refuses non-public addresses")
+        resp = requests.get(
+            url, timeout=20, allow_redirects=False, headers={"User-Agent": "local-agent/0.1"}
+        )
+        if resp.is_redirect or resp.is_permanent_redirect:
+            location = resp.headers.get("Location")
+            if not location:
+                return resp
+            url = urljoin(url, location)
+            continue
+        return resp
+    raise ValueError("fetch_url: too many redirects")
+
+
 def tool_fetch_url(arguments: dict) -> dict:
     """Fetch a page and extract readable text. Treated as UNTRUSTED DATA by the runtime,
     never as instructions — see agent/runtime.py."""
     url = arguments["url"]
-    resp = requests.get(url, timeout=20, headers={"User-Agent": "local-agent/0.1"})
+    resp = _safe_get(url)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
     for tag in soup(["script", "style", "nav", "footer"]):

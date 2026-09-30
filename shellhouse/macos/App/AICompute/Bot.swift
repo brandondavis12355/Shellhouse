@@ -341,9 +341,15 @@ final class Bot: Identifiable, @unchecked Sendable {
         remoteBaseURLText = template.remoteBaseURLText ?? ""
         memories = template.memories
         routines = template.routines
-        // The base `init` already scheduled timers for whatever routines
-        // it loaded from disk for `id` (none, for a fresh id) — these are
-        // assigned afterward, so they need their own scheduling pass.
+        // Deliberately NOT scheduled here: this bot is only a draft until
+        // the user commits it (a cancelled import/duplicate would otherwise
+        // leave live timers firing into a bot that never existed).
+        // `activateRoutines()` runs from `commitDraftBot`.
+    }
+
+    /// Starts timers for routines that arrived via a template — called once
+    /// the draft is actually added.
+    func activateRoutines() {
         for routine in routines { scheduleTimer(for: routine) }
     }
 
@@ -1444,6 +1450,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// skip a turn the bot itself clearly said it had nothing to add to.
     func wantsToRespondInGroup(groupName: String, transcript: String, goalContext: String? = nil) async -> Bool {
         guard sandbox != nil else { return true }
+        let checkSpan = BotActivity.shared.begin(bot: self, kind: .checking, detail: "reply check · \(groupName)")
+        defer { BotActivity.shared.end(checkSpan) }
         let role = tagline.isEmpty ? String(systemPromptText.prefix(300)) : tagline
         let messages = [
             ChatMessage(role: .system, content: "You are \(name), a member of the group chat \"\(groupName)\". Your role: \(role)"),
@@ -1473,6 +1481,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// request (work to be done) rather than a question, greeting, or chat?
     /// Errors resolve to `false` — no goal is safer than a spurious one.
     func looksLikeActionableRequest(_ text: String) async -> Bool {
+        let checkSpan = BotActivity.shared.begin(bot: self, kind: .checking, detail: "goal intake check")
+        defer { BotActivity.shared.end(checkSpan) }
         let messages = [
             ChatMessage(role: .system, content: "You classify chat messages. Reply with exactly one word."),
             ChatMessage(role: .user, content: """
@@ -1693,9 +1703,11 @@ final class Bot: Identifiable, @unchecked Sendable {
     ) async -> String {
         guard let sandbox, let handle else { return "\(name) has no running sandbox to work with right now." }
         return await Task {
+            let queuedSpan = BotActivity.shared.begin(bot: self, kind: .queued, detail: debugContext)
             do {
                 try await acquireRunLock()
             } catch {
+                BotActivity.shared.end(queuedSpan)
                 // Cancelled while still queued — genuinely never
                 // acquired the lock, so `releaseRunLock()` below must
                 // NOT run for this call (see `acquireRunLock`'s doc
@@ -1703,8 +1715,11 @@ final class Bot: Identifiable, @unchecked Sendable {
                 // registered, is what guarantees that.
                 return "\(name)'s task was cancelled before its turn came up."
             }
+            BotActivity.shared.end(queuedSpan)
+            let runSpan = BotActivity.shared.begin(bot: self, kind: .running, detail: debugContext)
             currentRunLockOwner = .isolated(debugContext)
             defer {
+                BotActivity.shared.end(runSpan)
                 currentRunLockOwner = nil
                 releaseRunLock()
             }
@@ -1722,6 +1737,8 @@ final class Bot: Identifiable, @unchecked Sendable {
             // wrong in one direction or the other.
             var replyPicker = IsolatedReplyPicker()
             let toolCallCounter = ToolCallCounter()
+            let phaseTracker = PhaseTracker()
+            let botIDForPhase = id
             // Set when `finish_task` is called with `outcome: "silent"` — the
             // reliable way to opt out of responding (see `respondInGroup`),
             // backed by the same required-tool-call schema as `finish_task`
@@ -1810,8 +1827,12 @@ final class Bot: Identifiable, @unchecked Sendable {
                     switch event {
                     case .message(let msg):
                         replyPicker.observe(msg)
+                        phaseTracker.set(responding: false, botID: botIDForPhase)
                     case .toolStarted(let toolName, _):
                         toolCallCounter.note(toolName)
+                        phaseTracker.set(responding: false, botID: botIDForPhase)
+                    case .messageDelta:
+                        phaseTracker.set(responding: true, botID: botIDForPhase)
                     case .status(.aborted("silent")):
                         isSilent = true
                     default:
@@ -2181,9 +2202,12 @@ final class Bot: Identifiable, @unchecked Sendable {
         isDrainingQueue = true
         while !messageQueue.isEmpty {
             let queued = messageQueue.removeFirst()
+            let queuedSpan = BotActivity.shared.begin(bot: self, kind: .queued, detail: "own chat")
             do {
                 try await acquireRunLock()
+                BotActivity.shared.end(queuedSpan)
             } catch {
+                BotActivity.shared.end(queuedSpan)
                 // Cancelled while queued (`stop()`) — never acquired the
                 // lock, so no matching `releaseRunLock()` call follows;
                 // stop the whole drain loop rather than just this one
@@ -2191,6 +2215,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 break
             }
             currentRunLockOwner = .ownChat
+            let chatSpan = BotActivity.shared.begin(bot: self, kind: .running, detail: "own chat")
             // Belt-and-suspenders turn boundary: a genuinely new user
             // message should never land in a bubble left over from
             // however the previous turn ended (e.g. `Stop` cancelling
@@ -2323,6 +2348,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 await newRuntime.seed(systemPrompt: fullSystemPrompt(), history: Array(history))
                 await newRuntime.send(withRelevantMemoryContext(queued.text), images: queued.images)
             }
+            BotActivity.shared.end(chatSpan)
             currentRunLockOwner = nil
             releaseRunLock()
         }
@@ -2358,6 +2384,14 @@ final class Bot: Identifiable, @unchecked Sendable {
 
     private func handleEvent(_ event: AgentRuntime.Event) {
         logToDebugConsole(event)
+        switch event {
+        case .messageDelta:
+            BotActivity.shared.setPhase(botID: id, .responding)
+        case .toolStarted, .toolCompleted, .status, .message:
+            BotActivity.shared.setPhase(botID: id, .working)
+        default:
+            break
+        }
         if case .messageDelta(let delta) = event {
             pendingDeltaBuffer += delta
             if deltaFlushTask == nil {
@@ -2529,4 +2563,22 @@ final class ToolCallCounter: @unchecked Sendable {
         lock.lock(); count += 1; lock.unlock()
     }
     var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+/// Forwards working/responding flips from a background agent loop to the
+/// main-actor `BotActivity`, only when the value actually changes (the loop
+/// emits an event per streamed token).
+final class PhaseTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var responding = false
+    func set(responding newValue: Bool, botID: String) {
+        lock.lock()
+        let changed = responding != newValue
+        responding = newValue
+        lock.unlock()
+        guard changed else { return }
+        Task { @MainActor in
+            BotActivity.shared.setPhase(botID: botID, newValue ? .responding : .working)
+        }
+    }
 }
