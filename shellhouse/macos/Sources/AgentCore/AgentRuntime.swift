@@ -114,6 +114,10 @@ public actor AgentRuntime {
     /// (SwiftUI presents a card), but this actor only needs it to be some
     /// async closure — it doesn't care who answers it.
     private let requestApproval: @Sendable (Approval) async -> ApprovalDecision
+    /// Set for a run that has untrusted (friend-authored) text in its context:
+    /// every approval-tier call asks the human, standing grants are ignored,
+    /// and "always allow" answers are not recorded.
+    private let alwaysRequireApproval: Bool
 
     private var messages: [ChatMessage] = []
     private var iterations = 0
@@ -174,12 +178,15 @@ public actor AgentRuntime {
         budgets: Budgets = Budgets(),
         modelName: String? = nil,
         onEvent: @escaping @Sendable (Event) -> Void = { _ in },
-        requestApproval: @escaping @Sendable (Approval) async -> ApprovalDecision = { _ in .deny }
+        requestApproval: @escaping @Sendable (Approval) async -> ApprovalDecision = { _ in .deny },
+        alwaysRequireApproval: Bool = false,
+        excludedTools: Set<String> = []
     ) {
+        self.alwaysRequireApproval = alwaysRequireApproval
         self.model = model
         self.sandbox = sandbox
         self.sandboxID = sandboxID
-        self.tools = tools
+        self.tools = excludedTools.isEmpty ? tools : tools.removing(excludedTools)
         self.secretStore = secretStore
         self.permissions = permissions
         self.budgets = budgets
@@ -360,11 +367,12 @@ public actor AgentRuntime {
             // whatever grants exist: injected instructions could otherwise
             // exfiltrate a secret (encoded past output masking) unattended.
             let usesSecrets = !(call.arguments["use_secrets"]?.asStringArray ?? []).isEmpty
-            if call.name == "run_shell", !usesSecrets, await permissions.isBlanketAllowed(botID: sandboxID) {
+            if call.name == "run_shell", !usesSecrets, !alwaysRequireApproval,
+               await permissions.isBlanketAllowed(botID: sandboxID) {
                 await execute(call, repeatCount: repeatCount)
                 return true
             }
-            if let binary, !usesSecrets, await permissions.isAllowed(binary) {
+            if let binary, !usesSecrets, !alwaysRequireApproval, await permissions.isAllowed(binary) {
                 await execute(call, repeatCount: repeatCount)
                 return true
             }
@@ -374,7 +382,8 @@ public actor AgentRuntime {
                 taskID: sandboxID,
                 toolName: call.name,
                 argumentsSummary: jsonString(call.arguments.mapValues(\.value)),
-                alwaysAllowCandidate: binary
+                alwaysAllowCandidate: alwaysRequireApproval ? nil : binary,
+                untrusted: alwaysRequireApproval
             )
             onEvent(.approvalNeeded(approval))
             let decision = await requestApproval(approval)
@@ -382,17 +391,20 @@ public actor AgentRuntime {
             case .deny:
                 appendToolResult(name: call.name, observation: ["error": "denied by user"])
                 return true
-            case .approveAlwaysSession:
+            case .approveAlwaysSession where !alwaysRequireApproval:
                 if let binary { await permissions.allow(binary, scope: .session) }
-            case .approveAlwaysGlobal:
+            case .approveAlwaysGlobal where !alwaysRequireApproval:
                 if let binary { await permissions.allow(binary, scope: .global) }
-            case .approveAllShellThisBotSession:
+            case .approveAllShellThisBotSession where !alwaysRequireApproval:
                 await permissions.allowAll(botID: sandboxID, scope: .botSession)
-            case .approveAllShellThisBotAlways:
+            case .approveAllShellThisBotAlways where !alwaysRequireApproval:
                 await permissions.allowAll(botID: sandboxID, scope: .botAlways)
-            case .approveAllShellEveryBot:
+            case .approveAllShellEveryBot where !alwaysRequireApproval:
                 await permissions.allowAll(botID: sandboxID, scope: .everyBot)
-            case .approve:
+            case .approve, .approveAlwaysSession, .approveAlwaysGlobal,
+                 .approveAllShellThisBotSession, .approveAllShellThisBotAlways, .approveAllShellEveryBot:
+                // The untrusted-context cases land here: approve this ONE
+                // call, record nothing.
                 break
             }
             onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))

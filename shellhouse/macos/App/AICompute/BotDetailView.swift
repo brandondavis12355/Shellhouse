@@ -24,6 +24,11 @@ struct ApprovalCard: View {
             Text(approval.toolName)
                 .font(.system(.title3, design: .monospaced))
                 .bold()
+            if approval.untrusted {
+                Text("A friend's message is part of this conversation, so this needs your approval every time.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             Text(approval.argumentsSummary)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -38,7 +43,7 @@ struct ApprovalCard: View {
                     .fixedSize()
                     .font(.system(size: 14))
                 }
-                if approval.toolName == "run_shell" {
+                if approval.toolName == "run_shell", !approval.untrusted {
                     Menu("Allow all shell commands…") {
                         Button("This bot, this session") { onDecide(.approveAllShellThisBotSession) }
                         Button("This bot, always") { onDecide(.approveAllShellThisBotAlways) }

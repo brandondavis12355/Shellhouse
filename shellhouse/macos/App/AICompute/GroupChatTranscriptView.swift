@@ -59,8 +59,9 @@ private struct GroupMessageBubble: View {
     let colorHex: String?
     let mentionColors: [String: String]
 
-    private var isUser: Bool { message.speakerBotID == nil }
-    private var color: Color { isUser ? .blue : Color(hex: colorHex ?? "#8E8E93") }
+    private var isFriend: Bool { message.externalUserID != nil }
+    private var isUser: Bool { message.speakerBotID == nil && !isFriend }
+    private var color: Color { isFriend ? .teal : (isUser ? .blue : Color(hex: colorHex ?? "#8E8E93")) }
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -89,6 +90,13 @@ private struct GroupMessageBubble: View {
                         .font(.caption2)
                         .fontWeight(.semibold)
                         .foregroundStyle(color)
+                    if isFriend {
+                        Text("friend")
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .background(Color.teal.opacity(0.2), in: Capsule())
+                            .foregroundStyle(.teal)
+                    }
                     Text(Self.timeFormatter.string(from: message.timestamp))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)

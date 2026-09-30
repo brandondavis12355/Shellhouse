@@ -74,4 +74,26 @@ final class GroupWakePlannerTests: XCTestCase {
         XCTAssertEqual(d(.awaitingConfirmation), .mentionedByBot)
         XCTAssertEqual(d(.awaitingConfirmation, [user(), bot("b")]), .none)  // no optional turns while awaiting
     }
+
+    private func friend(_ mentions: Set<String> = []) -> M { M(authorID: nil, mentionedIDs: mentions, isExternal: true) }
+
+    func testFriendMentionMustBeAnswered() {
+        XCTAssertEqual(decide("a", [friend(["a"])]), .mustReply)
+        XCTAssertEqual(decide("a", [friend()]), .optional)
+    }
+
+    func testFriendCannotResumeAPausedGoal() {
+        func d(_ m: [M]) -> GroupWakePlanner.Decision {
+            GroupWakePlanner.decide(botID: "a", messages: m, seenCount: 0, maxBotMessages: 40, goalStatus: .paused)
+        }
+        XCTAssertEqual(d([friend(["a"])]), .none, "a friend's message must not un-pause")
+        XCTAssertEqual(d([user(["a"])]), .mustReply, "the owner's message does")
+        XCTAssertEqual(d([friend(["a"]), user()]), .mustReply, "once the owner speaks, the friend's mention is answered too")
+    }
+
+    func testFriendCountsAsHumanForBotChatterCap() {
+        let chatter = [friend()] + (0..<5).map { _ in bot("b", ["a"]) }
+        XCTAssertEqual(decide("a", chatter, seen: 1, cap: 5), .none)
+        XCTAssertEqual(decide("a", chatter + [friend(["a"])], seen: 1, cap: 5), .mustReply)
+    }
 }

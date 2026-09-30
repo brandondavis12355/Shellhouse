@@ -12,10 +12,15 @@ public enum GroupWakePlanner {
         /// App-generated notices ("Step 2 done", "Goal paused"). Never wake
         /// anyone and never count toward bot-to-bot chatter.
         public var isSystem: Bool
-        public init(authorID: String?, mentionedIDs: Set<String>, isSystem: Bool = false) {
+        /// A human who is NOT the owner (a friend in a shared group). They
+        /// wake and can @mention bots like the owner can, but they cannot
+        /// un-pause or steer a goal.
+        public var isExternal: Bool
+        public init(authorID: String?, mentionedIDs: Set<String>, isSystem: Bool = false, isExternal: Bool = false) {
             self.authorID = authorID
             self.mentionedIDs = mentionedIDs
             self.isSystem = isSystem
+            self.isExternal = isExternal
         }
     }
 
@@ -56,7 +61,9 @@ public enum GroupWakePlanner {
         let pendingHasUser = pending.contains { $0.authorID == nil }
         let liveGoal = goalStatus == .active || goalStatus == .awaitingConfirmation || goalStatus == .paused
 
-        if goalStatus == .paused && !pendingHasUser { return .none }
+        // Only the owner can resume a paused goal; a friend's message can't.
+        let pendingHasOwner = pending.contains { $0.authorID == nil && !$0.isExternal }
+        if goalStatus == .paused && !pendingHasOwner { return .none }
 
         if !liveGoal && !pendingHasUser {
             var botTail = 0

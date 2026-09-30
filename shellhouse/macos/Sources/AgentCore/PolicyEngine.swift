@@ -170,6 +170,10 @@ public struct Approval: Sendable, Codable, Identifiable {
     /// `RunShellPermissions.extractBinary`), if this approval is eligible
     /// for an "always allow" decision. `nil` for every other tool.
     public let alwaysAllowCandidate: String?
+    /// Raised during a turn that included a friend's (untrusted) message:
+    /// this call needs an explicit yes every time, and no standing grant
+    /// ("always allow", "allow all shell") applies or can be created from it.
+    public let untrusted: Bool
 
     public init(
         id: String = "apr_\(UUID().uuidString.prefix(12))",
@@ -179,7 +183,8 @@ public struct Approval: Sendable, Codable, Identifiable {
         status: Status = .pending,
         createdAt: Date = Date(),
         decidedAt: Date? = nil,
-        alwaysAllowCandidate: String? = nil
+        alwaysAllowCandidate: String? = nil,
+        untrusted: Bool = false
     ) {
         self.id = id
         self.taskID = taskID
@@ -189,5 +194,6 @@ public struct Approval: Sendable, Codable, Identifiable {
         self.createdAt = createdAt
         self.decidedAt = decidedAt
         self.alwaysAllowCandidate = alwaysAllowCandidate
+        self.untrusted = untrusted
     }
 }

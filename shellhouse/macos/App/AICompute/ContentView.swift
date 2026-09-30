@@ -440,13 +440,14 @@ struct ContentView: View {
             // Explicit, synchronous sync rather than a stored closure over
             // `bots` — see `BotDirectory.sync`'s doc comment for why.
             botDirectory.sync(bots)
-            groupChats = GroupChatStore.load().map { GroupChatSession(id: $0.id, name: $0.name, memberBotIDs: $0.memberBotIDs, botDirectory: botDirectory, coordinatorBotID: $0.coordinatorBotID, stallLimit: $0.stallLimit, confirmTimeoutMinutes: $0.confirmTimeoutMinutes) }
+            groupChats = GroupChatStore.load().map { GroupChatSession(id: $0.id, name: $0.name, memberBotIDs: $0.memberBotIDs, botDirectory: botDirectory, coordinatorBotID: $0.coordinatorBotID, stallLimit: $0.stallLimit, confirmTimeoutMinutes: $0.confirmTimeoutMinutes, relayGroupID: $0.relayGroupID) }
             botDirectory.syncGroups(groupChats)
             StartupConfigLogger.log(bots: bots, groups: groupChats)
             // Reconnect to the friends relay (if configured) so the sidebar
             // badge reflects pending requests without opening the sheet.
             await FriendsManager.shared.connectIfConfigured()
             FriendsManager.shared.startAutoRefresh()
+            for group in groupChats { group.startRelayIfShared() }
         }
         .onChange(of: DebugSettings.shared.isEnabled) { _, isOn in
             if isOn { StartupConfigLogger.log(bots: bots, groups: groupChats) }
@@ -504,6 +505,7 @@ struct ContentView: View {
         groupChats.removeAll { $0.id == group.id }
         botDirectory.syncGroups(groupChats)
         if selectedItemID == "group:\(group.id)" { selectedItemID = nil }
+        Task { await group.deleteRelayCopy() }
         group.shutdown()
         group.cancelPendingPersist()
         GroupTranscriptStore.delete(groupID: group.id)

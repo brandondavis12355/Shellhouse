@@ -1522,7 +1522,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         groupName: String, otherMembers: [String], transcriptSoFar: String,
         wasMentioned: Bool, mentionedByBot: Bool = false,
         extraSuffix: String = "",
-        goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil
+        goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
+        untrustedInput: Bool = false
     ) async -> String? {
         let mustReply = wasMentioned && !mentionedByBot
         let rule: String
@@ -1549,7 +1550,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             + "plainly and stop @mentioning people."
         let suffix = "You're one of up to 6 bots in the group chat \"\(groupName)\", alongside: "
             + "\(otherMembers.joined(separator: ", ")). Messages below are labeled by who sent them. \(rule)\(goalRule)\(extraSuffix.isEmpty ? "" : "\n\n" + extraSuffix)"
-        var reply = await runIsolatedTask(systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler)
+        var reply = await runIsolatedTask(systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler, untrustedInput: untrustedInput)
         if mustReply, reply.contains("[[silent]]") {
             // Being called on (especially via @everyone) means every member
             // answers. A model that opted out anyway gets exactly one
@@ -1557,7 +1558,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             reply = await runIsolatedTask(
                 systemPromptSuffix: suffix + " Staying silent is NOT allowed for this turn — you were explicitly "
                     + "called on. Post a short reply; if you truly have nothing to add, say that in one sentence.",
-                goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: mentioned)", goalHandler: goalHandler
+                goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: mentioned)", goalHandler: goalHandler, untrustedInput: untrustedInput
             )
         }
         let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1699,7 +1700,8 @@ final class Bot: Identifiable, @unchecked Sendable {
 
     private func runIsolatedTask(
         systemPromptSuffix: String, goal: String, debugContext: String,
-        goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil
+        goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
+        untrustedInput: Bool = false
     ) async -> String {
         guard let sandbox, let handle else { return "\(name) has no running sandbox to work with right now." }
         return await Task {
@@ -1751,6 +1753,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                 sandboxID: handle.id,
                 tools: ToolRegistry(
                     skills: selectedSkills,
+                    // Untrusted turn (a friend's text is in context): nothing that
+                    // writes durable state — memory, tasks, routines — is offered,
+                    // so injected text can't plant a persistent instruction.
                     onRemember: { [weak self] text in
                         await MainActor.run { self?.addMemory(text) ?? false }
                     },
@@ -1851,6 +1856,14 @@ final class Bot: Identifiable, @unchecked Sendable {
                         }
                     }
                 }
+            ,
+                alwaysRequireApproval: untrustedInput,
+                // A friend's text is in context: nothing that writes durable
+                // state is offered, so injected text can't plant a lasting
+                // instruction (memory, tasks, routines).
+                excludedTools: untrustedInput
+                    ? ["remember", "remember_task", "create_routine", "edit_routine", "remove_routine"]
+                    : []
             )
 
             await runtime.start(systemPrompt: fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract, goal: withRelevantMemoryContext(goal))

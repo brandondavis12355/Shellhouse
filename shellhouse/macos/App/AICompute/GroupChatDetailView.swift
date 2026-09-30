@@ -34,9 +34,16 @@ struct GroupChatDetailView: View {
                 MemberAvatarStack(members: resolvedMembers)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(group.name).font(.title2)
-                    Text("\(group.memberBotIDs.count) member\(group.memberBotIDs.count == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text("\(group.memberBotIDs.count) member\(group.memberBotIDs.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if group.isShared {
+                            Label("Shared with friends", systemImage: "person.2.wave.2")
+                                .font(.caption2)
+                                .foregroundStyle(.teal)
+                        }
+                    }
                 }
                 Spacer()
                 Button(action: onOpenSettings) {
@@ -328,6 +335,9 @@ struct GroupChatSettingsView: View {
             }
             .frame(height: 200)
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+
+            Divider()
+            GroupSharingSection(group: group)
 
             Divider()
             Text("Goals").font(.caption).foregroundStyle(.secondary)

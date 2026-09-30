@@ -17,6 +17,8 @@ struct GroupChat: Codable, Identifiable {
     var coordinatorBotID: String?
     var stallLimit: Int?
     var confirmTimeoutMinutes: Int?
+    /// Set while this group is shared with friends through the relay.
+    var relayGroupID: String?
 }
 
 enum GroupChatStore {
@@ -58,6 +60,11 @@ struct GroupMessage: Codable, Identifiable {
     /// App-generated notice (goal set, step done, paused…), not a member
     /// or the user. Optional so older transcripts still decode.
     var isSystem: Bool?
+    /// Set for a message written by a friend (not the owner, not a bot).
+    /// Untrusted input: see `GroupChatSession.turnIsUntrusted`.
+    var externalUserID: String?
+    /// The relay's sequence number for a message that arrived from a friend.
+    var relaySeq: Int?
 }
 
 enum GroupTranscriptStore {

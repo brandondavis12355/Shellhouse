@@ -35,7 +35,7 @@ final class FriendsManager {
     var notice: (text: String, isError: Bool)?
     private(set) var isBusy = false
 
-    private var client: RelayClient?
+    private(set) var client: RelayClient?
     private var refreshTask: Task<Void, Never>?
     private let keyStore = KeychainRelayKeyStore()
 
@@ -444,5 +444,78 @@ struct FriendsView: View {
         Task {
             if await manager.redeem(code: code) { redeemCode = "" }
         }
+    }
+}
+
+/// "Share with friends" controls inside a group's settings sheet.
+struct GroupSharingSection: View {
+    @Bindable var group: GroupChatSession
+    @Bindable private var friends = FriendsManager.shared
+
+    @State private var members: [RelayFriend] = []
+    @State private var error: String?
+    @State private var isWorking = false
+    @State private var confirmStop = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Friends").font(.caption).foregroundStyle(.secondary)
+            if !friends.isConnected {
+                Text("Connect to a relay and add friends first (Friends, in the sidebar) to share this group.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if !group.isShared {
+                Text("Friends you add can read this chat and post in it. Your bots keep running only on your Mac. "
+                    + "Only messages from now on are shared; earlier history stays private. Friends' messages are treated as "
+                    + "untrusted: tools that need approval always ask you while a friend's message is in the conversation.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Share with friends") { Task { await share() } }.disabled(isWorking)
+            } else {
+                if !group.relayStatus.isEmpty {
+                    Text(group.relayStatus).font(.caption).foregroundStyle(.orange)
+                }
+                if friends.friends.isEmpty {
+                    Text("You have no friends yet — invite someone from Friends.").font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(friends.friends) { friend in
+                    Toggle(isOn: Binding(
+                        get: { members.contains { $0.userId == friend.userId } },
+                        set: { on in Task { await setMember(friend, on) } }
+                    )) {
+                        Label(friend.displayName, systemImage: "person.crop.circle")
+                    }
+                    .disabled(isWorking)
+                }
+                Button("Stop sharing…", role: .destructive) { confirmStop = true }.disabled(isWorking)
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
+        }
+        .task { await reloadMembers() }
+        .confirmationDialog("Stop sharing “\(group.name)”?", isPresented: $confirmStop, titleVisibility: .visible) {
+            Button("Stop sharing", role: .destructive) { Task { await group.stopSharing(); members = [] } }
+        } message: {
+            Text("Friends lose access and the relay's copy of the chat is deleted. This group and its history stay on your Mac.")
+        }
+    }
+
+    private func reloadMembers() async {
+        guard let groupID = group.relayGroupID, let client = friends.client else { return }
+        do { members = try await client.group(groupID).members } catch { self.error = FriendsManager.describe(error) }
+    }
+
+    private func share() async {
+        isWorking = true; defer { isWorking = false }
+        do { try await group.shareWithFriends(); error = nil; await reloadMembers() }
+        catch { self.error = FriendsManager.describe(error) }
+    }
+
+    private func setMember(_ friend: RelayFriend, _ on: Bool) async {
+        guard let groupID = group.relayGroupID, let client = friends.client else { return }
+        isWorking = true; defer { isWorking = false }
+        do {
+            if on { try await client.addMember(friend.userId, to: groupID) }
+            else { try await client.removeMember(friend.userId, from: groupID) }
+            error = nil
+        } catch { self.error = FriendsManager.describe(error) }
+        await reloadMembers()
     }
 }

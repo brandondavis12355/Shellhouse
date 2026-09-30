@@ -18,8 +18,17 @@ public struct ToolRegistry: Sendable {
         _ secretStore: SecretStore
     ) async -> [String: Any]
 
-    public let schemas: [ToolSchema]
-    private let executors: [String: Executor]
+    public private(set) var schemas: [ToolSchema]
+    private var executors: [String: Executor]
+
+    /// The same registry minus the named tools — neither offered to the model
+    /// nor executable if it asks for one anyway.
+    public func removing(_ names: Set<String>) -> ToolRegistry {
+        var copy = self
+        copy.schemas = schemas.filter { !names.contains($0.name) }
+        copy.executors = executors.filter { !names.contains($0.key) }
+        return copy
+    }
 
     /// `skills` are NOT injected into the system prompt in full — `ContentView`
     /// only puts a name+description index there. Passing them here is what
