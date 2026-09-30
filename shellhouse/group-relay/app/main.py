@@ -34,6 +34,7 @@ MAX_ACTIVE_INVITES = 10
 INVITE_TTL_SECONDS = 24 * 3600
 MAX_MESSAGE_CHARS = 8000
 MAX_LONG_POLL_SECONDS = 30
+MAX_MESSAGES_PER_GROUP = int(os.environ.get("RELAY_MAX_MESSAGES_PER_GROUP", "5000"))
 REGISTRATION_TOKEN = os.environ.get("RELAY_REGISTRATION_TOKEN", "")
 
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -435,11 +436,23 @@ async def post_message(group_id: str, ident=Depends(auth.authenticate)):
             seq = cur.lastrowid
             duplicate = False
         except sqlite3.IntegrityError:
-            row = db.execute(
-                "SELECT seq FROM messages WHERE group_id=? AND speaker_user_id=? AND client_msg_id=?",
-                (group_id, speaker_user_id, req.client_msg_id),
-            ).fetchone()
+            row = None
+            if req.client_msg_id:
+                row = db.execute(
+                    "SELECT seq FROM messages WHERE group_id=? AND speaker_user_id=? AND client_msg_id=?",
+                    (group_id, speaker_user_id, req.client_msg_id),
+                ).fetchone()
+            if row is None:   # a constraint failure that isn't a retry of an earlier post
+                raise HTTPException(status_code=409, detail="message could not be stored")
             seq, duplicate = row["seq"], True
+        else:
+            # Retention: keep only the newest MAX_MESSAGES_PER_GROUP per group so
+            # a busy group can't grow the database without bound.
+            db.execute(
+                "DELETE FROM messages WHERE group_id=? AND seq <= "
+                "(SELECT seq FROM messages WHERE group_id=? ORDER BY seq DESC LIMIT 1 OFFSET ?)",
+                (group_id, group_id, MAX_MESSAGES_PER_GROUP),
+            )
     return {"seq": seq, "duplicate": duplicate}
 
 
@@ -463,11 +476,17 @@ async def get_messages(group_id: str, after: int = 0, limit: int = 100, wait: in
     with store.connect(write=False) as db:
         _require_member(db, group_id, user_id)
     deadline = time.monotonic() + wait
+
+    def _still_member() -> None:
+        with store.connect(write=False) as db:   # membership can be revoked mid-poll
+            _require_member(db, group_id, user_id)
+
     while True:
-        messages = _fetch_messages(group_id, max(after, 0), limit)
+        # SQLite is synchronous: run it off the event loop so a room full of
+        # long-polling clients can't stall every other request.
+        messages = await asyncio.to_thread(_fetch_messages, group_id, max(after, 0), limit)
         if messages or time.monotonic() >= deadline:
             latest = messages[-1]["seq"] if messages else max(after, 0)
             return {"messages": messages, "latest_seq": latest}
         await asyncio.sleep(0.5)
-        with store.connect(write=False) as db:   # membership can be revoked mid-poll
-            _require_member(db, group_id, user_id)
+        await asyncio.to_thread(_still_member)

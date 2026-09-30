@@ -66,10 +66,19 @@ public enum RelayError: LocalizedError, Sendable, Equatable {
     }
 
     /// The relay told us we're no longer allowed here (removed from the group,
-    /// blocked, unknown) — retrying won't help.
+    /// blocked, deleted, or this identity is unknown) — retrying won't help.
+    /// A 401 for anything else (clock skew, a replayed nonce) is transient.
     public var isPermanent: Bool {
-        if case .http(let status, _) = self { return status == 401 || status == 403 || status == 404 }
-        return false
+        guard case .http(let status, let detail) = self else { return false }
+        if status == 401 { return detail.localizedCaseInsensitiveContains("unknown user") }
+        return status == 403 || status == 404
+    }
+
+    /// The relay rejected THIS payload (bad/oversized message) — retrying the
+    /// same message can never succeed, so a queue should skip it, not loop.
+    public var isRejectedPayload: Bool {
+        guard case .http(let status, _) = self else { return false }
+        return status == 400 || status == 413 || status == 422
     }
 }
 
@@ -166,6 +175,8 @@ public actor RelayClient {
         encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
     }
+
+    deinit { session.invalidateAndCancel() }   // the session retains its pinning delegate
 
     // MARK: Transport
 

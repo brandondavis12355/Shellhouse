@@ -72,12 +72,13 @@ Message rules: members post `kind:"human"` only, and the **server** sets the
 speaker from the authenticated identity (no spoofing). Only the group owner may
 post `bot` or `system` messages (the owner's app mirrors its bots' replies).
 Text ≤ 8000 chars, control characters stripped, `client_msg_id` makes retries
-idempotent.
+idempotent. Only the newest 5000 messages per group are kept. A member added
+later can read the group's whole retained history.
 
 ## Limits
 
 Body 64 KB · 240 requests/min/user · 30 messages/min/user · 10 registrations/min/IP
-· 20 humans/group · 50 groups/owner · 200 friends. All configurable with
+· 20 humans/group · 50 groups/owner · 200 friends · 5000 messages/group. All configurable with
 `RELAY_*` env vars (see `app/`).
 
 ## Threat model (short)

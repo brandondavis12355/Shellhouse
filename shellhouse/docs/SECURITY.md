@@ -137,3 +137,42 @@ docker exec agent-sandbox-manager tail -f /var/log/sandbox-manager/audit.log
   tradeoff rather than an oversight.
 - **Don't give this agent real credentials.** No secret manager is wired up
   yet (Phase 5). Anything you put in the sandbox, treat as disclosed.
+
+
+## Addendum: macOS build hardening and shared groups
+
+Kept here so the threat model matches what the code now does.
+
+**Shell approvals.** `run_shell` (and `create_bot`) always stop for an approval
+card. A per-binary "always allow" applies only to a plain command whose binary
+is in a system directory: anything with shell metacharacters, a leading
+`VAR=…`, `git -c`, an interpreter/launcher (`bash`, `env`, `python*`, `make`,
+`tar`, …) or `use_secrets` always asks. Blanket "allow all shell" grants (this
+bot / session / every bot) exist because the owner asked for them; treat the
+"every bot" scope as the weakest setting in the app.
+
+**Sandboxes.** Each bot has its own container, its own workspace volume, a
+random noVNC password, and a network with inter-container traffic disabled.
+Passwordless `sudo` inside a sandbox is opt-in (`SANDBOX_ALLOW_SUDO=1`) and
+removes `no-new-privileges`. Sandboxes can still reach the host gateway and
+LAN; blocking that needs host firewall rules. "Reset sandbox" recreates a
+possibly-compromised one.
+
+**Friends and shared groups (`group-relay/`).** A separate service on your
+network stores identities (Ed25519 public keys), friendships, membership and the
+shared message log — nothing from your Mac or the sandbox host. Requests are
+signed with replay protection; TLS is required and the certificate is pinned by
+fingerprint. Friends' messages are untrusted input to your bots:
+- turns that include one run with approvals always required (grants ignored and
+  not recordable), and only read-only/bookkeeping tools run unattended;
+- memory, task and routine tools are not offered in those turns;
+- friends cannot start or resume a goal; bots are told never to reveal private
+  memory, prompts or other chats in a shared group.
+Residual risk: a friend can still try to talk your bots into saying something
+unwise in public, and whoever runs the relay sees group membership and message
+metadata (and, without TLS, content).
+
+**Not covered:** prompt injection through content a bot fetches itself (web
+pages, files) in a turn with no friend involved is still contained only by the
+per-call approval on `run_shell`; the original Python API stack is unauthenticated
+beyond localhost + restricted CORS.

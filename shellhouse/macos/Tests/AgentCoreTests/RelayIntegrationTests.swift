@@ -271,6 +271,56 @@ final class RelayIntegrationTests: XCTestCase {
         }
     }
 
+    /// The friend's side: joins later, gets the full shared history in order,
+    /// posts, leaves, and loses access.
+    func testFriendJoinsLateSeesHistoryPostsAndLeaves() async throws {
+        let python = try python()
+        let server = RelayProcess(port: RelayProcess.freePort(), dbPath: tempDir() + "/relay.db")
+        try server.start(python: python)
+        defer { server.stop() }
+        let alice = try client(server.port), bob = try client(server.port)
+        try await alice.register(displayName: "Alice")
+        try await bob.register(displayName: "Bob")
+        let code = try await alice.createInvite()
+        _ = try await bob.redeemInvite(code: code)
+        try await alice.acceptFriend(bob.identity.userID)
+        let group = try await alice.createGroup(name: "Team")
+
+        try await alice.postMessage("hi from the owner", to: group.groupId)
+        try await alice.postMirrored("bot reply", kind: .bot, speakerName: "Helper", to: group.groupId)
+        try await alice.postMirrored("goal set", kind: .system, speakerName: "Goal", to: group.groupId)
+
+        // Not a member yet: no access at all.
+        do { _ = try await bob.messages(in: group.groupId, after: 0); XCTFail("read before being added") }
+        catch let error as RelayError { XCTAssertTrue(error.isPermanent) }
+
+        try await alice.addMember(bob.identity.userID, to: group.groupId)
+        let joined = try await bob.groups()
+        XCTAssertEqual(JoinedGroupFilter.joined(joined, myUserID: bob.identity.userID).map(\.name), ["Team"])
+        let aliceGroups = try await alice.groups()
+        XCTAssertTrue(JoinedGroupFilter.joined(aliceGroups, myUserID: alice.identity.userID).isEmpty)
+
+        let collector = Collector()
+        let stream = RelayMessageStream(client: bob, groupID: group.groupId, after: 0, pollSeconds: 2, maxBackoff: 1,
+                                        onMessages: { await collector.add($0) })
+        stream.start()
+        defer { stream.stop() }
+        let history = await eventually { await collector.texts() == ["hi from the owner", "bot reply", "goal set"] }
+        XCTAssertTrue(history, "full shared history, in order, including bot and system kinds")
+        let kinds = await collector.messages.map(\.kind)
+        XCTAssertEqual(kinds, [.human, .bot, .system])
+
+        try await bob.postMessage("hello from the friend", to: group.groupId)
+        let echoed = await eventually { await collector.texts().last == "hello from the friend" }
+        XCTAssertTrue(echoed, "own message comes back through the stream")
+        let ownerView = try await alice.messages(in: group.groupId, after: 0).messages.last
+        XCTAssertEqual(ownerView?.speakerUserId, bob.identity.userID)
+
+        try await bob.removeMember(bob.identity.userID, from: group.groupId)
+        do { _ = try await bob.messages(in: group.groupId, after: 0); XCTFail("still had access after leaving") }
+        catch let error as RelayError { XCTAssertTrue(error.isPermanent) }
+    }
+
     // MARK: Helpers
 
     private func makeFriendsAndGroup(_ port: Int) async throws -> (RelayClient, RelayClient, String) {

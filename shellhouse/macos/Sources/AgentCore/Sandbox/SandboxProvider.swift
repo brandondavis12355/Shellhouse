@@ -146,6 +146,14 @@ public extension SandboxProvider {
     /// reasonably write the path.
     func safeRelativePath(_ path: String) throws -> String {
         let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        // Walk the RAW components first: `standardizingPath` on "/../x" quietly
+        // clamps it to "/x", which would turn an escape attempt into a
+        // different, valid-looking path instead of rejecting it.
+        var depth = 0
+        for component in trimmed.split(separator: "/", omittingEmptySubsequences: true) {
+            if component == ".." { depth -= 1; if depth < 0 { throw SandboxError.pathEscapesWorkspace(path) } }
+            else if component != "." { depth += 1 }
+        }
         let normalized = ("/" + trimmed) as NSString
         var standardized = normalized.standardizingPath
         if standardized.split(separator: "/").contains("..") {

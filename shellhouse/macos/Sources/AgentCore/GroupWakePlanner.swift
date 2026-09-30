@@ -38,9 +38,11 @@ public enum GroupWakePlanner {
         case optional
     }
 
-    /// Consecutive bot-authored messages allowed after the last user
-    /// message before bots stop waking each other. Only a new user
-    /// message resets it — the backstop against endless bot-to-bot loops.
+    /// Default for the consecutive bot-authored messages allowed after the
+    /// last human message before bots stop waking each other (a group
+    /// without a goal). `GroupChatSession` passes its configurable stall
+    /// limit instead; with a live goal the goal's own progress counter
+    /// replaces this. Only a new human message resets it.
     public static let maxBotMessagesPerUserMessage = 40
 
     /// - Parameter goalStatus: the group's live goal status, if any. With a

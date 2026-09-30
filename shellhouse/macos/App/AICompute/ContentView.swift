@@ -70,6 +70,7 @@ struct ContentView: View {
     @State private var showingAppSettings = false
     @State private var showingFriends = false
     @Bindable private var friendsManager = FriendsManager.shared
+    @Bindable private var joinedGroups = JoinedGroups.shared
     /// The bot currently being configured, if any — `.sheet(item:)` rather
     /// than a bool, so opening it always has a specific bot attached and
     /// dismissing it (setting this back to `nil`) is the one signal that
@@ -119,6 +120,12 @@ struct ContentView: View {
         guard let selectedItemID, selectedItemID.hasPrefix("bot:") else { return nil }
         let botID = String(selectedItemID.dropFirst("bot:".count))
         return bots.first { $0.id == botID }
+    }
+
+    private var selectedJoinedGroup: JoinedGroupSession? {
+        guard let selectedItemID, selectedItemID.hasPrefix("joined:") else { return nil }
+        let groupID = String(selectedItemID.dropFirst("joined:".count))
+        return joinedGroups.sessions.first { $0.groupID == groupID }
     }
 
     private var selectedGroup: GroupChatSession? {
@@ -171,6 +178,14 @@ struct ContentView: View {
                         }
                         .onMove { source, destination in
                             moveBots(inSection: section.group, from: source, to: destination)
+                        }
+                    }
+                }
+                if !joinedGroups.sessions.isEmpty {
+                    Section("Shared with me") {
+                        ForEach(joinedGroups.sessions) { session in
+                            JoinedGroupSidebarRow(session: session)
+                                .tag("joined:\(session.groupID)")
                         }
                     }
                 }
@@ -257,6 +272,9 @@ struct ContentView: View {
             if let group = selectedGroup {
                 GroupChatDetailView(group: group, allBots: bots, onOpenSettings: { groupSettingsTarget = group })
                     .id(group.id)
+            } else if let joined = selectedJoinedGroup {
+                JoinedGroupView(session: joined, onLeft: { selectedItemID = bots.first.map { "bot:\($0.id)" } })
+                    .id(joined.groupID)
             } else if let bot = selectedBot {
                 BotDetailView(bot: bot, onOpenSettings: { botSettingsTarget = bot }, allBots: bots)
                     // Forces a fresh view identity per bot so `.onAppear`
@@ -279,6 +297,13 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(preferredColorScheme)
+        .onChange(of: joinedGroups.sessions.map(\.groupID)) { _, ids in
+            // A joined group vanished (removed, left, deleted): don't leave it selected.
+            if let selected = selectedItemID, selected.hasPrefix("joined:"),
+               !ids.contains(String(selected.dropFirst("joined:".count))) {
+                selectedItemID = bots.first.map { "bot:\($0.id)" }
+            }
+        }
         .sheet(isPresented: $showingFriends) {
             FriendsView()
         }
@@ -448,6 +473,11 @@ struct ContentView: View {
             await FriendsManager.shared.connectIfConfigured()
             FriendsManager.shared.startAutoRefresh()
             for group in groupChats { group.startRelayIfShared() }
+            // Shared groups follow the relay connection: (re)start sync whenever
+            // it comes up (including a later connect from the Friends sheet),
+            // stop it when it goes away.
+            FriendsManager.shared.onConnected = { for group in groupChats { group.startRelayIfShared() } }
+            FriendsManager.shared.onDisconnected = { for group in groupChats { group.stopRelay() } }
         }
         .onChange(of: DebugSettings.shared.isEnabled) { _, isOn in
             if isOn { StartupConfigLogger.log(bots: bots, groups: groupChats) }

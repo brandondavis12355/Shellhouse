@@ -34,6 +34,23 @@ final class RunShellPermissionsTests: XCTestCase {
         XCTAssertNil(binary("PATH=/tmp:$PATH git status"))
     }
 
+    func testPathedBinariesOutsideSystemDirsAreNotEligible() {
+        XCTAssertNil(binary("/tmp/evil/git status"))
+        XCTAssertNil(binary("./git status"))
+        XCTAssertEqual(binary("/usr/bin/git status"), "git")
+        XCTAssertEqual(binary("/opt/homebrew/bin/git status"), "git")
+    }
+
+    func testMoreLaunchersAndVersionedInterpretersAreNotEligible() {
+        for command in ["python3.11 x.py", "node18 x.js", "perl5.36 x", "make all", "npx thing", "tar xf a.tar", "docker run x",
+                        "sed -e 's/a/b/' f", "command ls", "tee /etc/x"] {
+            XCTAssertNil(binary(command), command)
+        }
+        XCTAssertEqual(binary("curl -s https://example.com"), "curl", "curl/wget stay grantable — the user's call")
+        XCTAssertEqual(binary("ls -la"), "ls")
+        XCTAssertEqual(binary("git log"), "git")
+    }
+
     func testEmptyIsNil() {
         XCTAssertNil(binary("   "))
     }

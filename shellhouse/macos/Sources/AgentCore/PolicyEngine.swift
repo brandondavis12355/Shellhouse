@@ -52,7 +52,7 @@ public enum Policy: Sendable {
         // Memory: recording and recalling task findings is routine.
         // `remember` used to require approval (the user decides what's
         // kept about them) — dropped to `.allow` since bots are now
-        // instructed to remember proactively (see `defaultSystemPrompt`),
+        // instructed to remember proactively (see `BuiltInSystemPrompt`),
         // and a per-call approval prompt for that would defeat the point.
         // Still visible/removable after the fact in the bot's own
         // Settings sheet, so nothing written this way is silently

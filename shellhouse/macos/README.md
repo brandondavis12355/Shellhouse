@@ -68,7 +68,11 @@ macos/
   screenshots, GUI input, plus the memory/task/routine/bot-directory
   tools above.
 - **`PolicyEngine`** — every tool is `.allow`, `.requireApproval`, or
-  `.deny`. Nothing risky runs without you seeing an approval card first.
+  `.deny`. Arbitrary shell commands (and creating bots) always stop for
+  an approval card; per-binary and "allow all shell" grants exist but never
+  cover chained commands, interpreters, or commands that use secrets.
+  File writes, web access and GUI input are allowed by default, and ask
+  first whenever a friend's message is in the conversation (shared groups).
 - **Skills** (`../skills/*.md`, 47 and counting) — lazily-loaded
   playbooks a bot pulls in only when the task actually calls for it,
   instead of stuffing every possible instruction into every prompt.
@@ -137,3 +141,15 @@ on the Mac instead of in containers. See `../docs/MACOS-NATIVE.md` for the
 original design notes (some now superseded by what's actually built) and
 `../docs/SECURITY.md` for the privilege split between the app and the
 sandbox host.
+
+## Goals, asynchronous groups and friends
+
+- Group members run **concurrently** and reply as soon as they're ready; @mentions
+  keep the conversation going (`GroupChatSession`, `GroupWakePlanner`).
+- A group can have a **goal** with a checklist; only evidence-backed step
+  completions count as progress, and a stall pauses the group
+  (`GroupGoal`, `goal-driven-work` skill).
+- **Friends** share groups through the opt-in `../group-relay` service:
+  invite codes, signed requests, pinned TLS, friends' text treated as untrusted
+  (see `../docs/SECURITY.md`). Groups friends invite you to appear under
+  "Shared with me".

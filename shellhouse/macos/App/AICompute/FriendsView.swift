@@ -36,6 +36,10 @@ final class FriendsManager {
     private(set) var isBusy = false
 
     private(set) var client: RelayClient?
+    /// Fired after every successful (re)connect / on disconnect, so shared
+    /// groups can restart or stop their live sync.
+    var onConnected: () -> Void = {}
+    var onDisconnected: () -> Void = {}
     private var refreshTask: Task<Void, Never>?
     private let keyStore = KeychainRelayKeyStore()
 
@@ -60,10 +64,17 @@ final class FriendsManager {
     }
 
     func connect() async {
+        guard phase != .connecting else { return }   // one connect at a time
         let problems = settings.problems
         guard problems.isEmpty else {
             phase = .failed(problems.joined(separator: " "))
             return
+        }
+        // Reconnecting (possibly to a different relay): drop every stream that
+        // still holds the old client before building the new one.
+        if client != nil {
+            onDisconnected()
+            JoinedGroups.shared.reset()
         }
         phase = .connecting
         notice = nil
@@ -77,8 +88,11 @@ final class FriendsManager {
             myUserID = identity.userID
             phase = .connected
             await refresh()
+            onConnected()
         } catch {
             client = nil
+            onDisconnected()
+            JoinedGroups.shared.reset()
             phase = .failed(Self.describe(error))
         }
     }
@@ -101,6 +115,8 @@ final class FriendsManager {
     func disconnect() {
         stopAutoRefresh()
         client = nil
+        onDisconnected()
+        JoinedGroups.shared.reset()
         friends = []; incoming = []; outgoing = []
         inviteCode = nil
         phase = .notConfigured
@@ -115,6 +131,10 @@ final class FriendsManager {
             friends = list.friends
             incoming = list.incoming
             outgoing = list.outgoing
+            // Groups friends have invited me to (and ones I've left or been removed from).
+            if let groups = try? await client.groups(), self.client === client {
+                JoinedGroups.shared.sync(groups: groups, client: client)
+            }
         } catch {
             notice = (Self.describe(error), true)
         }

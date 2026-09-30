@@ -20,8 +20,11 @@ final class PolicyTests: XCTestCase {
         XCTAssertEqual(Policy.evaluate(tool: "definitely_not_a_tool"), .requireApproval)
     }
 
-    func testDurableUserMemoryRequiresApproval() {
-        XCTAssertEqual(Policy.evaluate(tool: "remember"), .requireApproval)
+    /// `remember` was deliberately moved to `.allow` (bots remember proactively;
+    /// the list is visible and removable in Settings). What matters now is that
+    /// durable-state tools are withheld in untrusted runs — see UntrustedApprovalTests.
+    func testMemoryToolsAreAllowedByPolicy() {
+        XCTAssertEqual(Policy.evaluate(tool: "remember"), .allow)
         XCTAssertEqual(Policy.evaluate(tool: "save_evidence"), .allow)
     }
 
@@ -90,5 +93,8 @@ final class PathSafetyTests: XCTestCase {
         let provider = Dummy()
         XCTAssertThrowsError(try provider.safeRelativePath("../../etc/passwd"))
         XCTAssertThrowsError(try provider.safeRelativePath("a/../../../etc/passwd"))
+        XCTAssertThrowsError(try provider.safeRelativePath("/../x"))
+        XCTAssertEqual(try provider.safeRelativePath("a/../b.txt"), "b.txt", "staying inside is fine")
+        XCTAssertEqual(try provider.safeRelativePath("/workspace/notes.txt"), "notes.txt")
     }
 }

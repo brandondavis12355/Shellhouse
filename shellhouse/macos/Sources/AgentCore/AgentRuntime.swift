@@ -126,6 +126,14 @@ public actor AgentRuntime {
     private var callFingerprints: [String: Int] = [:]
     private static let loopRepeatThreshold = 3
 
+    /// Tools that may still run without approval during an untrusted run:
+    /// they only read this bot's own state or update shared bookkeeping.
+    static let untrustedSafeTools: Set<String> = [
+        "list_files", "read_file", "screenshot", "list_windows", "use_skill", "search_memory", "recall_memory",
+        "list_routines", "get_profile", "list_tasks", "list_secrets", "list_bots", "complete_task", "update_user",
+        "get_goal", "update_goal_step", "propose_goal", "add_goal_step", "propose_goal_complete",
+    ]
+
     /// Screenshots dominate token cost once skills are lazy-loaded (see
     /// ToolRegistry/ContentView) rather than dumped into the system prompt.
     /// Keeping every screenshot in a long run burns the token budget on
@@ -350,7 +358,15 @@ public actor AgentRuntime {
             return true
         }
 
-        switch Policy.evaluate(tool: call.name) {
+        var decision = Policy.evaluate(tool: call.name)
+        // In an untrusted run (a friend's text is in context) only read-only
+        // and bookkeeping tools may run unattended; anything that writes,
+        // browses, or drives the desktop asks first — even if the default
+        // policy would allow it.
+        if alwaysRequireApproval, decision == .allow, !Self.untrustedSafeTools.contains(call.name) {
+            decision = .requireApproval
+        }
+        switch decision {
         case .deny:
             appendToolResult(name: call.name, observation: ["error": "denied by policy"])
             return true

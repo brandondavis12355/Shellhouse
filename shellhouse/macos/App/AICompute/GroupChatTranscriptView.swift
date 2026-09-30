@@ -5,7 +5,7 @@ import AppKit
 /// whichever bot actually said it (or "You"), unlike `TranscriptView`
 /// (one bot, one color throughout). No streaming-in-place here: a
 /// member's reply appears once its isolated turn finishes, not
-/// token-by-token — see `GroupChatSession.runTurn`.
+/// token-by-token — see `GroupChatSession.runWorker`.
 struct GroupChatTranscriptView: View {
     let messages: [GroupMessage]
     /// For color lookup only — `speakerBotID` -> hex, so a member's

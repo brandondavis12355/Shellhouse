@@ -49,11 +49,13 @@ final class GroupChatSession: Identifiable {
     /// other members hold off — otherwise they'd start working before the
     /// plan exists. Bounded wait; cleared by the owner's worker.
     private var intakeOwnerID: String?
+    private var intakeGeneration = 0
     // Friends sharing (see FriendsView / group-relay). nil = a private, local group.
     var relayGroupID: String?
     private(set) var relayStatus = ""
     private var relayStream: RelayMessageStream?
     private var mirrorTask: Task<Void, Never>?
+    private var mirrorGeneration = 0
     private var goalPersistTask: Task<Void, Never>?
     private var confirmTimerTask: Task<Void, Never>?
 
@@ -126,11 +128,14 @@ final class GroupChatSession: Identifiable {
             persistGoal()
         }
         intakeOwnerID = goal?.isLive == true ? nil : pickOwner(forUserText: text)?.id
-        if let pendingOwner = intakeOwnerID {
-            // Safety valve: never leave the other members waiting on intake.
+        intakeGeneration += 1
+        if intakeOwnerID != nil {
+            // Safety valve: never leave the other members waiting on intake. Keyed
+            // on the generation so an older message's valve can't release a newer gate.
+            let generation = intakeGeneration
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 90_000_000_000)
-                if self?.intakeOwnerID == pendingOwner { self?.intakeOwnerID = nil }
+                if self?.intakeGeneration == generation { self?.intakeOwnerID = nil }
             }
         }
         notifyNewMessage(authorID: nil)
@@ -281,6 +286,9 @@ final class GroupChatSession: Identifiable {
     /// "nothing new" check and the `defer`, so a wake can't slip past.
     private func runWorker(botID: String) async {
         defer {
+            // An owner that exits without running intake (nothing new, no
+            // longer a member, cancelled) must not leave the others waiting.
+            if intakeOwnerID == botID { intakeOwnerID = nil }
             workers[botID] = nil
             activeSpeakers.removeAll { $0.id == botID }
             refreshBusy()
@@ -358,7 +366,6 @@ final class GroupChatSession: Identifiable {
                 goalHandler: handler,
                 untrustedInput: untrusted
             )
-            if intakeOwnerID == botID { intakeOwnerID = nil }
             guard let reply, !Task.isCancelled else { continue }
 
             // An optional reply computed against a stale chat is more likely
@@ -668,6 +675,8 @@ final class GroupChatSession: Identifiable {
     /// local notice — the local group is going away too).
     func deleteRelayCopy() async {
         stopRelay()
+        UserDefaults.standard.removeObject(forKey: mirrorCursorKey)
+        UserDefaults.standard.removeObject(forKey: lastSeqKey)
         if let groupID = relayGroupID, let client = FriendsManager.shared.client {
             try? await client.deleteGroup(groupID)
         }
@@ -701,6 +710,7 @@ final class GroupChatSession: Identifiable {
     func stopRelay() {
         relayStream?.stop()
         relayStream = nil
+        mirrorGeneration += 1
         mirrorTask?.cancel()
         mirrorTask = nil
     }
@@ -730,15 +740,19 @@ final class GroupChatSession: Identifiable {
 
     private func scheduleMirror() {
         guard relayGroupID != nil, mirrorTask == nil, FriendsManager.shared.client != nil else { return }
-        mirrorTask = Task { @MainActor [weak self] in await self?.drainMirror() }
+        mirrorGeneration += 1
+        let generation = mirrorGeneration
+        mirrorTask = Task { @MainActor [weak self] in await self?.drainMirror(generation: generation) }
     }
 
     /// Posts local messages (owner, bots, system notices) to the relay in order.
     /// Idempotent server-side (`client_msg_id` = the message id), so retries and
     /// restarts can't double-post. No `await` between the final "nothing left"
     /// check and clearing `mirrorTask`, so a new message can't slip past.
-    private func drainMirror() async {
-        defer { mirrorTask = nil }
+    private func drainMirror(generation: Int) async {
+        // Only the CURRENT drain may clear the handle: a stopRelay → restart
+        // in between must not have this (cancelled) one wipe the new one's.
+        defer { if mirrorGeneration == generation { mirrorTask = nil } }
         var backoff = 1.0
         while !Task.isCancelled {
             guard let groupID = relayGroupID, let client = FriendsManager.shared.client else { return }
@@ -760,6 +774,11 @@ final class GroupChatSession: Identifiable {
             } catch let error as RelayError where error.isPermanent {
                 relayStatus = "Sharing stopped: \(error.localizedDescription)"
                 return
+            } catch let error as RelayError where error.isRejectedPayload {
+                // The relay refuses this one message (too big / malformed);
+                // retrying forever would block everything behind it. Skip it.
+                mirrorCursor = cursor + 1
+                backoff = 1
             } catch {
                 try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
                 backoff = min(backoff * 2, 30)

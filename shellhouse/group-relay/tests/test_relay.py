@@ -266,3 +266,19 @@ def test_delete_group_removes_everything(client, make_user, befriend):
     assert alice.call("GET", f"/v1/groups/{gid}").status_code == 404
     with store.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+
+
+def test_retention_keeps_only_newest_messages(client, make_user, befriend, monkeypatch):
+    monkeypatch.setattr(main, "MAX_MESSAGES_PER_GROUP", 5)
+    monkeypatch.setattr(auth, "MESSAGES_PER_MINUTE", 1000)
+    alice, bob, gid = _two_member_group(make_user, befriend)
+    for i in range(12):
+        bob.call("POST", f"/v1/groups/{gid}/messages", {"text": f"m{i}"})
+    messages = alice.call("GET", f"/v1/groups/{gid}/messages?limit=200").json()["messages"]
+    assert [m["text"] for m in messages] == [f"m{i}" for i in range(7, 12)]
+    # Another group's history is untouched by this group's pruning.
+    other = _group(alice)
+    alice.call("POST", f"/v1/groups/{other}/messages", {"text": "keep me"})
+    for i in range(8):
+        bob.call("POST", f"/v1/groups/{gid}/messages", {"text": f"x{i}"})
+    assert [m["text"] for m in alice.call("GET", f"/v1/groups/{other}/messages").json()["messages"]] == ["keep me"]

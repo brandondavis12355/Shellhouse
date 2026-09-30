@@ -2,8 +2,8 @@ import Foundation
 
 /// "Always allow this binary" decisions for `run_shell`, at two scopes.
 ///
-/// `run_shell` is the one tool `Policy.defaults` always routes through
-/// approval, since it's arbitrary command execution — but re-approving the
+/// `run_shell` is routed through approval by `Policy.defaults` (as is
+/// `create_bot`), since it's arbitrary command execution — but re-approving the
 /// same trusted command (`git status`, `curl`, ...) every single time is
 /// pure friction with no safety benefit once you've already said yes once.
 /// This is the escape hatch: approve a binary for the rest of this app
@@ -126,6 +126,16 @@ public actor RunShellPermissions {
         "bash", "sh", "zsh", "dash", "ksh", "fish", "env", "xargs", "sudo", "su", "doas", "eval", "exec",
         "nohup", "timeout", "time", "nice", "watch", "python", "python3", "node", "perl", "ruby", "php",
         "lua", "awk", "gawk", "find", "ssh", "scp", "nc", "ncat", "socat", "busybox", "chroot", "script",
+        "command", "builtin", "sed", "make", "npx", "npm", "pnpm", "yarn", "pip", "pip3", "tar", "rsync", "docker",
+        "stdbuf", "setsid", "flock", "strace", "ltrace", "gdb", "vim", "vi", "nano", "less", "more", "man", "git-shell",
+        "tee", "dd", "mount", "systemd-run", "kubectl", "helm", "terraform", "aws", "gcloud", "az",
+    ]
+
+    /// Directories a bare command name legitimately resolves from. A path
+    /// anywhere else (`/tmp/x/git`) is someone's own binary wearing a
+    /// trusted name, so it is never reduced to the name.
+    private static let trustedBinaryDirectories: Set<String> = [
+        "/usr/bin", "/bin", "/usr/local/bin", "/usr/sbin", "/sbin", "/opt/homebrew/bin",
     ]
 
     /// Extracts the binary a per-binary "always allow" grant would apply to,
@@ -139,17 +149,19 @@ public actor RunShellPermissions {
     /// binary (path stripped: `/usr/bin/git` and `git` are the same entry).
     public static func extractBinary(fromCommand command: String) -> String? {
         if command.rangeOfCharacter(from: shellMetacharacters) != nil { return nil }
-        var tokens = command.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        let tokens = command.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         // Leading env assignments (`LD_PRELOAD=… ls`) change what a binary
         // does entirely, so a command that starts with one isn't reducible.
         if let first = tokens.first, first.contains("="), !first.hasPrefix("-") { return nil }
         guard let first = tokens.first, !first.isEmpty else { return nil }
         let binary = (first as NSString).lastPathComponent
-        guard !neverAutoApprove.contains(binary) else { return nil }
+        if first.contains("/"), !trustedBinaryDirectories.contains((first as NSString).deletingLastPathComponent) { return nil }
+        // Versioned interpreters (python3.11, node18, perl5.36…) are still interpreters.
+        let family = binary.prefix { $0.isLetter || $0 == "-" }
+        guard !neverAutoApprove.contains(binary), !neverAutoApprove.contains(String(family)) else { return nil }
         if binary == "git", tokens.dropFirst().contains(where: { $0 == "-c" || $0.hasPrefix("--exec-path") || $0.hasPrefix("--config-env") }) {
             return nil
         }
-        _ = tokens.removeFirst()
         return binary
     }
 }

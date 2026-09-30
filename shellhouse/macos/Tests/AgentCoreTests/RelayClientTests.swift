@@ -97,7 +97,12 @@ final class RelayClientOfflineTests: XCTestCase {
 
     func testRelayErrorPermanence() {
         XCTAssertTrue(RelayError.http(status: 404, detail: "").isPermanent)
-        XCTAssertTrue(RelayError.http(status: 401, detail: "").isPermanent)
+        XCTAssertTrue(RelayError.http(status: 403, detail: "").isPermanent)
+        XCTAssertTrue(RelayError.http(status: 401, detail: "unknown user").isPermanent)
+        XCTAssertFalse(RelayError.http(status: 401, detail: "timestamp outside allowed window").isPermanent, "clock skew is transient")
+        XCTAssertFalse(RelayError.http(status: 401, detail: "replayed request").isPermanent)
+        XCTAssertTrue(RelayError.http(status: 422, detail: "").isRejectedPayload)
+        XCTAssertFalse(RelayError.http(status: 500, detail: "").isRejectedPayload)
         XCTAssertFalse(RelayError.http(status: 500, detail: "").isPermanent)
         XCTAssertFalse(RelayError.http(status: 429, detail: "").isPermanent)
         XCTAssertFalse(RelayError.transport("x").isPermanent)

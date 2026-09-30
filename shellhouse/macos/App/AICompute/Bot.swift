@@ -490,6 +490,10 @@ final class Bot: Identifiable, @unchecked Sendable {
         streamingIndex = nil
         hasStarted = false
         runtime = nil
+        // The compacted summary of the OLD conversation would otherwise seed
+        // the next one, so "delete" wouldn't really delete what the model sees.
+        contextSummary = nil
+        ContextSummaryStore.delete(id: id)
         cancelPendingTranscriptSave()
         TranscriptStore.delete(id: id)
     }
@@ -536,10 +540,13 @@ final class Bot: Identifiable, @unchecked Sendable {
             } else {
                 state = .failed("Sandbox reset but returned no vnc_url")
             }
+            var wiped = !wipeWorkspace
             if wipeWorkspace {
-                _ = try? await sandbox.exec(created.id, command: "find /workspace/ -mindepth 1 -delete", timeout: 60, env: nil)
+                let result = try? await sandbox.exec(created.id, command: "find /workspace/ -mindepth 1 -delete", timeout: 60, env: nil)
+                wiped = result?.succeeded == true
             }
-            status = wipeWorkspace ? "Sandbox reset and workspace wiped." : "Sandbox reset (workspace files kept)."
+            status = !wipeWorkspace ? "Sandbox reset (workspace files kept)."
+                : (wiped ? "Sandbox reset and workspace wiped." : "Sandbox reset, but wiping /workspace FAILED — its files are still there.")
             if DebugSettings.shared.isEnabled {
                 DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "sandbox",
                                     text: "sandbox reset (\(wipeWorkspace ? "workspace wiped" : "workspace kept"))")
@@ -1505,12 +1512,13 @@ final class Bot: Identifiable, @unchecked Sendable {
             + "team is paused. Post ONE short status message for the user: what has been achieved, what is blocking or "
             + "looping, and what you need from them (a decision, access, or a redirect). No @mentions of other members. "
             + "Put the message in finish_task's summary."
-        let reply = await runIsolatedTask(
+        let outcome = await runIsolatedTaskResult(
             systemPromptSuffix: suffix, goal: goalBlock + "\n\nRecent conversation:\n" + transcript,
             debugContext: "goal stalled: \(groupName)"
         )
+        let reply = outcome.text
         let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmed.isEmpty || trimmed == "[[silent]]") ? nil : reply
+        return (outcome.failed || trimmed.isEmpty || trimmed == "[[silent]]") ? nil : reply
     }
 
     /// One turn in a group chat (see `GroupChatSession`) — same isolated
@@ -1550,17 +1558,26 @@ final class Bot: Identifiable, @unchecked Sendable {
             + "plainly and stop @mentioning people."
         let suffix = "You're one of up to 6 bots in the group chat \"\(groupName)\", alongside: "
             + "\(otherMembers.joined(separator: ", ")). Messages below are labeled by who sent them. \(rule)\(goalRule)\(extraSuffix.isEmpty ? "" : "\n\n" + extraSuffix)"
-        var reply = await runIsolatedTask(systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler, untrustedInput: untrustedInput)
-        if mustReply, reply.contains("[[silent]]") {
+        var outcome = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler, untrustedInput: untrustedInput)
+        if mustReply, !outcome.failed, outcome.text.trimmingCharacters(in: .whitespacesAndNewlines) == "[[silent]]" {
             // Being called on (especially via @everyone) means every member
             // answers. A model that opted out anyway gets exactly one
             // retry with the opt-out spelled out as not allowed.
-            reply = await runIsolatedTask(
+            outcome = await runIsolatedTaskResult(
                 systemPromptSuffix: suffix + " Staying silent is NOT allowed for this turn — you were explicitly "
                     + "called on. Post a short reply; if you truly have nothing to add, say that in one sentence.",
                 goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: mentioned)", goalHandler: goalHandler, untrustedInput: untrustedInput
             )
         }
+        // Infrastructure failures ("no sandbox", "cancelled", "no response")
+        // are never posted as if the bot had said them.
+        if outcome.failed {
+            if DebugSettings.shared.isEnabled {
+                DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .error, context: "group: \(groupName)", text: "turn failed: \(outcome.text)")
+            }
+            return nil
+        }
+        let reply = outcome.text
         let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         // Tolerant on purpose: a model that wraps the sentinel in a little
         // extra narration ("I'll stay quiet. [[silent]]") still means to
@@ -1586,7 +1603,9 @@ final class Bot: Identifiable, @unchecked Sendable {
             + "a directed action you scheduled yourself, not a passive turn, so don't skip or stay silent."
         let goal = "Your scheduled instruction: \(instruction)"
             + (transcriptSoFar.isEmpty ? "" : "\n\n---\n\nRecent conversation in the group, for context:\n\(transcriptSoFar)")
-        let reply = await runIsolatedTask(systemPromptSuffix: suffix, goal: goal, debugContext: "routine → group: \(groupName)")
+        let outcome = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: goal, debugContext: "routine → group: \(groupName)")
+        if outcome.failed { return nil }
+        let reply = outcome.text
         let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         // `finish_task`'s `outcome: "silent"` isn't actually restricted
         // to `respondInGroup`'s context — a confused model could still
@@ -1681,7 +1700,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// cascade down through the nested `await` chain into THIS bot's
     /// work too, stopping a completely different bot's sandbox because
     /// someone hit "Stop" on their own chat. Same reasoning for a group
-    /// turn (`GroupChatSession.runTurn`'s own `Task`, unrelated to any
+    /// turn (`GroupChatSession.runWorker`'s own `Task`, unrelated to any
     /// member's `drainTask`).
     /// Appended to every isolated run's prompt. Without it, models narrate
     /// their intent as plain text ("I'll post it now") and the posted
@@ -1698,13 +1717,38 @@ final class Bot: Identifiable, @unchecked Sendable {
         note so they're kept informed — load the where-to-post skill if unsure what belongs where.
         """
 
+    /// Delegations want the failure text (the asking bot should see why);
+    /// see `runIsolatedTaskResult` for what group turns and routines do.
     private func runIsolatedTask(
         systemPromptSuffix: String, goal: String, debugContext: String,
         goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
         untrustedInput: Bool = false
     ) async -> String {
-        guard let sandbox, let handle else { return "\(name) has no running sandbox to work with right now." }
-        return await Task {
+        await runIsolatedTaskResult(
+            systemPromptSuffix: systemPromptSuffix, goal: goal, debugContext: debugContext,
+            goalHandler: goalHandler, untrustedInput: untrustedInput
+        ).text
+    }
+
+    /// `failed` marks text that is an infrastructure message ("no sandbox",
+    /// "cancelled", "didn't produce a response"), not something the bot said —
+    /// group turns and routines must never post it as if the bot wrote it.
+    struct IsolatedResult {
+        let text: String
+        let failed: Bool
+    }
+
+    private func runIsolatedTaskResult(
+        systemPromptSuffix: String, goal: String, debugContext: String,
+        goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
+        untrustedInput: Bool = false
+    ) async -> IsolatedResult {
+        guard let sandbox, let handle else {
+            return IsolatedResult(text: "\(name) has no running sandbox to work with right now.", failed: true)
+        }
+        // Unstructured on purpose (the run must outlive neither cancel nor
+        // caller confusion), but cancellation is forwarded explicitly below.
+        let inner = Task<IsolatedResult, Never> {
             let queuedSpan = BotActivity.shared.begin(bot: self, kind: .queued, detail: debugContext)
             do {
                 try await acquireRunLock()
@@ -1715,7 +1759,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 // NOT run for this call (see `acquireRunLock`'s doc
                 // comment); returning here, before the `defer` is even
                 // registered, is what guarantees that.
-                return "\(name)'s task was cancelled before its turn came up."
+                return IsolatedResult(text: "\(name)'s task was cancelled before its turn came up.", failed: true)
             }
             BotActivity.shared.end(queuedSpan)
             let runSpan = BotActivity.shared.begin(bot: self, kind: .running, detail: debugContext)
@@ -1848,11 +1892,22 @@ final class Bot: Identifiable, @unchecked Sendable {
                 requestApproval: { [weak self] approval in
                     await withCheckedContinuation { continuation in
                         Task { @MainActor in
-                            guard let self else { return }
+                            // Never leave the continuation unresumed: a run that
+                            // can't surface its card must not hang forever.
+                            guard let self else { continuation.resume(returning: .deny); return }
                             self.pendingApproval = PendingApproval(
                                 approval: approval, continuation: continuation,
                                 owner: self.currentRunLockOwner ?? .isolated(debugContext)
                             )
+                            // A group turn / delegation / routine has nobody
+                            // necessarily watching. It holds this bot's run lock,
+                            // so after 15 minutes without an answer it is denied
+                            // and the bot is freed.
+                            try? await Task.sleep(nanoseconds: 15 * 60 * 1_000_000_000)
+                            if let pending = self.pendingApproval, pending.approval.id == approval.id {
+                                self.pendingApproval = nil
+                                pending.continuation.resume(returning: .deny)
+                            }
                         }
                     }
                 }
@@ -1867,9 +1922,11 @@ final class Bot: Identifiable, @unchecked Sendable {
             )
 
             await runtime.start(systemPrompt: fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract, goal: withRelevantMemoryContext(goal))
-            let resultText = replyPicker.result ?? "(\(name) didn't produce a response.)"
-            return isSilent ? "[[silent]]" : resultText
-        }.value
+            let picked = replyPicker.result
+            let resultText = picked ?? "(\(name) didn't produce a response.)"
+            return IsolatedResult(text: isSilent ? "[[silent]]" : resultText, failed: picked == nil && !isSilent)
+        }
+        return await withTaskCancellationHandler { await inner.value } onCancel: { inner.cancel() }
     }
 
     // MARK: - Boot
@@ -2316,7 +2373,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                     requestApproval: { [weak self] approval in
                         await withCheckedContinuation { continuation in
                             Task { @MainActor in
-                                guard let self else { return }
+                                guard let self else { continuation.resume(returning: .deny); return }
                                 self.pendingApproval = PendingApproval(
                                     approval: approval, continuation: continuation,
                                     owner: self.currentRunLockOwner ?? .ownChat

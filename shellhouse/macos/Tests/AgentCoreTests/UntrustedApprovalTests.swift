@@ -130,6 +130,27 @@ final class UntrustedApprovalTests: XCTestCase {
         var value: Int { lock.lock(); defer { lock.unlock() }; return n }
     }
 
+    /// Tools the default policy allows (write_file, web access, GUI) must ask in an untrusted run.
+    func testAllowTierToolsAskInUntrustedRunButNotOtherwise() async {
+        func approvals(untrusted: Bool) async -> Int {
+            let log = ApprovalLog()
+            let turn = ChatMessage(role: .assistant, content: "", toolCalls: [
+                ToolCall(name: "write_file", arguments: ["path": AnyCodable("a.txt"), "content": AnyCodable("x")])
+            ])
+            let runtime = AgentRuntime(
+                model: ScriptedModel([turn]), sandbox: CountingSandbox(), sandboxID: "sb-test",
+                requestApproval: { approval in log.add(approval); return .deny },
+                alwaysRequireApproval: untrusted
+            )
+            await runtime.start(systemPrompt: "test", goal: "go")
+            return log.all.count
+        }
+        let trusted = await approvals(untrusted: false)
+        let untrusted = await approvals(untrusted: true)
+        XCTAssertEqual(trusted, 0)
+        XCTAssertEqual(untrusted, 1)
+    }
+
     func testDurableStateToolsCanBeWithheldFromAnUntrustedRun() async {
         func run(excluded: Set<String>) async -> (remembered: Int, toolResults: [String]) {
             let counter = Counter()
