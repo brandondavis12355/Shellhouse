@@ -9,7 +9,7 @@ case "$HOST" in
   *[!0-9.]*) SAN="DNS:$HOST" ;;
   *)         SAN="IP:$HOST" ;;
 esac
-openssl req -x509 -newkey ed25519 -nodes -days 825 \
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 825 \
   -keyout certs/privkey.pem -out certs/fullchain.pem \
   -subj "/CN=$HOST" -addext "subjectAltName=$SAN"
 echo "SHA-256 fingerprint (give this to friends to verify):"
