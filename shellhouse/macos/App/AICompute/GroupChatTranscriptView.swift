@@ -69,6 +69,18 @@ private struct GroupMessageBubble: View {
     }()
 
     var body: some View {
+        if message.isSystem == true {
+            Text(message.text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 2)
+        } else {
+            bubble
+        }
+    }
+
+    private var bubble: some View {
         HStack(spacing: 0) {
             if isUser { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 3) {

@@ -94,6 +94,10 @@ public actor AgentRuntime {
         case approve
         case approveAlwaysSession
         case approveAlwaysGlobal
+        /// Blanket `run_shell` grants (every command, not one binary).
+        case approveAllShellThisBotSession
+        case approveAllShellThisBotAlways
+        case approveAllShellEveryBot
         case deny
     }
 
@@ -352,6 +356,10 @@ public actor AgentRuntime {
             let binary = call.name == "run_shell"
                 ? call.arguments["command"]?.asString.flatMap(RunShellPermissions.extractBinary(fromCommand:))
                 : nil
+            if call.name == "run_shell", await permissions.isBlanketAllowed(botID: sandboxID) {
+                await execute(call, repeatCount: repeatCount)
+                return true
+            }
             if let binary, await permissions.isAllowed(binary) {
                 await execute(call, repeatCount: repeatCount)
                 return true
@@ -374,6 +382,12 @@ public actor AgentRuntime {
                 if let binary { await permissions.allow(binary, scope: .session) }
             case .approveAlwaysGlobal:
                 if let binary { await permissions.allow(binary, scope: .global) }
+            case .approveAllShellThisBotSession:
+                await permissions.allowAll(botID: sandboxID, scope: .botSession)
+            case .approveAllShellThisBotAlways:
+                await permissions.allowAll(botID: sandboxID, scope: .botAlways)
+            case .approveAllShellEveryBot:
+                await permissions.allowAll(botID: sandboxID, scope: .everyBot)
             case .approve:
                 break
             }
@@ -492,7 +506,8 @@ public actor AgentRuntime {
     /// exact, just enough to catch "getting close to a model's context
     /// window" before that window gets hit for real.
     private func estimatedTokens(for message: ChatMessage) -> Int {
-        var characters = message.content.count
+        // utf8.count is O(1) for native strings; .count walks every character.
+        var characters = message.content.utf8.count
         if let toolCalls = message.toolCalls {
             for call in toolCalls {
                 characters += call.name.count + jsonString(call.arguments.mapValues(\.value)).count

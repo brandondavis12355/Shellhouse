@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # the actual toolchain the agent uses
     python3 python3-pip python3-venv nodejs npm git \
     curl wget jq unzip ca-certificates bash procps \
-    supervisor \
+    supervisor sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Python libs commonly needed for agent work (PEP 668 on trixie needs the flag)
@@ -36,7 +36,12 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # Non-root desktop user, matching the reference environment's `box@...`
 RUN useradd -m -s /bin/bash box \
     && mkdir -p /workspace \
-    && chown -R box:box /workspace /home/box
+    && chown -R box:box /workspace /home/box \
+    # Passwordless sudo is installed but INERT unless the container is started
+    # without no-new-privileges (setuid-root sudo can't elevate under it) —
+    # see SANDBOX_ALLOW_SUDO in docker-compose.yml / sandbox-manager.
+    && echo "box ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/box \
+    && chmod 0440 /etc/sudoers.d/box
 
 COPY sandbox/config/ /etc/agent-desktop/
 COPY sandbox/bin/ /usr/local/bin/

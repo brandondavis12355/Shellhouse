@@ -163,6 +163,18 @@ public actor OllamaBackend: ModelBackend {
         return supported
     }
 
+
+    /// Fixed context window sent on every request. Ollama otherwise uses a
+    /// small default, silently truncating long prompts and re-evaluating
+    /// them; and changing this value between calls forces a model reload,
+    /// so it must stay constant. Sized above `compactionThresholdTokens`
+    /// (12k) plus room for the reply.
+    public static let contextWindowTokens = 16_384
+
+    static func requestOptions(temperature: Double) -> [String: AnyCodable] {
+        ["temperature": AnyCodable(temperature), "num_ctx": AnyCodable(contextWindowTokens)]
+    }
+
     public func chat(
         messages: [ChatMessage],
         tools: [ToolSchema],
@@ -178,7 +190,7 @@ public actor OllamaBackend: ModelBackend {
             messages: messages.map(OllamaMessage.init),
             tools: tools.isEmpty ? nil : tools.map(OllamaTool.init),
             stream: false,
-            options: ["temperature": AnyCodable(temperature)]
+            options: Self.requestOptions(temperature: temperature)
         )
         request.httpBody = try JSONEncoder().encode(body)
 
@@ -226,7 +238,7 @@ public actor OllamaBackend: ModelBackend {
             messages: messages.map(OllamaMessage.init),
             tools: tools.isEmpty ? nil : tools.map(OllamaTool.init),
             stream: true,
-            options: ["temperature": AnyCodable(temperature)]
+            options: Self.requestOptions(temperature: temperature)
         )
         request.httpBody = try JSONEncoder().encode(body)
 

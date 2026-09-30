@@ -70,6 +70,7 @@ public enum Policy: Sendable {
         // bot) — whatever it does once triggered still goes through the
         // normal per-tool approval flow same as any other message.
         "create_routine": .allow,
+        "edit_routine": .allow,
         // Destructive, but only ever to this bot's own scheduled
         // routines — low stakes (trivially recreated with create_routine
         // if wrong) and exact-match duplicate detection only (see
@@ -95,10 +96,26 @@ public enum Policy: Sendable {
         // no sandbox, no side effects outside this app's own state.
         "add_bot_to_group": .allow,
 
+        // Posts text the bot itself wrote into a group it already belongs
+        // to — no side effects beyond that group's transcript.
+        "post_to_group": .allow,
+
+        // Adds a line to this bot's own 1:1 chat — no effect on anyone else.
+        "update_user": .allow,
+
+        // Group goal checklist — state inside this app only.
+        "get_goal": .allow,
+        "propose_goal": .allow,
+        "add_goal_step": .allow,
+        "update_goal_step": .allow,
+        "propose_goal_complete": .allow,
+
         // Credential NAMES are safe to reveal; no tool returns a value.
         "list_secrets": .allow,
 
-        // Arbitrary command execution always pauses for a human.
+        // Arbitrary command execution pauses for a human by default; the
+        // approval card offers per-binary and blanket ("allow all shell
+        // commands") grants — see `RunShellPermissions`.
         "run_shell": .requireApproval,
 
         // Loads a skill's own text into context — read-only, no side effects.

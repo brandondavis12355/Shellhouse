@@ -156,7 +156,7 @@ public actor OpenAICompatibleBackend: ModelBackend {
                 if !message.content.isEmpty {
                     parts.append(Part(type: "text", text: message.content, image_url: nil))
                 }
-                parts += images.map { Part(type: "image_url", text: nil, image_url: .init(url: "data:image/png;base64,\($0)")) }
+                parts += images.map { Part(type: "image_url", text: nil, image_url: .init(url: "data:\($0.hasPrefix("/9j/") ? "image/jpeg" : "image/png");base64,\($0)")) }
                 content = .parts(parts)
             } else {
                 content = .text(message.content)

@@ -19,12 +19,68 @@ public actor RunShellPermissions {
         case global
     }
 
+    /// "Allow ALL shell commands" grants, distinct from the per-binary lists.
+    public enum BlanketScope: Sendable {
+        /// This bot only, until the app quits.
+        case botSession
+        /// This bot only, persisted across launches.
+        case botAlways
+        /// Every bot, persisted across launches.
+        case everyBot
+    }
+
+    private var blanketSessionBots: Set<String> = []
+    private var blanketPersistentBots: Set<String>
+    private var blanketEveryBot: Bool
+    private static let blanketBotsKey = "ai.compute.agent.runShellAllowAllBots"
+    private static let blanketEveryBotKey = "ai.compute.agent.runShellAllowAllEveryBot"
+
     private var sessionAllowed: Set<String> = []
     private var globalAllowed: Set<String>
     private static let defaultsKey = "ai.compute.agent.runShellAlwaysAllow"
 
     public init() {
         globalAllowed = Set(UserDefaults.standard.stringArray(forKey: Self.defaultsKey) ?? [])
+        blanketPersistentBots = Set(UserDefaults.standard.stringArray(forKey: Self.blanketBotsKey) ?? [])
+        blanketEveryBot = UserDefaults.standard.bool(forKey: Self.blanketEveryBotKey)
+    }
+
+    /// `botID` is the bot's sandbox/handle id (what `AgentRuntime` calls `sandboxID`).
+    public func isBlanketAllowed(botID: String) -> Bool {
+        blanketEveryBot || blanketSessionBots.contains(botID) || blanketPersistentBots.contains(botID)
+    }
+
+    public func allowAll(botID: String, scope: BlanketScope) {
+        switch scope {
+        case .botSession: blanketSessionBots.insert(botID)
+        case .botAlways:
+            blanketPersistentBots.insert(botID)
+            UserDefaults.standard.set(Array(blanketPersistentBots), forKey: Self.blanketBotsKey)
+        case .everyBot:
+            blanketEveryBot = true
+            UserDefaults.standard.set(true, forKey: Self.blanketEveryBotKey)
+        }
+    }
+
+    public func revokeAll(botID: String, scope: BlanketScope) {
+        switch scope {
+        case .botSession: blanketSessionBots.remove(botID)
+        case .botAlways:
+            blanketPersistentBots.remove(botID)
+            UserDefaults.standard.set(Array(blanketPersistentBots), forKey: Self.blanketBotsKey)
+        case .everyBot:
+            blanketEveryBot = false
+            UserDefaults.standard.set(false, forKey: Self.blanketEveryBotKey)
+        }
+    }
+
+    /// Which blanket grants currently apply to `botID`, for the Settings UI.
+    public func blanketScopes(botID: String) -> [BlanketScope] {
+        var scopes: [BlanketScope] = []
+        if blanketSessionBots.contains(botID) { scopes.append(.botSession) }
+        if blanketPersistentBots.contains(botID) { scopes.append(.botAlways) }
+        if blanketEveryBot { scopes.append(.everyBot) }
+        return scopes
     }
 
     public func isAllowed(_ binary: String) -> Bool {

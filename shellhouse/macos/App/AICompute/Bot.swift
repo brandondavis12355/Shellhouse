@@ -273,6 +273,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// SwiftUI needs a plain synchronous value here.
     var sessionAllowedBinaries: [String] = []
     var globalAllowedBinaries: [String] = []
+    var blanketShellScopes: [RunShellPermissions.BlanketScope] = []
 
     private let permissions: RunShellPermissions
     /// Shared across every bot — how this one finds and messages its
@@ -293,6 +294,19 @@ final class Bot: Identifiable, @unchecked Sendable {
         loadPersistedTranscriptAndMemory()
     }
 
+    /// Force-migrates any already-saved or imported `systemPromptText` —
+    /// including one the user hand-edited — to also carry the
+    /// tool-verification requirement, not just prompts freshly seeded
+    /// from `defaultSystemPrompt`. Idempotent (checked verbatim, so
+    /// re-running this on a bot that already has it is a no-op) and
+    /// additive — never rewrites or removes anything the user wrote,
+    /// only appends what's missing.
+    private static func withToolVerificationRequirement(_ prompt: String) -> String {
+        guard !prompt.contains(toolVerificationRequirement) else { return prompt }
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return toolVerificationRequirement }
+        return prompt + "\n\n" + toolVerificationRequirement
+    }
+
     /// Reconstructs a bot from a saved `BotConfig` — same as the plain
     /// `init`, plus every other field `BotStore` persists. Used by
     /// `ContentView` on launch instead of `init` when there's a saved
@@ -303,7 +317,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             tagline: config.tagline, group: config.group, permissions: permissions, botDirectory: botDirectory
         )
         avatarStyle = config.avatarStyle
-        systemPromptText = config.systemPromptText
+        systemPromptText = Self.withToolVerificationRequirement(config.systemPromptText)
         selectedSkillIDs = config.selectedSkillIDs
         selectedModel = config.selectedModel
         modelHasVision = config.modelHasVision
@@ -327,7 +341,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             tagline: template.tagline, group: template.group, permissions: permissions, botDirectory: botDirectory
         )
         avatarStyle = template.avatarStyle
-        systemPromptText = template.systemPromptText
+        systemPromptText = Self.withToolVerificationRequirement(template.systemPromptText)
         selectedSkillIDs = template.selectedSkillIDs
         selectedModel = template.selectedModel
         modelHasVision = template.modelHasVision
@@ -446,14 +460,27 @@ final class Bot: Identifiable, @unchecked Sendable {
         tasks = BotTaskStore.load(id: id)
     }
 
+    private var transcriptSaveTask: Task<Void, Never>?
+
+    /// Debounced (~400ms trailing) with JSON encoding and the disk write
+    /// off the main actor — it used to re-encode and rewrite the whole
+    /// transcript synchronously on every message, O(n) on the UI thread.
+    /// Only the cheap struct mapping stays on the main actor.
     private func persistTranscript() {
-        TranscriptStore.save(id: id, displayMessages.map {
-            TranscriptEntry(
-                role: $0.role, text: $0.text, attachmentNames: $0.attachmentNames.isEmpty ? nil : $0.attachmentNames,
-                interBotPeerID: $0.interBotPeerID, interBotPeerName: $0.interBotPeerName, timestamp: $0.timestamp,
-                toolName: $0.toolName, isTaskSummary: $0.isTaskSummary
-            )
-        })
+        transcriptSaveTask?.cancel()
+        let botID = id
+        transcriptSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled, let self else { return }
+            let entries = self.displayMessages.map {
+                TranscriptEntry(
+                    role: $0.role, text: $0.text, attachmentNames: $0.attachmentNames.isEmpty ? nil : $0.attachmentNames,
+                    interBotPeerID: $0.interBotPeerID, interBotPeerName: $0.interBotPeerName, timestamp: $0.timestamp,
+                    toolName: $0.toolName, isTaskSummary: $0.isTaskSummary
+                )
+            }
+            TranscriptStore.saveInBackground(id: botID, entries)
+        }
     }
 
     /// Wipes this bot's conversation — the settings sheet's "Delete
@@ -467,7 +494,15 @@ final class Bot: Identifiable, @unchecked Sendable {
         streamingIndex = nil
         hasStarted = false
         runtime = nil
+        cancelPendingTranscriptSave()
         TranscriptStore.delete(id: id)
+    }
+
+    /// Stops a debounced save from resurrecting a transcript file that's
+    /// about to be (or just was) deleted.
+    func cancelPendingTranscriptSave() {
+        transcriptSaveTask?.cancel()
+        transcriptSaveTask = nil
     }
 
     /// The settings sheet's "Delete bot" — unlike every other teardown path
@@ -477,6 +512,48 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// effort: if the sandbox is already unreachable, there's nothing left
     /// to destroy, so a failure here shouldn't block deleting the bot
     /// itself.
+    /// Wipes this bot's Linux sandbox and boots a fresh one from the image —
+    /// the recovery path if the container is (or might be) compromised.
+    /// Everything inside the old container is destroyed (installed tools,
+    /// `/home/box`, browser profile, running processes). `/workspace` lives
+    /// on a Docker volume and survives unless `wipeWorkspace` is set.
+    /// Also stops the current run and drops the runtime, so the next
+    /// message starts against the new container (chat history is kept).
+    func resetSandbox(wipeWorkspace: Bool) async {
+        guard let sandbox, let oldHandle = handle else { return }
+        // The legacy compose-managed computer is shared and unowned; the
+        // manager refuses to destroy it, so a "reset" would silently no-op.
+        guard oldHandle.id != "agent-sandbox" else {
+            status = "This is the shared legacy sandbox and can't be reset from the app."
+            return
+        }
+        stop()
+        runtime = nil
+        state = .booting(id)
+        status = "Resetting sandbox…"
+        do {
+            try await sandbox.forceDestroy(oldHandle.id)
+            let created = try await sandbox.create(taskID: id, persistent: true)
+            handle = created
+            if let vncString = created.metadata["vnc_url"], let vncURL = URL(string: vncString) {
+                state = .running(vncURL: vncURL)
+            } else {
+                state = .failed("Sandbox reset but returned no vnc_url")
+            }
+            if wipeWorkspace {
+                _ = try? await sandbox.exec(created.id, command: "find /workspace/ -mindepth 1 -delete", timeout: 60, env: nil)
+            }
+            status = wipeWorkspace ? "Sandbox reset and workspace wiped." : "Sandbox reset (workspace files kept)."
+            if DebugSettings.shared.isEnabled {
+                DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "sandbox",
+                                    text: "sandbox reset (\(wipeWorkspace ? "workspace wiped" : "workspace kept"))")
+            }
+        } catch {
+            state = .failed(error.localizedDescription)
+            status = "Sandbox reset failed: \(error.localizedDescription)"
+        }
+    }
+
     func destroySandbox() async {
         guard let sandbox, let handle else { return }
         try? await sandbox.forceDestroy(handle.id)
@@ -566,19 +643,35 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// list already sent once in the system prompt, on every single
     /// group turn, for every member. That's wasted tokens AND slower
     /// local-model inference (more prompt to process) for no benefit.
+    /// Keyed by the memory's own text, so an edited/removed memory just
+    /// stops being looked up — no invalidation needed. Saves re-tokenizing
+    /// the whole list on every message and every group turn.
+    private var memoryWordCache: [String: Set<String>] = [:]
+
+    private func significantWords(in text: String) -> Set<String> {
+        Set(
+            text.lowercased()
+                .split { !$0.isLetter && !$0.isNumber }
+                .map(String.init)
+                .filter { $0.count > 3 && !Self.memoryRelevanceStopWords.contains($0) }
+        )
+    }
+
     private func memoriesRelevant(to text: String, limit: Int = 5) -> [String] {
-        func significantWords(in text: String) -> Set<String> {
-            Set(
-                text.lowercased()
-                    .split { !$0.isLetter && !$0.isNumber }
-                    .map(String.init)
-                    .filter { $0.count > 3 && !Self.memoryRelevanceStopWords.contains($0) }
-            )
-        }
         let queryWords = significantWords(in: text)
         guard !queryWords.isEmpty else { return [] }
+        if memoryWordCache.count > memories.count + 50 {
+            memoryWordCache = memoryWordCache.filter { memories.contains($0.key) }
+        }
         let scored = memories.compactMap { memory -> (memory: String, overlap: Int)? in
-            let overlap = significantWords(in: memory).intersection(queryWords).count
+            let words: Set<String>
+            if let cached = memoryWordCache[memory] {
+                words = cached
+            } else {
+                words = significantWords(in: memory)
+                memoryWordCache[memory] = words
+            }
+            let overlap = words.intersection(queryWords).count
             return overlap > 0 ? (memory, overlap) : nil
         }
         return scored.sorted { $0.overlap > $1.overlap }.prefix(limit).map(\.memory)
@@ -732,6 +825,40 @@ final class Bot: Identifiable, @unchecked Sendable {
         return (routine, persisted)
     }
 
+    /// The Settings sheet's manual-edit entry point — same
+    /// partial-update semantics and duplicate/persistence guards as
+    /// `editRoutineFromTool`, just typed for direct UI use instead of
+    /// raw tool arguments. Returns `false` on either a duplicate
+    /// collision or a failed disk write; the UI shows an alert either
+    /// way rather than pretending the change took.
+    @discardableResult
+    func updateRoutine(
+        id routineID: String,
+        instruction: String,
+        schedule: Routine.Schedule,
+        targetGroupID: String?
+    ) -> Bool {
+        guard let index = routines.firstIndex(where: { $0.id == routineID }) else { return false }
+        var updated = routines[index]
+        updated.instruction = instruction
+        updated.schedule = schedule
+        updated.targetGroupID = targetGroupID
+
+        let key = Self.duplicateKey(instruction: updated.instruction, schedule: updated.schedule, targetGroupID: updated.targetGroupID)
+        if routines.contains(where: { $0.id != routineID && Self.duplicateKey(instruction: $0.instruction, schedule: $0.schedule, targetGroupID: $0.targetGroupID) == key }) {
+            return false
+        }
+
+        let previous = routines[index]
+        routines[index] = updated
+        guard RoutineStore.save(id: id, routines) else {
+            routines[index] = previous
+            return false
+        }
+        scheduleTimer(for: updated)
+        return true
+    }
+
     func removeRoutine(at offsets: IndexSet) {
         let previous = routines
         // Keyed by routine id, not position — `compactMap` here can
@@ -771,41 +898,14 @@ final class Bot: Identifiable, @unchecked Sendable {
             return ["error": "create_routine requires 'schedule_type' (one of once, daily, interval_minutes)"]
         }
 
-        let schedule: Routine.Schedule
-        switch scheduleType {
-        case "once":
-            guard let atString = arguments["at"]?.asString,
-                  let at = ISO8601DateFormatter().date(from: atString) else {
-                return ["error": "schedule_type 'once' requires 'at' as an ISO 8601 date-time"]
-            }
-            guard at > Date() else {
-                return ["error": "'at' (\(atString)) is not in the future"]
-            }
-            schedule = .once(at)
-        case "daily":
-            guard let hour = arguments["hour"]?.asInt, (0...23).contains(hour),
-                  let minute = arguments["minute"]?.asInt, (0...59).contains(minute) else {
-                return ["error": "schedule_type 'daily' requires integer 'hour' (0-23) and 'minute' (0-59)"]
-            }
-            schedule = .daily(hour: hour, minute: minute)
-        case "interval_minutes":
-            guard let minutes = arguments["minutes"]?.asInt, minutes >= 1 else {
-                return ["error": "schedule_type 'interval_minutes' requires integer 'minutes' >= 1"]
-            }
-            schedule = .interval(minutes: minutes)
-        default:
-            return ["error": "unknown schedule_type '\(scheduleType)' — use once, daily, or interval_minutes"]
-        }
+        let (parsedSchedule, scheduleError) = Self.parseSchedule(scheduleType: scheduleType, arguments: arguments)
+        guard let schedule = parsedSchedule else { return ["error": scheduleError ?? "invalid schedule"] }
 
         var targetGroupID: String?
         if let groupName = arguments["target_group"]?.asString, !groupName.isEmpty {
-            guard let group = botDirectory.group(named: groupName) else {
-                return ["error": "no group chat named '\(groupName)'"]
-            }
-            guard group.memberBotIDs.contains(id) else {
-                return ["error": "you're not a member of '\(groupName)' — add yourself first with add_bot_to_group"]
-            }
-            targetGroupID = group.id
+            let (groupID, groupError) = resolveTargetGroup(named: groupName)
+            guard let groupID else { return ["error": groupError ?? "invalid target_group"] }
+            targetGroupID = groupID
         }
 
         // Idempotent on purpose: a model that calls this with the exact
@@ -821,7 +921,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         if let existing = routines.first(where: { Self.duplicateKey(instruction: $0.instruction, schedule: $0.schedule, targetGroupID: $0.targetGroupID) == key }) {
             return [
                 "created": false, "already_existed": true, "id": existing.id,
-                "next_fire": existing.schedule.nextFireDate().map(ISO8601DateFormatter().string(from:)) ?? "never",
+                "next_fire": existing.schedule.nextFireDate(lastFiredAt: existing.lastFiredAt).map(ISO8601DateFormatter().string(from:)) ?? "never",
             ]
         }
 
@@ -837,6 +937,114 @@ final class Bot: Identifiable, @unchecked Sendable {
             return ["error": "failed to save the routine to disk — nothing was actually scheduled"]
         }
         return ["created": true, "id": routine.id, "next_fire": schedule.nextFireDate().map(ISO8601DateFormatter().string(from:)) ?? "never"]
+    }
+
+    /// Shared by `createRoutineFromTool` and `editRoutineFromTool` — one
+    /// definition of "is this a valid schedule" so the two can't drift
+    /// apart the way they would as two separate copy-pasted switches.
+    /// Plain tuples rather than `Swift.Result` — a bare `String` doesn't
+    /// conform to `Error`, and wrapping every message in a dedicated
+    /// error type just for this would be more ceremony than the two
+    /// call sites below are worth.
+    private static func parseSchedule(scheduleType: String, arguments: [String: AnyCodable]) -> (schedule: Routine.Schedule?, error: String?) {
+        switch scheduleType {
+        case "once":
+            guard let atString = arguments["at"]?.asString,
+                  let at = ISO8601DateFormatter().date(from: atString) else {
+                return (nil, "schedule_type 'once' requires 'at' as an ISO 8601 date-time")
+            }
+            guard at > Date() else {
+                return (nil, "'at' (\(atString)) is not in the future")
+            }
+            return (.once(at), nil)
+        case "daily":
+            guard let hour = arguments["hour"]?.asInt, (0...23).contains(hour),
+                  let minute = arguments["minute"]?.asInt, (0...59).contains(minute) else {
+                return (nil, "schedule_type 'daily' requires integer 'hour' (0-23) and 'minute' (0-59)")
+            }
+            return (.daily(hour: hour, minute: minute), nil)
+        case "interval_minutes":
+            guard let minutes = arguments["minutes"]?.asInt, minutes >= 1 else {
+                return (nil, "schedule_type 'interval_minutes' requires integer 'minutes' >= 1")
+            }
+            return (.interval(minutes: minutes), nil)
+        default:
+            return (nil, "unknown schedule_type '\(scheduleType)' — use once, daily, or interval_minutes")
+        }
+    }
+
+    /// Shared by `createRoutineFromTool` and `editRoutineFromTool` — a
+    /// non-empty `target_group` must name a group this bot is actually
+    /// in, checked the same way both places.
+    private func resolveTargetGroup(named groupName: String) -> (groupID: String?, error: String?) {
+        guard let group = botDirectory.group(named: groupName) else {
+            return (nil, "no group chat named '\(groupName)'")
+        }
+        guard group.memberBotIDs.contains(id) else {
+            return (nil, "you're not a member of '\(groupName)' — add yourself first with add_bot_to_group")
+        }
+        return (group.id, nil)
+    }
+
+    /// The `edit_routine` tool's entry point — changes only the fields
+    /// actually provided, leaving everything else as it was. Exists so
+    /// a small correction (wrong time, a typo in the instruction) doesn't
+    /// mean `remove_routine` + `create_routine` — losing `lastFiredAt`
+    /// and getting a new id — for what was really just an edit.
+    func editRoutineFromTool(_ arguments: [String: AnyCodable]) -> [String: Any] {
+        guard let routineID = arguments["id"]?.asString, !routineID.isEmpty else {
+            return ["error": "edit_routine requires 'id' — see list_routines for exact ids"]
+        }
+        guard let index = routines.firstIndex(where: { $0.id == routineID }) else {
+            return ["error": "no routine with id '\(routineID)' — see list_routines for current ids"]
+        }
+        var updated = routines[index]
+
+        if let instruction = arguments["instruction"]?.asString {
+            guard !instruction.isEmpty else { return ["error": "'instruction' can't be empty"] }
+            updated.instruction = instruction
+        }
+
+        if let scheduleType = arguments["schedule_type"]?.asString {
+            let (parsedSchedule, scheduleError) = Self.parseSchedule(scheduleType: scheduleType, arguments: arguments)
+            guard let schedule = parsedSchedule else { return ["error": scheduleError ?? "invalid schedule"] }
+            updated.schedule = schedule
+        }
+
+        if let groupName = arguments["target_group"]?.asString {
+            if groupName.isEmpty {
+                // Explicit empty string clears it back to this bot's own
+                // chat — distinct from the field being omitted entirely,
+                // which leaves whatever target it already had alone.
+                updated.targetGroupID = nil
+            } else {
+                let (groupID, groupError) = resolveTargetGroup(named: groupName)
+                guard let groupID else { return ["error": groupError ?? "invalid target_group"] }
+                updated.targetGroupID = groupID
+            }
+        }
+
+        if let isEnabled = arguments["enabled"]?.asBool {
+            updated.isEnabled = isEnabled
+        }
+
+        // Same exact-duplicate guard `createRoutineFromTool` has —
+        // editing one routine into an exact match of a DIFFERENT
+        // existing one is just as much a duplicate as creating one
+        // outright would be.
+        let key = Self.duplicateKey(instruction: updated.instruction, schedule: updated.schedule, targetGroupID: updated.targetGroupID)
+        if let collision = routines.first(where: { $0.id != routineID && Self.duplicateKey(instruction: $0.instruction, schedule: $0.schedule, targetGroupID: $0.targetGroupID) == key }) {
+            return ["error": "this change would make it an exact duplicate of routine '\(collision.id)' — use that one instead, or remove_routine to clean it up"]
+        }
+
+        let previous = routines[index]
+        routines[index] = updated
+        guard RoutineStore.save(id: id, routines) else {
+            routines[index] = previous
+            return ["error": "failed to save to disk — nothing was actually changed"]
+        }
+        scheduleTimer(for: updated)
+        return ["updated": true, "id": updated.id, "next_fire": updated.schedule.nextFireDate(lastFiredAt: updated.lastFiredAt).map(ISO8601DateFormatter().string(from:)) ?? "never"]
     }
 
     /// The `list_routines` tool — this bot's own current routines, read
@@ -856,7 +1064,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 "schedule": routine.schedule.summary,
                 "enabled": routine.isEnabled,
             ]
-            if let next = routine.schedule.nextFireDate() {
+            if let next = routine.schedule.nextFireDate(lastFiredAt: routine.lastFiredAt) {
                 entry["next_fire"] = ISO8601DateFormatter().string(from: next)
             }
             if let lastFiredAt = routine.lastFiredAt {
@@ -982,11 +1190,35 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// a routine fires (to pick up its next occurrence) or after editing it.
     private func scheduleTimer(for routine: Routine) {
         routineTimers.removeValue(forKey: routine.id)?.invalidate()
-        guard routine.isEnabled, let next = routine.schedule.nextFireDate() else { return }
+        guard routine.isEnabled, let next = routine.schedule.nextFireDate(lastFiredAt: routine.lastFiredAt) else { return }
+        // `next` can already be `<= now` — a missed occurrence
+        // (`nextFireDate` returns `now` for those) — in which case this
+        // just fires it almost immediately instead of silently deferring
+        // to the next regular occurrence.
         let interval = max(1, next.timeIntervalSinceNow)
+        let missed = next.timeIntervalSinceNow <= 0
+        logRoutine(
+            missed
+                ? "\(routineLabel(routine)) was missed — catching up, firing in ~1s"
+                : "\(routineLabel(routine)) scheduled for \(next.formatted(date: .abbreviated, time: .standard)) (in \(Int(interval))s)"
+        )
         routineTimers[routine.id] = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.fireRoutine(id: routine.id) }
         }
+    }
+
+    private func routineLabel(_ routine: Routine) -> String {
+        let preview = routine.instruction.count > 60 ? routine.instruction.prefix(60) + "…" : Substring(routine.instruction)
+        return "Routine [\(routine.schedule.summary)] \"\(preview)\" (\(routine.id.prefix(8)))"
+    }
+
+    /// Routine lifecycle lines (scheduled / fired / deferred / retired) for
+    /// the debug console, tagged `context: "routine"`. Without these, a
+    /// fired routine's own-chat run is indistinguishable in the feed from
+    /// the user typing the same text.
+    private func logRoutine(_ text: String, kind: DebugLogEntry.Kind = .status) {
+        guard DebugSettings.shared.isEnabled else { return }
+        DebugLog.shared.log(bot: name, colorHex: colorHex, kind: kind, context: "routine", text: text)
     }
 
     /// Queues the routine's instruction exactly like an incoming user
@@ -1005,14 +1237,20 @@ final class Bot: Identifiable, @unchecked Sendable {
             // occurrence as fired (or, for a `.once` routine, remove it
             // outright) despite the instruction never actually being
             // delivered anywhere. Retry shortly instead of losing it.
+            logRoutine("\(routineLabel(routine)) is due but the sandbox isn't ready — retrying in 30s", kind: .error)
             routineTimers[routineID] = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
                 Task { @MainActor in self?.fireRoutine(id: routineID) }
             }
             return
         }
         if let groupID = routine.targetGroupID, let group = botDirectory.group(id: groupID) {
+            logRoutine("FIRED \(routineLabel(routine)) → group \"\(group.name)\"")
             Task { await group.fireRoutine(for: self, instruction: routine.instruction) }
         } else {
+            logRoutine(
+                "FIRED \(routineLabel(routine)) → own chat"
+                    + (routine.targetGroupID != nil ? " (target group no longer exists)" : "")
+            )
             // No target group, or it's since been deleted — falls back
             // to the bot's own chat rather than silently dropping the
             // routine's instruction.
@@ -1020,6 +1258,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         }
 
         if case .once = routine.schedule {
+            logRoutine("\(routineLabel(routine)) was one-time — removed after firing")
             routines.remove(at: index)
             routineTimers.removeValue(forKey: routineID)?.invalidate()
         } else {
@@ -1165,6 +1404,35 @@ final class Bot: Identifiable, @unchecked Sendable {
         return ["added": true, "bot": target.name, "group": groupName]
     }
 
+    /// The `update_user` tool — drops a status line into THIS bot's own 1:1
+    /// chat from wherever it's working (group turn, delegation, routine).
+    /// Display-only: doesn't queue a model turn, so it can't loop. Kept in
+    /// `displayMessages`, so it's also part of the history a rebuilt
+    /// runtime is seeded with — the bot remembers it told the user.
+    func postUpdateToUser(_ message: String, source: String) -> [String: Any] {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return ["error": "update_user requires a non-empty 'message'"] }
+        displayMessages.append(DisplayMessage(role: .assistant, text: "(Update from \(source)) \(text)"))
+        persistTranscript()
+        hasUnread = true
+        return ["posted": true]
+    }
+
+    /// The `post_to_group` tool — posts `message` into a group this bot is
+    /// already a member of, immediately and verbatim.
+    func postToGroup(groupName: String, message: String) -> [String: Any] {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return ["error": "post_to_group requires a non-empty 'message'"] }
+        guard let group = botDirectory.group(named: groupName) else {
+            return ["error": "No group named '\(groupName)'."]
+        }
+        guard group.memberBotIDs.contains(id) else {
+            return ["error": "You're not a member of '\(group.name)' — add yourself first with add_bot_to_group."]
+        }
+        group.postFromBot(self, text: text)
+        return ["posted": true, "group": group.name]
+    }
+
     /// Runs one isolated task on behalf of another bot's delegation — a
     /// fresh `AgentRuntime` using THIS bot's own system prompt, skills,
     /// model, and sandbox, seeded with no history (a delegated ask is its
@@ -1182,23 +1450,120 @@ final class Bot: Identifiable, @unchecked Sendable {
         return await runIsolatedTask(systemPromptSuffix: suffix, goal: message, debugContext: "delegated from \(senderName)")
     }
 
+    /// Cheap pre-check for an un-@mentioned group turn: one tiny tool-less
+    /// model call (role + transcript only) instead of a full agent run with
+    /// the whole system prompt and skills, for turns that usually end in
+    /// silence anyway. Biased hard toward YES — any error, empty or
+    /// ambiguous answer proceeds to the full run, so this can only ever
+    /// skip a turn the bot itself clearly said it had nothing to add to.
+    func wantsToRespondInGroup(groupName: String, transcript: String, goalContext: String? = nil) async -> Bool {
+        guard sandbox != nil else { return true }
+        let role = tagline.isEmpty ? String(systemPromptText.prefix(300)) : tagline
+        let messages = [
+            ChatMessage(role: .system, content: "You are \(name), a member of the group chat \"\(groupName)\". Your role: \(role)"),
+            ChatMessage(role: .user, content: """
+                Recent group messages:
+                \(transcript)
+
+                \(goalContext.map { $0 + "\n\n" } ?? "")Should you reply to the latest message? Answer YES if it asks or invites anything of you or \
+                your role, or if you have something necessary to add that nobody has already said\(goalContext == nil ? "" : ", or if an open goal step is yours or you can unblock or advance the goal"). Answer \
+                NO only if it clearly has nothing to do with you or has already been fully handled. If \
+                unsure, answer YES. Reply with exactly one word: YES or NO.
+                """),
+        ]
+        let backend = await makeModelBackend()
+        guard let reply = try? await backend.chat(messages: messages, tools: [], model: selectedModel, temperature: 0),
+              !reply.message.content.isEmpty else { return true }
+        let answer = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let wants = !answer.hasPrefix("NO")
+        if DebugSettings.shared.isEnabled {
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "group: \(groupName)",
+                                text: "reply gate: \(wants ? "YES — running full turn" : "NO — skipped full turn")")
+        }
+        return wants
+    }
+
+    /// Cheap classifier for goal intake: is this user message an actionable
+    /// request (work to be done) rather than a question, greeting, or chat?
+    /// Errors resolve to `false` — no goal is safer than a spurious one.
+    func looksLikeActionableRequest(_ text: String) async -> Bool {
+        let messages = [
+            ChatMessage(role: .system, content: "You classify chat messages. Reply with exactly one word."),
+            ChatMessage(role: .user, content: """
+                Message from the user to a team of AI bots:
+                \(text)
+
+                Is this an actionable request that needs multi-step work by the team (build, install, fix, \
+                investigate, produce something)? Answer NO for questions, greetings, opinions, status \
+                checks, or casual chat. Reply with exactly one word: YES or NO.
+                """),
+        ]
+        let backend = await makeModelBackend()
+        guard let reply = try? await backend.chat(messages: messages, tools: [], model: selectedModel, temperature: 0) else { return false }
+        return reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("YES")
+    }
+
+    /// The owner's "where we are" post when a goal stalls.
+    func stallSummary(groupName: String, goalBlock: String, transcript: String) async -> String? {
+        let suffix = "You are the owner of the shared goal in the group chat \"\(groupName)\". Progress has stalled and the "
+            + "team is paused. Post ONE short status message for the user: what has been achieved, what is blocking or "
+            + "looping, and what you need from them (a decision, access, or a redirect). No @mentions of other members. "
+            + "Put the message in finish_task's summary."
+        let reply = await runIsolatedTask(
+            systemPromptSuffix: suffix, goal: goalBlock + "\n\nRecent conversation:\n" + transcript,
+            debugContext: "goal stalled: \(groupName)"
+        )
+        let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed.isEmpty || trimmed == "[[silent]]") ? nil : reply
+    }
+
     /// One turn in a group chat (see `GroupChatSession`) — same isolated
     /// mechanism as delegation, with the group's mention/silence rule
     /// instead of "delegated from another bot." Returns `nil` for a
     /// genuine `[[silent]]` (or an empty reply) — the group orchestrator
     /// drops those rather than posting an empty bubble.
-    func respondInGroup(groupName: String, otherMembers: [String], transcriptSoFar: String, wasMentioned: Bool) async -> String? {
-        let rule = wasMentioned
-            ? "You were just @mentioned by name in this group chat — you should respond."
-            : "Only respond if you genuinely have something necessary to add given your own role here. If "
+    func respondInGroup(
+        groupName: String, otherMembers: [String], transcriptSoFar: String,
+        wasMentioned: Bool, mentionedByBot: Bool = false,
+        extraSuffix: String = "",
+        goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil
+    ) async -> String? {
+        let mustReply = wasMentioned && !mentionedByBot
+        let rule: String
+        if mustReply {
+            rule = "You were just @mentioned (by name, or via @everyone) by the user in this group chat — you MUST "
+                + "post a substantive reply. Do not call finish_task with outcome: \"silent\"; put your actual "
+                + "reply in the summary."
+        } else if wasMentioned {
+            rule = "Another bot just @mentioned you (or used @everyone). Reply if there's something for you to do, "
+                + "answer, or add — do the work and post the result. If the message is only an acknowledgement, a "
+                + "thank-you, or needs nothing from you, call finish_task with outcome: \"silent\" instead of "
+                + "replying (the summary is never shown), so the exchange can end."
+        } else {
+            rule = "Only respond if you genuinely have something necessary to add given your own role here. If "
                 + "not, call finish_task with outcome: \"silent\" (the summary you give it is never shown "
                 + "to anyone, so a short internal note is fine). Do NOT call finish_task with outcome: "
                 + "\"done\" and a summary explaining that you're staying quiet, like \"No action needed "
                 + "from me right now\" or \"I'm waiting for X\" — that summary posts to the group as a real "
                 + "message exactly like any other reply, which is the opposite of staying silent."
+        }
+        let goalRule = " Everyone here works asynchronously and replies as soon as they're done, so read the whole "
+            + "transcript for what's already been said. If the shared goal isn't met yet and there's a next step, "
+            + "do your part and @mention the specific member who should act next; when the goal is met, say so "
+            + "plainly and stop @mentioning people."
         let suffix = "You're one of up to 6 bots in the group chat \"\(groupName)\", alongside: "
-            + "\(otherMembers.joined(separator: ", ")). Messages below are labeled by who sent them. \(rule)"
-        let reply = await runIsolatedTask(systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)")
+            + "\(otherMembers.joined(separator: ", ")). Messages below are labeled by who sent them. \(rule)\(goalRule)\(extraSuffix.isEmpty ? "" : "\n\n" + extraSuffix)"
+        var reply = await runIsolatedTask(systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler)
+        if mustReply, reply.contains("[[silent]]") {
+            // Being called on (especially via @everyone) means every member
+            // answers. A model that opted out anyway gets exactly one
+            // retry with the opt-out spelled out as not allowed.
+            reply = await runIsolatedTask(
+                systemPromptSuffix: suffix + " Staying silent is NOT allowed for this turn — you were explicitly "
+                    + "called on. Post a short reply; if you truly have nothing to add, say that in one sentence.",
+                goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: mentioned)", goalHandler: goalHandler
+            )
+        }
         let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         // Tolerant on purpose: a model that wraps the sentinel in a little
         // extra narration ("I'll stay quiet. [[silent]]") still means to
@@ -1207,7 +1572,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         // (or a genuinely empty reply) counts when NOT mentioned — being
         // mentioned always posts, even if the model echoes the token by
         // mistake, so a direct question never silently vanishes.
-        guard !wasMentioned else { return trimmed.isEmpty ? nil : reply }
+        guard !mustReply else { return (trimmed.isEmpty || trimmed == "[[silent]]") ? nil : reply }
         return (trimmed.isEmpty || trimmed.contains("[[silent]]")) ? nil : reply
     }
 
@@ -1321,7 +1686,25 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// someone hit "Stop" on their own chat. Same reasoning for a group
     /// turn (`GroupChatSession.runTurn`'s own `Task`, unrelated to any
     /// member's `drainTask`).
-    private func runIsolatedTask(systemPromptSuffix: String, goal: String, debugContext: String) async -> String {
+    /// Appended to every isolated run's prompt. Without it, models narrate
+    /// their intent as plain text ("I'll post it now") and the posted
+    /// message ends up being that narration instead of the actual content.
+    private static let isolatedReplyContract = """
+        How your reply is delivered: the `summary` you pass to finish_task is posted verbatim as your \
+        message — it is what everyone reads. Put the complete, final message there (for a stand-up, \
+        announcement, or answer: the full text itself, not a description of it). Do NOT write plain text \
+        first announcing what you're about to post or confirming you did; just do any needed work with \
+        tools, then call finish_task with the finished message.
+
+        Your user mostly reads your private 1:1 chat, not this one. When something meaningful happens \
+        here (a task done, a result, a blocker, a decision needed), also call update_user with a short \
+        note so they're kept informed — load the where-to-post skill if unsure what belongs where.
+        """
+
+    private func runIsolatedTask(
+        systemPromptSuffix: String, goal: String, debugContext: String,
+        goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil
+    ) async -> String {
         guard let sandbox, let handle else { return "\(name) has no running sandbox to work with right now." }
         return await Task {
             do {
@@ -1346,7 +1729,13 @@ final class Bot: Identifiable, @unchecked Sendable {
             )
             let selectedSkills = availableSkills.filter { selectedSkillIDs.contains($0.id) }
 
-            var resultText = "(\(name) didn't produce a response.)"
+            // Which text gets posted is decided by `IsolatedReplyPicker` (see
+            // its doc comment) — neither the model's plain-text turns nor
+            // `finish_task`'s summary is reliably the real answer, so
+            // picking one field by position (last-wins either way) was
+            // wrong in one direction or the other.
+            var replyPicker = IsolatedReplyPicker()
+            let toolCallCounter = ToolCallCounter()
             // Set when `finish_task` is called with `outcome: "silent"` — the
             // reliable way to opt out of responding (see `respondInGroup`),
             // backed by the same required-tool-call schema as `finish_task`
@@ -1395,6 +1784,11 @@ final class Bot: Identifiable, @unchecked Sendable {
                             self?.createRoutineFromTool(arguments) ?? ["error": "bot no longer available"]
                         }
                     },
+                    onEditRoutine: { [weak self] arguments in
+                        await MainActor.run {
+                            self?.editRoutineFromTool(arguments) ?? ["error": "bot no longer available"]
+                        }
+                    },
                     onRemoveRoutine: { [weak self] arguments in
                         await MainActor.run {
                             self?.removeRoutineFromTool(arguments) ?? ["error": "bot no longer available"]
@@ -1411,6 +1805,16 @@ final class Bot: Identifiable, @unchecked Sendable {
                     },
                     onGetProfile: { [weak self] in
                         await MainActor.run { self?.getProfileForTool() ?? ["error": "bot no longer available"] }
+                    },
+                    // Self-scoped display-only note into this bot's own 1:1
+                    // chat — the way an isolated run keeps the user informed.
+                    onUpdateUser: { [weak self] message in
+                        await MainActor.run {
+                            self?.postUpdateToUser(message, source: debugContext) ?? ["error": "bot no longer available"]
+                        }
+                    },
+                    onGoalTool: goalHandler.map { handler in
+                        { name, arguments in await handler(name, arguments, toolCallCounter.value) }
                     }
                 ),
                 permissions: permissions,
@@ -1418,8 +1822,10 @@ final class Bot: Identifiable, @unchecked Sendable {
                 modelName: model,
                 onEvent: { [weak self] event in
                     switch event {
-                    case .message(let msg) where msg.role == .assistant && !msg.content.isEmpty:
-                        resultText = msg.content
+                    case .message(let msg):
+                        replyPicker.observe(msg)
+                    case .toolStarted(let toolName, _):
+                        toolCallCounter.note(toolName)
                     case .status(.aborted("silent")):
                         isSilent = true
                     default:
@@ -1440,7 +1846,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 }
             )
 
-            await runtime.start(systemPrompt: fullSystemPrompt() + "\n\n---\n\n" + systemPromptSuffix, goal: withRelevantMemoryContext(goal))
+            await runtime.start(systemPrompt: fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract, goal: withRelevantMemoryContext(goal))
+            let resultText = replyPicker.result ?? "(\(name) didn't produce a response.)"
             return isSilent ? "[[silent]]" : resultText
         }.value
     }
@@ -1539,6 +1946,12 @@ final class Bot: Identifiable, @unchecked Sendable {
     func refreshPermissions() async {
         sessionAllowedBinaries = await permissions.list(scope: .session)
         globalAllowedBinaries = await permissions.list(scope: .global)
+        blanketShellScopes = await permissions.blanketScopes(botID: id)
+    }
+
+    func revokeAllShell(scope: RunShellPermissions.BlanketScope) async {
+        await permissions.revokeAll(botID: id, scope: scope)
+        await refreshPermissions()
     }
 
     func revokePermission(_ binary: String, scope: RunShellPermissions.Scope) async {
@@ -1552,7 +1965,14 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// it was ever relevant. `ToolRegistry(skills:)` is what actually loads
     /// a skill's full text, lazily, via the `use_skill` tool, the moment
     /// (if ever) the model calls it.
-    private func fullSystemPrompt() -> String {
+    /// `isolated: true` is for group turns, delegations, and routines-in-
+    /// group (`runIsolatedTask`): they run with no `list_bots`/`message_bot`,
+    /// so the other-bots directory (and its instructions to use those
+    /// tools) is both dead weight and actively misleading there, and the
+    /// skills catalog is trimmed to short one-liners. Together that's
+    /// roughly 1.5-2k fewer prompt tokens to process on EVERY member's
+    /// turn — which adds up fast on a local model.
+    private func fullSystemPrompt(isolated: Bool = false) -> String {
         // Stated plainly up front rather than left for the model to infer
         // (or guess wrong) — needed for e.g. `add_bot_to_group` when the
         // user asks a bot to add ITSELF to a group by name, and for a
@@ -1569,7 +1989,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 + "task — call use_skill(name: \"<name>\") to load one's full instructions ONLY when its "
                 + "description actually matches what you're about to do:\n\n"
             for skill in selected {
-                let summary = skill.description.isEmpty ? skill.name : skill.description
+                var summary = skill.description.isEmpty ? skill.name : skill.description
+                if isolated, summary.count > 90 { summary = String(summary.prefix(90)) + "…" }
                 result += "- \(skill.id): \(summary)\n"
             }
         }
@@ -1596,7 +2017,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 result += "- \(routine.schedule.summary): \(routine.instruction)\n"
             }
         }
-        let others = botDirectory.directory(excluding: id)
+        let others = isolated ? [] : botDirectory.directory(excluding: id)
         if !others.isEmpty {
             result += "\n\n---\n\nOther bots on this Mac, and what each one handles — use list_bots for a "
                 + "live check (this list was current when this conversation started, but bots can be added, "
@@ -1821,6 +2242,11 @@ final class Bot: Identifiable, @unchecked Sendable {
                                 self?.createRoutineFromTool(arguments) ?? ["error": "bot no longer available"]
                             }
                         },
+                        onEditRoutine: { [weak self] arguments in
+                            await MainActor.run {
+                                self?.editRoutineFromTool(arguments) ?? ["error": "bot no longer available"]
+                            }
+                        },
                         onRemoveRoutine: { [weak self] arguments in
                             await MainActor.run {
                                 self?.removeRoutineFromTool(arguments) ?? ["error": "bot no longer available"]
@@ -1846,6 +2272,11 @@ final class Bot: Identifiable, @unchecked Sendable {
                         onAddBotToGroup: { [weak self] botName, groupName in
                             guard let self else { return ["error": "bot no longer available"] }
                             return await self.addBotToGroup(botName: botName, groupName: groupName)
+                        },
+                        onPostToGroup: { [weak self] groupName, message in
+                            await MainActor.run {
+                                self?.postToGroup(groupName: groupName, message: message) ?? ["error": "bot no longer available"]
+                            }
                         }
                     ),
                     permissions: permissions,
@@ -1909,8 +2340,46 @@ final class Bot: Identifiable, @unchecked Sendable {
         drainTask = nil
     }
 
+    /// Streamed tokens are buffered and applied to `displayMessages` at
+    /// most every ~60ms — mutating an `@Observable` array per token
+    /// re-rendered (and re-highlighted) the whole transcript hundreds of
+    /// times a reply. Every non-delta event flushes first, so ordering
+    /// against messages/tool events is unchanged.
+    private var pendingDeltaBuffer = ""
+    private var deltaFlushTask: Task<Void, Never>?
+
+    private func flushPendingDelta() {
+        deltaFlushTask?.cancel()
+        deltaFlushTask = nil
+        guard !pendingDeltaBuffer.isEmpty else { return }
+        let delta = pendingDeltaBuffer
+        pendingDeltaBuffer = ""
+        if let index = streamingIndex {
+            if pendingReuseClear {
+                displayMessages[index].text = ""
+                pendingReuseClear = false
+            }
+            displayMessages[index].text += delta
+        } else {
+            displayMessages.append(DisplayMessage(role: .assistant, text: delta))
+            streamingIndex = displayMessages.count - 1
+        }
+    }
+
     private func handleEvent(_ event: AgentRuntime.Event) {
         logToDebugConsole(event)
+        if case .messageDelta(let delta) = event {
+            pendingDeltaBuffer += delta
+            if deltaFlushTask == nil {
+                deltaFlushTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 60_000_000)
+                    guard !Task.isCancelled else { return }
+                    self?.flushPendingDelta()
+                }
+            }
+            return
+        }
+        flushPendingDelta()
         switch event {
         case .status(let runtimeStatus):
             // A model call that comes back with no tool call at all just
@@ -1931,17 +2400,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 pendingReuseClear = true
             }
             status = describe(runtimeStatus)
-        case .messageDelta(let delta):
-            if let index = streamingIndex {
-                if pendingReuseClear {
-                    displayMessages[index].text = ""
-                    pendingReuseClear = false
-                }
-                displayMessages[index].text += delta
-            } else {
-                displayMessages.append(DisplayMessage(role: .assistant, text: delta))
-                streamingIndex = displayMessages.count - 1
-            }
+        case .messageDelta:
+            break
         case .message(let message):
             guard message.role != .system, !message.content.isEmpty else { return }
             // `!message.isTaskSummary` matters here: finish_task's own
@@ -2062,4 +2522,21 @@ final class Bot: Identifiable, @unchecked Sendable {
     func exportTranscriptText() -> String {
         displayMessages.map { "\(roleLabel($0.role)):\n\($0.text)" }.joined(separator: "\n\n")
     }
+}
+
+/// Counts real (non-bookkeeping) tool executions in one isolated run — the
+/// evidence signal `GroupGoal.updateStep` uses to decide whether a "done"
+/// claim came from a turn that actually did something.
+final class ToolCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private static let bookkeeping: Set<String> = [
+        "finish_task", "update_user", "get_goal", "propose_goal", "add_goal_step",
+        "update_goal_step", "propose_goal_complete", "use_skill", "get_profile", "list_routines",
+    ]
+    func note(_ toolName: String) {
+        guard !Self.bookkeeping.contains(toolName) else { return }
+        lock.lock(); count += 1; lock.unlock()
+    }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }

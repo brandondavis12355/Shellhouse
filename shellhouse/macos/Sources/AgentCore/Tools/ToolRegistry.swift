@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 /// Swift port of the sandbox-facing subset of `api/agent/tools.py`'s 17
 /// tools — the ones that let the model act inside the VM: files, shell,
@@ -68,13 +69,17 @@ public struct ToolRegistry: Sendable {
         onCompleteTask: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
         onListTasks: (@Sendable () async -> [[String: Any]])? = nil,
         onCreateRoutine: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
+        onEditRoutine: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
         onRemoveRoutine: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
         onListRoutines: (@Sendable () async -> [[String: Any]])? = nil,
         onGetProfile: (@Sendable () async -> [String: Any])? = nil,
         onListBots: (@Sendable () async -> [[String: Any]])? = nil,
         onMessageBot: (@Sendable (String, String) async -> [String: Any])? = nil,
         onCreateBot: (@Sendable (String, String, String?) async -> [String: Any])? = nil,
-        onAddBotToGroup: (@Sendable (String, String) async -> [String: Any])? = nil
+        onAddBotToGroup: (@Sendable (String, String) async -> [String: Any])? = nil,
+        onPostToGroup: (@Sendable (String, String) async -> [String: Any])? = nil,
+        onUpdateUser: (@Sendable (String) async -> [String: Any])? = nil,
+        onGoalTool: (@Sendable (String, [String: AnyCodable]) async -> [String: Any])? = nil
     ) {
         var schemas = Self.buildSchemas()
         var executors = Self.buildExecutors()
@@ -138,6 +143,12 @@ public struct ToolRegistry: Sendable {
                 await onCreateRoutine(arguments)
             }
         }
+        if let onEditRoutine {
+            schemas.append(Self.editRoutineSchema)
+            executors["edit_routine"] = { _, _, arguments, _ in
+                await onEditRoutine(arguments)
+            }
+        }
         if let onRemoveRoutine {
             schemas.append(Self.removeRoutineSchema)
             executors["remove_routine"] = { _, _, arguments, _ in
@@ -184,6 +195,32 @@ public struct ToolRegistry: Sendable {
                     return ["error": "add_bot_to_group requires 'bot_name' and 'group_name'"]
                 }
                 return await onAddBotToGroup(botName, groupName)
+            }
+        }
+        if let onGoalTool {
+            for schema in Self.goalSchemas {
+                schemas.append(schema)
+                let toolName = schema.name
+                executors[toolName] = { _, _, arguments, _ in await onGoalTool(toolName, arguments) }
+            }
+        }
+        if let onUpdateUser {
+            schemas.append(Self.updateUserSchema)
+            executors["update_user"] = { _, _, arguments, _ in
+                guard let message = arguments["message"]?.asString, !message.isEmpty else {
+                    return ["error": "update_user requires a non-empty 'message'"]
+                }
+                return await onUpdateUser(message)
+            }
+        }
+        if let onPostToGroup {
+            schemas.append(Self.postToGroupSchema)
+            executors["post_to_group"] = { _, _, arguments, _ in
+                guard let groupName = arguments["group_name"]?.asString, !groupName.isEmpty,
+                      let message = arguments["message"]?.asString, !message.isEmpty else {
+                    return ["error": "post_to_group requires 'group_name' and 'message'"]
+                }
+                return await onPostToGroup(groupName, message)
             }
         }
         self.schemas = schemas
@@ -323,6 +360,39 @@ public struct ToolRegistry: Sendable {
         )
     }
 
+    private static var editRoutineSchema: ToolSchema {
+        ToolSchema(
+            name: "edit_routine",
+            description: "Change one or more fields of a routine you already have (see list_routines for "
+                + "the exact id) — a wrong time, a typo in the instruction, moving it to a different group, "
+                + "or disabling it without deleting it. Only the fields you actually pass get changed; "
+                + "everything else stays as it was. Prefer this over remove_routine + create_routine for a "
+                + "small correction — that loses the routine's history and gives it a new id for no reason.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "id": ["type": "string", "description": "Exact routine id from list_routines."],
+                    "instruction": ["type": "string", "description": "New instruction text, if changing it."],
+                    "schedule_type": [
+                        "type": "string",
+                        "enum": ["once", "daily", "interval_minutes"],
+                        "description": "New schedule shape, if changing it — pass the matching 'at'/'hour'+'minute'/'minutes' field alongside it, same as create_routine.",
+                    ],
+                    "at": ["type": "string", "description": "New value for schedule_type 'once' — an ISO 8601 date-time in the future."],
+                    "hour": ["type": "integer", "description": "New value for schedule_type 'daily': 0-23."],
+                    "minute": ["type": "integer", "description": "New value for schedule_type 'daily': 0-59."],
+                    "minutes": ["type": "integer", "description": "New value for schedule_type 'interval_minutes'."],
+                    "target_group": [
+                        "type": "string",
+                        "description": "New target group name, if changing it. Pass an empty string to clear it back to your own 1:1 chat.",
+                    ],
+                    "enabled": ["type": "boolean", "description": "Pass false to pause it without deleting it, or true to re-enable it."],
+                ],
+                "required": ["id"],
+            ]
+        )
+    }
+
     private static var removeRoutineSchema: ToolSchema {
         ToolSchema(
             name: "remove_routine",
@@ -433,6 +503,68 @@ public struct ToolRegistry: Sendable {
         )
     }
 
+    private static var goalSchemas: [ToolSchema] {
+        func schema(_ name: String, _ description: String, _ properties: [String: Any], required: [String]) -> ToolSchema {
+            ToolSchema(name: name, description: description, parameters: ["type": "object", "properties": properties, "required": required])
+        }
+        let str: (String) -> [String: Any] = { ["type": "string", "description": $0] }
+        return [
+            schema("get_goal", "Read the group's current goal, its checklist (with step ids), and progress. Read-only.", [:], required: []),
+            schema("propose_goal",
+                   "Group goal owner only, and only when there is no live goal: turn the user's actionable request into a goal with a short checklist of concrete, verifiable steps. Do not use for questions or small talk.",
+                   ["title": str("One-line goal."),
+                    "steps": ["type": "array", "items": ["type": "string"], "description": "2-8 concrete steps, in order."]],
+                   required: ["title", "steps"]),
+            schema("add_goal_step", "Goal owner only: append a step to the checklist.", ["text": str("The new step.")], required: ["text"]),
+            schema("update_goal_step",
+                   "Update a checklist step. Set 'inProgress' when you take it on, 'blocked' (with the reason as evidence) if you can't proceed, or 'done' — done REQUIRES evidence: what you ran or checked in THIS turn and what it showed. Only verified completions count as progress.",
+                   ["step_id": str("Step id from get_goal / the goal block."),
+                    "status": ["type": "string", "enum": ["inProgress", "done", "blocked"]],
+                    "evidence": str("Required for done: what you did/checked and the result."),
+                    "assignee": str("Optional: who is on it (usually you).")],
+                   required: ["step_id", "status"]),
+            schema("propose_goal_complete",
+                   "Goal owner only: when every step is done (or blocked with a reason), propose the goal as complete. The user must confirm. Give a short summary of the outcome.",
+                   ["summary": str("What was accomplished, and any blocked items.")], required: ["summary"]),
+        ]
+    }
+
+    private static var updateUserSchema: ToolSchema {
+        ToolSchema(
+            name: "update_user",
+            description: "Post a short status message into your own private 1:1 chat with your user, so they "
+                + "see what's happening even though you're working somewhere else (a group chat, a delegated "
+                + "request, a routine). Use it for meaningful news — something finished, a result, a blocker, "
+                + "a decision that needs them, or a heads-up about what you just did in a group. Not for "
+                + "play-by-play. Write it as you'd tell the user directly. Does not notify anyone else.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "message": ["type": "string", "description": "What to tell the user, in plain language."],
+                ],
+                "required": ["message"],
+            ]
+        )
+    }
+
+    private static var postToGroupSchema: ToolSchema {
+        ToolSchema(
+            name: "post_to_group",
+            description: "Post a message into a group chat you're already a member of, right now, exactly as "
+                + "written — it appears under your name. Use it when asked to tell, announce, or ask something "
+                + "in a group. @mention a member by name (or @everyone) to call on them; they'll be prompted "
+                + "to respond. Write the actual message text, not a description of it.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "group_name": ["type": "string", "description": "Exact name of the group chat (you must be a member)."],
+                    "message": ["type": "string", "description": "The full message to post, verbatim."],
+                ],
+                "required": ["group_name", "message"],
+            ]
+        )
+    }
+
     private static var addBotToGroupSchema: ToolSchema {
         ToolSchema(
             name: "add_bot_to_group",
@@ -497,7 +629,23 @@ public struct ToolRegistry: Sendable {
               let data = try? await sandbox.readFile(sandboxID, path: filename, maxBytes: 10_000_000) else {
             return nil
         }
-        return (filename, data.count, data.base64EncodedString())
+        return (filename, data.count, compressedForModel(data).base64EncodedString())
+    }
+
+    /// PNG -> JPEG (q≈0.7) at the SAME pixel dimensions, for what's sent
+    /// to the model only (the file in the sandbox stays PNG). Same size
+    /// matters: click coordinates the model reads off the image must stay
+    /// valid, so this deliberately does not downscale. Screenshots are
+    /// typically 5-10x smaller as JPEG, which cuts request size and base64
+    /// cost every iteration. Falls back to the original bytes on any failure.
+    private static func compressedForModel(_ png: Data) -> Data {
+        guard let source = CGImageSourceCreateWithData(png as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return png }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, "public.jpeg" as CFString, 1, nil) else { return png }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.7] as CFDictionary)
+        guard CGImageDestinationFinalize(destination), output.length > 0, output.length < png.count else { return png }
+        return output as Data
     }
 
     // MARK: - Schemas
@@ -863,4 +1011,5 @@ public extension AnyCodable {
         return nil
     }
     var asStringArray: [String]? { (value as? [Any])?.compactMap { $0 as? String } }
+    var asBool: Bool? { value as? Bool }
 }

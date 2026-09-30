@@ -38,6 +38,15 @@ struct ApprovalCard: View {
                     .fixedSize()
                     .font(.system(size: 14))
                 }
+                if approval.toolName == "run_shell" {
+                    Menu("Allow all shell commands…") {
+                        Button("This bot, this session") { onDecide(.approveAllShellThisBotSession) }
+                        Button("This bot, always") { onDecide(.approveAllShellThisBotAlways) }
+                        Button("Every bot, always (global)") { onDecide(.approveAllShellEveryBot) }
+                    }
+                    .fixedSize()
+                    .font(.system(size: 14))
+                }
                 Spacer()
                 Button("Deny") { onDecide(.deny) }
                     .font(.system(size: 14))
@@ -198,63 +207,82 @@ struct BotDetailView: View {
                         }
 
                         if !slashSuggestions.isEmpty {
-                            ScrollView(.vertical, showsIndicators: true) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    ForEach(Array(slashSuggestions.enumerated()), id: \.element.id) { index, skill in
-                                        Button {
-                                            insertSlashCommand(skill)
-                                        } label: {
-                                            VStack(alignment: .leading, spacing: 1) {
-                                                Text("/\(skill.id)").font(.caption).bold().foregroundStyle(.purple)
-                                                if !skill.description.isEmpty {
-                                                    Text(skill.description).font(.caption2).foregroundStyle(.secondary)
+                            ScrollViewReader { scrollProxy in
+                                ScrollView(.vertical, showsIndicators: true) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        ForEach(Array(slashSuggestions.enumerated()), id: \.element.id) { index, skill in
+                                            Button {
+                                                insertSlashCommand(skill)
+                                            } label: {
+                                                VStack(alignment: .leading, spacing: 1) {
+                                                    Text("/\(skill.id)").font(.caption).bold().foregroundStyle(.purple)
+                                                    if !skill.description.isEmpty {
+                                                        Text(skill.description).font(.caption2).foregroundStyle(.secondary)
+                                                    }
                                                 }
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(
+                                                    index == highlightedSuggestionIndex ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12),
+                                                    in: RoundedRectangle(cornerRadius: 6)
+                                                )
                                             }
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
-                                            .background(
-                                                index == highlightedSuggestionIndex ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12),
-                                                in: RoundedRectangle(cornerRadius: 6)
-                                            )
+                                            .buttonStyle(.plain)
+                                            .id(index)
                                         }
-                                        .buttonStyle(.plain)
                                     }
                                 }
+                                .frame(maxHeight: 180)
+                                // Keeps the highlighted row in view as the
+                                // arrow keys move it past whatever's
+                                // currently scrolled into frame — without
+                                // this, moving the highlight past the
+                                // visible ~180pt just looked like nothing
+                                // was happening.
+                                .onChange(of: highlightedSuggestionIndex) { _, newIndex in
+                                    scrollProxy.scrollTo(newIndex, anchor: nil)
+                                }
                             }
-                            .frame(maxHeight: 180)
                         }
 
                         if !mentionSuggestions.isEmpty {
-                            ScrollView(.vertical, showsIndicators: true) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    ForEach(Array(mentionSuggestions.enumerated()), id: \.element.id) { index, other in
-                                        Button { insertMention(other) } label: {
-                                            HStack(spacing: 6) {
-                                                BotAvatar(colorHex: other.colorHex, style: AvatarStyle(rawValue: other.avatarStyle) ?? .blob, size: 18)
-                                                VStack(alignment: .leading, spacing: 0) {
-                                                    Text(other.name).font(.caption).bold().foregroundStyle(Color(hex: other.colorHex))
-                                                    if !other.tagline.isEmpty {
-                                                        Text(other.tagline).font(.caption2).foregroundStyle(.secondary)
+                            ScrollViewReader { scrollProxy in
+                                ScrollView(.vertical, showsIndicators: true) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        ForEach(Array(mentionSuggestions.enumerated()), id: \.element.id) { index, other in
+                                            Button { insertMention(other) } label: {
+                                                HStack(spacing: 6) {
+                                                    BotAvatar(colorHex: other.colorHex, style: AvatarStyle(rawValue: other.avatarStyle) ?? .blob, size: 18)
+                                                    VStack(alignment: .leading, spacing: 0) {
+                                                        Text(other.name).font(.caption).bold().foregroundStyle(Color(hex: other.colorHex))
+                                                        if !other.tagline.isEmpty {
+                                                            Text(other.tagline).font(.caption2).foregroundStyle(.secondary)
+                                                        }
                                                     }
                                                 }
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(
+                                                    // Slash suggestions take keyboard priority when both are
+                                                    // showing at once (see `activeSuggestionList`), so this
+                                                    // list only shows its own highlight when slash isn't active.
+                                                    (slashSuggestions.isEmpty && index == highlightedSuggestionIndex) ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12),
+                                                    in: RoundedRectangle(cornerRadius: 6)
+                                                )
                                             }
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
-                                            .background(
-                                                // Slash suggestions take keyboard priority when both are
-                                                // showing at once (see `activeSuggestionList`), so this
-                                                // list only shows its own highlight when slash isn't active.
-                                                (slashSuggestions.isEmpty && index == highlightedSuggestionIndex) ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12),
-                                                in: RoundedRectangle(cornerRadius: 6)
-                                            )
+                                            .buttonStyle(.plain)
+                                            .id(index)
                                         }
-                                        .buttonStyle(.plain)
                                     }
                                 }
+                                .frame(maxHeight: 140)
+                                .onChange(of: highlightedSuggestionIndex) { _, newIndex in
+                                    guard slashSuggestions.isEmpty else { return }
+                                    scrollProxy.scrollTo(newIndex, anchor: nil)
+                                }
                             }
-                            .frame(maxHeight: 140)
                         }
 
                         HStack(alignment: .bottom) {

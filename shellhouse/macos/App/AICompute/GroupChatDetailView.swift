@@ -46,6 +46,13 @@ struct GroupChatDetailView: View {
                 .help("Group settings — rename, members, delete.")
             }
 
+            if group.goal != nil {
+                GroupGoalCard(
+                    group: group,
+                    ownerName: resolvedMembers.first(where: { $0.id == group.goal?.ownerBotID })?.name ?? "owner"
+                )
+            }
+
             GroupChatTranscriptView(
                 messages: group.displayMessages,
                 memberColors: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.id, $0.colorHex) }),
@@ -63,45 +70,54 @@ struct GroupChatDetailView: View {
             }
 
             if !mentionSuggestionItems.isEmpty {
-                ScrollView(.vertical, showsIndicators: true) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(mentionSuggestionItems.enumerated()), id: \.element.id) { index, item in
-                            Button {
-                                select(item)
-                            } label: {
-                                Group {
-                                    switch item {
-                                    case .everyone:
-                                        // Gray, same as `@everyone`'s pill color in the
-                                        // transcript (`MentionPillText`) — it addresses
-                                        // every member at once, not one bot's own color.
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "person.3.fill")
-                                                .foregroundStyle(.gray)
-                                                .frame(width: 18)
-                                            Text("Everyone").font(.caption).bold().foregroundStyle(.gray)
-                                            Text("— calls on every member").font(.caption2).foregroundStyle(.secondary)
-                                        }
-                                    case .bot(let bot):
-                                        HStack(spacing: 6) {
-                                            BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 18)
-                                            Text(bot.name).font(.caption).bold().foregroundStyle(Color(hex: bot.colorHex))
+                ScrollViewReader { scrollProxy in
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(mentionSuggestionItems.enumerated()), id: \.element.id) { index, item in
+                                Button {
+                                    select(item)
+                                } label: {
+                                    Group {
+                                        switch item {
+                                        case .everyone:
+                                            // Gray, same as `@everyone`'s pill color in the
+                                            // transcript (`MentionPillText`) — it addresses
+                                            // every member at once, not one bot's own color.
+                                            HStack(spacing: 6) {
+                                                Image(systemName: "person.3.fill")
+                                                    .foregroundStyle(.gray)
+                                                    .frame(width: 18)
+                                                Text("Everyone").font(.caption).bold().foregroundStyle(.gray)
+                                                Text("— calls on every member").font(.caption2).foregroundStyle(.secondary)
+                                            }
+                                        case .bot(let bot):
+                                            HStack(spacing: 6) {
+                                                BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 18)
+                                                Text(bot.name).font(.caption).bold().foregroundStyle(Color(hex: bot.colorHex))
+                                            }
                                         }
                                     }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        index == highlightedSuggestionIndex ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12),
+                                        in: RoundedRectangle(cornerRadius: 6)
+                                    )
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(
-                                    index == highlightedSuggestionIndex ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12),
-                                    in: RoundedRectangle(cornerRadius: 6)
-                                )
+                                .buttonStyle(.plain)
+                                .id(index)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
+                    .frame(maxHeight: 140)
+                    // See `BotDetailView`'s matching comment — keeps the
+                    // highlighted row in view as the arrow keys move it
+                    // past whatever's currently scrolled into frame.
+                    .onChange(of: highlightedSuggestionIndex) { _, newIndex in
+                        scrollProxy.scrollTo(newIndex, anchor: nil)
+                    }
                 }
-                .frame(maxHeight: 140)
             }
 
             if group.memberBotIDs.isEmpty {
@@ -156,8 +172,13 @@ struct GroupChatDetailView: View {
                             mentionTracker.handleChange(old: old, new: new)
                             highlightedSuggestionIndex = 0
                         }
-                    Button(group.isBusy ? "Working…" : "Send") { group.submitInput() }
-                        .disabled(group.input.isEmpty || group.isBusy)
+                    // Deliberately NOT disabled while `group.isBusy` — see
+                    // `GroupChatSession.submitInput`'s doc comment. Typing
+                    // something else in while a member is mid-response
+                    // should still land in the transcript right away, not
+                    // wait for that response to finish first.
+                    Button("Send") { group.submitInput() }
+                        .disabled(group.input.isEmpty)
                         .font(.system(size: 16))
                         .controlSize(.large)
                 }
@@ -315,6 +336,17 @@ struct GroupChatSettingsView: View {
             }
             .frame(height: 200)
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+
+            Divider()
+            Text("Goals").font(.caption).foregroundStyle(.secondary)
+            Picker("Coordinator (owns goals by default)", selection: $group.coordinatorBotID) {
+                Text("Auto (manager-like role, else first member)").tag(String?.none)
+                ForEach(allBots.filter { group.memberBotIDs.contains($0.id) }) { bot in
+                    Text(bot.name).tag(String?.some(bot.id))
+                }
+            }
+            Stepper("Pause after \(group.stallLimit) messages without progress", value: $group.stallLimit, in: 10...200, step: 5)
+            Stepper("Auto-close unconfirmed goals after \(group.confirmTimeoutMinutes) min", value: $group.confirmTimeoutMinutes, in: 5...1440, step: 5)
 
             Divider()
             Button("Delete group…", role: .destructive) { showingDeleteConfirm = true }

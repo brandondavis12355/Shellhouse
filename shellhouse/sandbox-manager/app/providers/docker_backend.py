@@ -22,11 +22,13 @@ A fresh container starts fast (a couple of seconds, vs ~15s for a microVM) but
 still shares the host kernel. For genuinely disposable machines, use
 FirecrackerBackend.
 
-Known tradeoff, stated rather than hidden: every container mounts the *same*
-workspace volume and uses a per-task subdirectory of it, because the API
-serves screenshots straight off that volume. Tasks are therefore separated by
-path convention, not by a mount boundary. Fine for single-user local use; not
-sufficient for multi-tenant.
+Workspace isolation: by default each task/bot gets its OWN named volume
+(`agent-workspace-<task>`) mounted at /workspace, so a compromised sandbox
+cannot read or modify another bot's files. Existing data is copied one time
+from the legacy shared volume's `<task>/` subdirectory. Set
+SANDBOX_PER_BOT_VOLUMES=0 to fall back to the old layout (every container
+mounts the shared volume and uses a per-task subdirectory — separated by path
+convention only), which the web/API stack needs to serve screenshots.
 """
 import asyncio
 import base64
@@ -42,6 +44,7 @@ SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "agent-desktop:local")
 SANDBOX_USER = os.environ.get("SANDBOX_USER", "box")
 WORKSPACE = "/workspace"
 WORKSPACE_VOLUME = os.environ.get("WORKSPACE_VOLUME", "shellhouse_workspace")
+PER_BOT_VOLUMES = os.environ.get("SANDBOX_PER_BOT_VOLUMES", "1").lower() in ("1", "true", "yes")
 NOVNC_URL = os.environ.get(
     "NOVNC_URL", "http://localhost:6080/vnc.html?autoconnect=1&resize=scale"
 )
@@ -108,6 +111,45 @@ class DockerBackend:
             return await self.start(SHARED_CONTAINER)
         return await self._create_or_attach(task_id, persistent=persistent)
 
+    def _ensure_bot_volume(self, safe_task: str) -> str:
+        """Create this task's own workspace volume if it doesn't exist yet,
+        seeding it once from the legacy shared volume's `<task>/` directory.
+        Blocking (Docker SDK) — call from a worker thread."""
+        client = self._docker()
+        vol_name = f"agent-workspace-{safe_task}"
+        try:
+            client.volumes.get(vol_name)
+            return vol_name
+        except docker.errors.NotFound:
+            pass
+        client.volumes.create(name=vol_name, labels={LABEL_MANAGED: "true", LABEL_TASK: safe_task})
+        # safe_task is [A-Za-z0-9_-] only, so it is safe to interpolate.
+        script = (
+            f'if [ -d "/old/{safe_task}" ]; then cp -a "/old/{safe_task}/." /new/; fi; '
+            "chown -R box:box /new"
+        )
+        try:
+            client.containers.run(
+                SANDBOX_IMAGE,
+                entrypoint=["/bin/bash", "-c"],
+                command=[script],
+                user="root",
+                volumes={
+                    WORKSPACE_VOLUME: {"bind": "/old", "mode": "ro"},
+                    vol_name: {"bind": "/new", "mode": "rw"},
+                },
+                network_mode="none",
+                cap_drop=["ALL"],
+                cap_add=["CHOWN", "DAC_OVERRIDE", "FOWNER"],
+                remove=True,
+                detach=False,
+            )
+        except Exception:
+            # Migration is best-effort: an empty per-bot volume is still a
+            # correct, isolated workspace. Never block sandbox creation.
+            pass
+        return vol_name
+
     async def _create_or_attach(self, task_id: str, persistent: bool) -> SandboxHandle:
         safe_task = "".join(c for c in task_id if c.isalnum() or c in "-_")[:32]
         name = f"agent-sandbox-{safe_task}"
@@ -123,6 +165,22 @@ class DockerBackend:
         except docker.errors.NotFound:
             pass
 
+        # Opt-in: lets `box` use passwordless sudo inside its own container.
+        # Requires dropping no-new-privileges (setuid-root sudo can't elevate
+        # under it) and restoring the caps root needs for package installs.
+        # Default off — the sandbox is treated as compromised-by-default.
+        allow_sudo = os.environ.get("SANDBOX_ALLOW_SUDO", "0").lower() in ("1", "true", "yes")
+        security_opt = ["seccomp=unconfined"] + ([] if allow_sudo else ["no-new-privileges:true"])
+        cap_add = ["SYS_CHROOT", "SETUID", "SETGID"]
+        if allow_sudo:
+            cap_add += ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "SETFCAP", "AUDIT_WRITE"]
+
+        if PER_BOT_VOLUMES:
+            vol_name = await asyncio.to_thread(self._ensure_bot_volume, safe_task)
+            workspace_volumes = {vol_name: {"bind": WORKSPACE, "mode": "rw"}}
+        else:
+            workspace_volumes = {WORKSPACE_VOLUME: {"bind": "/workspaces", "mode": "rw"}}
+
         def _run():
             return self._docker().containers.run(
                 SANDBOX_IMAGE,
@@ -131,9 +189,9 @@ class DockerBackend:
                 hostname=f"shellhouse-vm-{safe_task}",
                 environment={"SCREEN_GEOM": os.environ.get("SCREEN_GEOM", "1280x800x24")},
                 ports={"6080/tcp": ("127.0.0.1", port)},    # loopback only
-                volumes={WORKSPACE_VOLUME: {"bind": "/workspaces", "mode": "rw"}},
+                volumes=workspace_volumes,
                 shm_size="1g",
-                security_opt=["seccomp=unconfined", "no-new-privileges:true"],
+                security_opt=security_opt,
                 cap_drop=["ALL"],
                 # SETUID/SETGID: supervisord (root) needs these to drop
                 # privilege to `box` when starting the desktop session —
@@ -141,7 +199,7 @@ class DockerBackend:
                 # sandbox/Dockerfile's matching cap_add for the compose-
                 # managed SHARED_CONTAINER; per-task containers need the
                 # same caps since they run the identical image/entrypoint).
-                cap_add=["SYS_CHROOT", "SETUID", "SETGID"],
+                cap_add=cap_add,
                 mem_limit=EPHEMERAL_MEM,
                 nano_cpus=int(EPHEMERAL_CPUS * 1_000_000_000),
                 pids_limit=EPHEMERAL_PIDS,
@@ -157,12 +215,13 @@ class DockerBackend:
 
         # Give this task its own workspace subdirectory. Done after start
         # because the symlink target must exist in the running container.
-        await self.exec(
-            name,
-            f"mkdir -p /workspaces/{safe_task} && "
-            f"rm -rf {WORKSPACE} && ln -sfn /workspaces/{safe_task} {WORKSPACE}",
-            timeout=30,
-        )
+        if not PER_BOT_VOLUMES:
+            await self.exec(
+                name,
+                f"mkdir -p /workspaces/{safe_task} && "
+                f"rm -rf {WORKSPACE} && ln -sfn /workspaces/{safe_task} {WORKSPACE}",
+                timeout=30,
+            )
         return self._handle(name, port=port, persistent=persistent)
 
     def _handle(self, name: str, port: Optional[int], persistent: bool) -> SandboxHandle:

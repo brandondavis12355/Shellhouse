@@ -1,3 +1,4 @@
+import AgentCore
 import AppKit
 import SwiftUI
 
@@ -74,7 +75,20 @@ final class DebugLog {
 
     private init() {}
 
+    private struct PendingDelta { var bot: String; var colorHex: String; var context: String?; var text: String }
+    private var pendingDelta: PendingDelta?
+    private var deltaFlushTask: Task<Void, Never>?
+
+    private func flushPendingDelta() {
+        deltaFlushTask?.cancel()
+        deltaFlushTask = nil
+        guard let pending = pendingDelta else { return }
+        pendingDelta = nil
+        applyDelta(bot: pending.bot, colorHex: pending.colorHex, context: pending.context, delta: pending.text)
+    }
+
     func log(bot: String, colorHex: String, kind: DebugLogEntry.Kind, context: String? = nil, text: String) {
+        flushPendingDelta()
         entries.append(DebugLogEntry(botName: bot, botColorHex: colorHex, kind: kind, context: context, text: Self.cap(text)))
         trim()
     }
@@ -86,6 +100,25 @@ final class DebugLog {
     /// the SAME bot/context; anything else (a tool call, a status
     /// change, a different bot's delta) starts a new row.
     func logDelta(bot: String, colorHex: String, context: String? = nil, delta: String) {
+        // Coalesced (~80ms): appending per token invalidated the whole
+        // 2000-row entries array hundreds of times a reply.
+        if var pending = pendingDelta, pending.bot == bot, pending.context == context {
+            pending.text += delta
+            pendingDelta = pending
+        } else {
+            flushPendingDelta()
+            pendingDelta = PendingDelta(bot: bot, colorHex: colorHex, context: context, text: delta)
+        }
+        if deltaFlushTask == nil {
+            deltaFlushTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                guard !Task.isCancelled else { return }
+                self?.flushPendingDelta()
+            }
+        }
+    }
+
+    private func applyDelta(bot: String, colorHex: String, context: String?, delta: String) {
         if let last = entries.last, last.isStreaming, last.botName == bot, last.context == context,
            last.text.count < Self.maxEntryLength {
             entries[entries.count - 1].text += delta
@@ -96,6 +129,7 @@ final class DebugLog {
     }
 
     func clear() {
+        pendingDelta = nil
         entries.removeAll()
     }
 
@@ -311,5 +345,106 @@ private struct DebugLogRow: View {
         // Bulk copying across many rows at once is what the header's
         // "Copy"/"Export…" buttons are for (see `DebugConsoleView`).
         .textSelection(.enabled)
+    }
+}
+
+/// One-shot dump of the app's effective configuration into the debug
+/// console — logged at launch (when debug mode is on) and whenever debug
+/// mode is switched on. Secrets are never printed: only whether one is
+/// present.
+@MainActor
+enum StartupConfigLogger {
+    static func log(bots: [Bot], groups: [GroupChatSession]) {
+        guard DebugSettings.shared.isEnabled else { return }
+        Task { @MainActor in
+            var lines: [String] = []
+            let info = Bundle.main.infoDictionary ?? [:]
+            let version = info["CFBundleShortVersionString"] as? String ?? "?"
+            let build = info["CFBundleVersion"] as? String ?? "?"
+            let sandboxed = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+            lines.append("── App ──")
+            lines.append("Shellhouse \(version) (\(build)) · \(Bundle.main.bundleIdentifier ?? "?")")
+            lines.append("macOS \(ProcessInfo.processInfo.operatingSystemVersionString) · \(ProcessInfo.processInfo.processorCount) cores · \(ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)) RAM")
+            lines.append("App Sandbox: \(sandboxed ? "yes" : "no (not detected)")")
+            let dataDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("AICompute").path
+            lines.append("Data dir: \(dataDir)")
+
+            lines.append("── Sandbox host ──")
+            lines.append("SSH tunnel: \(RemoteHost.user)@\(RemoteHost.host) → manager \(managerBaseURL.absoluteString)")
+            let hasToken = ((try? await SecretStore().resolveForExecution(names: [managerTokenName]))?[managerTokenName]) != nil
+            lines.append("Manager token in Keychain: \(hasToken ? "present" : "MISSING")")
+
+            lines.append("── Models ──")
+            let ollamaURL = URL(string: "http://127.0.0.1:11434")!
+            lines.append("Ollama: \(ollamaURL.absoluteString) · num_ctx \(OllamaBackend.contextWindowTokens) · keep_alive -1")
+            if let models = try? await OllamaBackend().availableModels() {
+                lines.append("Ollama reachable · \(models.count) model(s): \(models.sorted().prefix(8).joined(separator: ", "))\(models.count > 8 ? ", …" : "")")
+            } else {
+                lines.append("Ollama NOT reachable")
+            }
+
+            let serverEnv = await ollamaServerEnvironment()
+            if let parallel = serverEnv["OLLAMA_NUM_PARALLEL"] {
+                var line = "Ollama parallel: OLLAMA_NUM_PARALLEL=\(parallel)"
+                if let loaded = serverEnv["OLLAMA_MAX_LOADED_MODELS"] { line += " · MAX_LOADED_MODELS=\(loaded)" }
+                if let ctx = serverEnv["OLLAMA_CONTEXT_LENGTH"] { line += " · server CONTEXT_LENGTH=\(ctx)" }
+                lines.append(line + " (read from the running server)")
+                if parallel == "1" { lines.append("  → bot replies are served one at a time; raise OLLAMA_NUM_PARALLEL to let bots overlap") }
+            } else {
+                let defaults = OllamaManager.Config()
+                lines.append("Ollama parallel: couldn't read the running server's environment; when this app starts `ollama serve` itself it uses OLLAMA_NUM_PARALLEL=\(defaults.numParallel), MAX_LOADED_MODELS=\(defaults.maxLoadedModels)")
+            }
+
+            lines.append("── Bots (\(bots.count)) ──")
+            for bot in bots {
+                let model = bot.modelProvider == .ollama
+                    ? "ollama/\(bot.selectedModel)"
+                    : "remote/\(bot.selectedModel) @ \(URL(string: bot.remoteBaseURLText)?.host ?? "?")"
+                let shell = bot.blanketShellScopes.isEmpty ? "" : " · ALL-shell grants: \(bot.blanketShellScopes.count)"
+                lines.append("• \(bot.name) — \(model) · skills \(bot.selectedSkillIDs.count) · memories \(bot.memories.count) · routines \(bot.routines.count) · max iter \(bot.maxIterationsText) · max tokens \(bot.maxTokensText)\(shell)")
+            }
+
+            lines.append("── Groups (\(groups.count)) ──")
+            for group in groups {
+                lines.append("• \(group.name) — \(group.members.map(\.name).joined(separator: ", ")) · \(group.displayMessages.count) messages")
+            }
+            for group in groups {
+                if let goal = group.goal {
+                    lines.append("Goal [\(group.name)]: “\(goal.title)” · \(goal.status.rawValue) · \(goal.doneCount)/\(goal.steps.count) steps · \(goal.messagesSinceProgress)/\(goal.stallLimit) since progress")
+                }
+            }
+            lines.append("Group chat: async member workers · bot-to-bot cap \(GroupWakePlanner.maxBotMessagesPerUserMessage) per user message · reply gate on")
+            lines.append("Shell: run_shell requires approval unless a per-binary or all-shell grant applies")
+            lines.append("Debug mode: on")
+
+            DebugLog.shared.log(bot: "App", colorHex: "#8e8e93", kind: .status, context: "startup config", text: lines.joined(separator: "\n"))
+        }
+    }
+
+    /// `OLLAMA_*` variables of whatever process is listening on Ollama's
+    /// port — the settings actually in effect, whether this app started the
+    /// server or it was already running. Empty if it can't be read (no
+    /// listener, or the sandbox blocks `lsof`/`ps`).
+    private static func ollamaServerEnvironment() async -> [String: String] {
+        await Task.detached(priority: .utility) {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/sh")
+            task.arguments = ["-c", "pid=$(lsof -nP -iTCP:11434 -sTCP:LISTEN -t 2>/dev/null | head -1); [ -n \"$pid\" ] && ps -Eww -o command= -p \"$pid\" 2>/dev/null"]
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = Pipe()
+            guard (try? task.run()) != nil else { return [:] }
+            let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 4, execute: killer)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
+            killer.cancel()
+            var result: [String: String] = [:]
+            for token in (String(data: data, encoding: .utf8) ?? "").split(whereSeparator: { $0 == " " || $0 == "\n" }) {
+                guard token.hasPrefix("OLLAMA_"), let eq = token.firstIndex(of: "=") else { continue }
+                result[String(token[..<eq])] = String(token[token.index(after: eq)...])
+            }
+            return result
+        }.value
     }
 }

@@ -13,6 +13,28 @@ let managerTokenName = "SANDBOX_MANAGER_TOKEN"
 /// Local end of the SSH tunnel (owned by `AppDelegate`'s `SSHTunnel`).
 let managerBaseURL = URL(string: "http://127.0.0.1:8765")!
 
+/// Split out of `defaultSystemPrompt` so it can also be force-appended to
+/// bots that already have a customized `systemPromptText` predating this
+/// requirement — see `Bot.withToolVerificationRequirement`. Checked for
+/// verbatim as the marker of "this bot already has it," so don't reword
+/// this in place; add a differently-worded update as a separate paragraph
+/// instead if the guidance itself needs to change later.
+let toolVerificationRequirement = """
+Before calling finish_task on any task where you used tools to actually \
+change or produce something (an edit, a script, a form submission, a \
+click sequence, a purchase, anything with a real outcome to get right) — \
+run at least 3 separate checks confirming the actual result, not just that \
+the tool call itself returned without an error. "The command exited 0" or \
+"the click didn't error" is not confirmation; re-reading the file you \
+edited, re-running the test or script, taking a fresh screenshot, or \
+re-querying the state you changed are. Vary what each check actually \
+looks at rather than repeating the identical check three times — the goal \
+is confidence the outcome is right, not a rerun count. If any check comes \
+back wrong, fix it and re-verify with 3 more before finishing, and if you \
+can't get a clean 3 for 3, say so honestly in finish_task's summary rather \
+than reporting success anyway.
+"""
+
 /// Starting point for the editable system-prompt field — not a fixed
 /// constant the agent is stuck with, just what the text field is
 /// pre-populated with.
@@ -32,6 +54,8 @@ So if you're not calling a tool, you'd better be calling finish_task; \
 anything else just continues the task. Before calling finish_task, briefly \
 re-check your own last few actions against what was actually asked — don't \
 call it on a stated intent ("I'll check X") or a partial result.
+
+\(toolVerificationRequirement)
 
 Proactively use the remember tool for any fact, preference, or detail \
 that's durable and worth carrying forward — don't wait to be explicitly \
@@ -432,6 +456,13 @@ struct ContentView: View {
             if !saved.isEmpty {
                 bots = saved.map { Bot(config: $0, permissions: runShellPermissions, botDirectory: botDirectory) }
                 selectedItemID = bots.first.map { "bot:\($0.id)" }
+                // `Bot(config:...)` force-migrates `systemPromptText` to
+                // include `toolVerificationRequirement` in memory (see
+                // `Bot.withToolVerificationRequirement`) — persist that
+                // right away rather than leaving it to only ever land on
+                // disk if the user happens to touch this bot's Settings
+                // sheet later.
+                saveBots()
                 for bot in bots { Task { await bot.boot() } }
             } else {
                 // First launch: recreate the one bot that predates the
@@ -444,8 +475,12 @@ struct ContentView: View {
             // Explicit, synchronous sync rather than a stored closure over
             // `bots` — see `BotDirectory.sync`'s doc comment for why.
             botDirectory.sync(bots)
-            groupChats = GroupChatStore.load().map { GroupChatSession(id: $0.id, name: $0.name, memberBotIDs: $0.memberBotIDs, botDirectory: botDirectory) }
+            groupChats = GroupChatStore.load().map { GroupChatSession(id: $0.id, name: $0.name, memberBotIDs: $0.memberBotIDs, botDirectory: botDirectory, coordinatorBotID: $0.coordinatorBotID, stallLimit: $0.stallLimit, confirmTimeoutMinutes: $0.confirmTimeoutMinutes) }
             botDirectory.syncGroups(groupChats)
+            StartupConfigLogger.log(bots: bots, groups: groupChats)
+        }
+        .onChange(of: DebugSettings.shared.isEnabled) { _, isOn in
+            if isOn { StartupConfigLogger.log(bots: bots, groups: groupChats) }
         }
         // A plain sibling of `NavigationSplitView`, not a third column
         // of it or a `.safeAreaInset` on it — `NavigationSplitView`
@@ -487,6 +522,8 @@ struct ContentView: View {
         groupChats.removeAll { $0.id == group.id }
         botDirectory.syncGroups(groupChats)
         if selectedItemID == "group:\(group.id)" { selectedItemID = nil }
+        group.shutdown()
+        group.cancelPendingPersist()
         GroupTranscriptStore.delete(groupID: group.id)
         saveGroupChats()
     }
@@ -543,13 +580,46 @@ struct ContentView: View {
     }
 
     private func exportBotAsTemplate(_ bot: Bot) {
+        let template = bot.asTemplate
+        // Build the file BEFORE asking where to save it, so a problem with
+        // the bot's data shows up immediately instead of after the panel.
+        do {
+            _ = try template.encodedXML()
+        } catch {
+            showExportError("Couldn't build the template for \(bot.name).", error)
+            return
+        }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.xml]
-        panel.nameFieldStringValue = "\(bot.name)-template.xml"
-        panel.begin { response in
+        panel.canCreateDirectories = true
+        let safeName = bot.name.components(separatedBy: CharacterSet(charactersIn: "/\\:")).joined(separator: "-")
+        panel.nameFieldStringValue = "\(safeName)-template.xml"
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK, let url = panel.url else { return }
-            try? bot.asTemplate.write(to: url)
+            do {
+                try template.write(to: url)
+            } catch {
+                showExportError("Couldn't save the template to \(url.lastPathComponent).", error)
+            }
         }
+        // Deferred a tick so the context menu that triggered this has fully
+        // closed; presenting from inside its action could leave the panel
+        // with no window to attach to (silently doing nothing).
+        DispatchQueue.main.async {
+            if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+                panel.beginSheetModal(for: window, completionHandler: finish)
+            } else {
+                panel.begin(completionHandler: finish)
+            }
+        }
+    }
+
+    private func showExportError(_ message: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 
     private func importBotTemplate() {
@@ -607,6 +677,7 @@ struct ContentView: View {
             group.removeMember(bot.id)
         }
         saveGroupChats()
+        bot.cancelPendingTranscriptSave()
         TranscriptStore.delete(id: bot.id)
         BotMemoryStore.delete(id: bot.id)
         RoutineStore.delete(id: bot.id)
@@ -1069,6 +1140,7 @@ struct BotSettingsView: View {
 
     @State private var showingDeleteConversationConfirm = false
     @State private var showingDeleteBotConfirm = false
+    @State private var showingResetSandboxConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1085,6 +1157,13 @@ struct BotSettingsView: View {
                         }
                         .disabled(bot.isBusy || bot.displayMessages.isEmpty)
                         .foregroundStyle(.red)
+
+                        Button("Reset sandbox…", role: .destructive) {
+                            showingResetSandboxConfirm = true
+                        }
+                        .disabled(bot.handle == nil)
+                        .foregroundStyle(.red)
+                        .help("Destroy this bot's Linux VM and boot a fresh one — use if it may be compromised.")
 
                         Button("Delete bot…", role: .destructive) {
                             showingDeleteBotConfirm = true
@@ -1119,6 +1198,13 @@ struct BotSettingsView: View {
             Button("Delete", role: .destructive) { bot.clearConversation() }
         } message: {
             Text("\(bot.name)'s transcript is permanently deleted. Its settings, memory, and routines are unaffected, and its sandbox keeps running.")
+        }
+        .alert("Reset \(bot.name)'s sandbox?", isPresented: $showingResetSandboxConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset, keep files") { Task { await bot.resetSandbox(wipeWorkspace: false) } }
+            Button("Reset and wipe files", role: .destructive) { Task { await bot.resetSandbox(wipeWorkspace: true) } }
+        } message: {
+            Text("Stops any running work, destroys the Linux VM, and boots a fresh one from the image. Installed tools, /home/box and the browser profile are lost. Files in /workspace are kept unless you choose to wipe them. The chat history is kept.")
         }
         .alert("Delete \(bot.name)?", isPresented: $showingDeleteBotConfirm) {
             Button("Cancel", role: .cancel) {}
@@ -1166,6 +1252,16 @@ private struct BotSettingsTab: View {
     @State private var newRoutineIntervalMinutes = 30
     /// `nil` = fires in `bot`'s own chat, matching `Routine.targetGroupID`.
     @State private var newRoutineTargetGroupID: String?
+    /// Set when `addRoutine()`'s save fails — otherwise this UI just
+    /// showed the routine in the list (it's already live in-memory,
+    /// its timer already scheduled) with zero indication the disk
+    /// write behind it silently failed, the same truthfulness gap the
+    /// `create_routine` TOOL path was fixed for already.
+    @State private var routineSaveError: String?
+    /// Non-nil while the "Add routine" form below is actually editing an
+    /// existing routine (populated from it by the row's pencil button)
+    /// instead of building a new one.
+    @State private var editingRoutineID: String?
 
     private var eligibleGroups: [GroupChatSession] {
         groupChats.filter { $0.memberBotIDs.contains(bot.id) }
@@ -1226,9 +1322,23 @@ private struct BotSettingsTab: View {
                 }
                 .help(bot.hasStarted ? "Locked in for this conversation — start a new one to use different skills." : "")
 
-                DisclosureGroup("Permissions (\(bot.sessionAllowedBinaries.count) this session, \(bot.globalAllowedBinaries.count) always)") {
+                DisclosureGroup("Permissions (\(bot.sessionAllowedBinaries.count) this session, \(bot.globalAllowedBinaries.count) always, \(bot.blanketShellScopes.count) all-shell)") {
                     VStack(alignment: .leading, spacing: 6) {
-                        if bot.sessionAllowedBinaries.isEmpty && bot.globalAllowedBinaries.isEmpty {
+                        ForEach(bot.blanketShellScopes, id: \.self) { scope in
+                            HStack {
+                                Text("ALL shell commands").font(.system(.caption, design: .monospaced))
+                                Text(blanketBadge(scope))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 5)
+                                    .background(Color.orange.opacity(0.2))
+                                    .cornerRadius(4)
+                                Spacer()
+                                Button("Revoke") { Task { await bot.revokeAllShell(scope: scope) } }
+                                    .font(.caption)
+                            }
+                        }
+                        if bot.sessionAllowedBinaries.isEmpty && bot.globalAllowedBinaries.isEmpty && bot.blanketShellScopes.isEmpty {
                             Text("Nothing always-allowed yet — approve a run_shell command and choose "
                                 + "\"Always allow…\" to add one.")
                                 .font(.caption)
@@ -1356,6 +1466,14 @@ private struct BotSettingsTab: View {
                                 }
                                 Spacer()
                                 Button {
+                                    beginEditingRoutine(routine)
+                                } label: {
+                                    Image(systemName: "pencil.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                Button {
+                                    if editingRoutineID == routine.id { cancelEditingRoutine() }
                                     bot.removeRoutine(at: IndexSet(integer: index))
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
@@ -1363,9 +1481,18 @@ private struct BotSettingsTab: View {
                                 .buttonStyle(.plain)
                                 .foregroundStyle(.secondary)
                             }
+                            .padding(6)
+                            .background(
+                                editingRoutineID == routine.id ? Color.accentColor.opacity(0.12) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6)
+                            )
                         }
 
                         Divider()
+
+                        if editingRoutineID != nil {
+                            Text("Editing routine").font(.caption).bold().foregroundStyle(.secondary)
+                        }
 
                         TextField("What should it do when it fires?", text: $newRoutineInstruction)
                             .textFieldStyle(.roundedBorder)
@@ -1405,8 +1532,20 @@ private struct BotSettingsTab: View {
                             }
                         }
 
-                        Button("Add routine") { addRoutine() }
+                        HStack {
+                            Button(editingRoutineID != nil ? "Save changes" : "Add routine") {
+                                if editingRoutineID != nil {
+                                    saveRoutineEdit()
+                                } else {
+                                    addRoutine()
+                                }
+                            }
                             .disabled(newRoutineInstruction.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                            if editingRoutineID != nil {
+                                Button("Cancel") { cancelEditingRoutine() }
+                            }
+                        }
                     }
                     .padding(.top, 4)
                 }
@@ -1471,6 +1610,14 @@ private struct BotSettingsTab: View {
             }
             .padding(20)
         }
+        .alert("Routine not saved", isPresented: Binding(
+            get: { routineSaveError != nil },
+            set: { if !$0 { routineSaveError = nil } }
+        )) {
+            Button("OK", role: .cancel) { routineSaveError = nil }
+        } message: {
+            Text(routineSaveError ?? "")
+        }
     }
 
     private var identitySection: some View {
@@ -1503,6 +1650,14 @@ private struct BotSettingsTab: View {
                 .textFieldStyle(.roundedBorder)
             Text("Avatar shape").font(.caption).foregroundStyle(.secondary)
             AvatarPicker(colorHex: bot.colorHex, selection: $bot.avatarStyle)
+        }
+    }
+
+    private func blanketBadge(_ scope: RunShellPermissions.BlanketScope) -> String {
+        switch scope {
+        case .botSession: return "this bot, session"
+        case .botAlways: return "this bot, always"
+        case .everyBot: return "every bot"
         }
     }
 
@@ -1549,8 +1704,76 @@ private struct BotSettingsTab: View {
             schedule = .interval(minutes: max(1, newRoutineIntervalMinutes))
         }
 
-        bot.addRoutine(instruction: instruction, schedule: schedule, targetGroupID: newRoutineTargetGroupID)
+        let (_, persisted) = bot.addRoutine(instruction: instruction, schedule: schedule, targetGroupID: newRoutineTargetGroupID)
+        guard persisted else {
+            // Still live in-memory (its timer is already scheduled and
+            // WILL fire this session), but that's exactly the trap —
+            // it looks like it worked right now, then silently isn't
+            // there anymore after the next relaunch. Surface it instead
+            // of letting that discovery happen at the routine's actual
+            // fire time, days later.
+            routineSaveError = "This routine is active for now, but failed to save to disk — it won't "
+                + "survive quitting the app. Try adding it again; if this keeps happening, check Console.app "
+                + "for a \"[RoutineStore]\" error."
+            newRoutineInstruction = ""
+            newRoutineTargetGroupID = nil
+            return
+        }
         newRoutineInstruction = ""
         newRoutineTargetGroupID = nil
+    }
+
+    /// Populates the "Add routine" form from an existing routine so its
+    /// button turns into "Save changes" instead — reusing the same
+    /// fields rather than a separate edit form.
+    private func beginEditingRoutine(_ routine: Routine) {
+        editingRoutineID = routine.id
+        newRoutineInstruction = routine.instruction
+        newRoutineTargetGroupID = routine.targetGroupID
+        switch routine.schedule {
+        case .once(let date):
+            newRoutineScheduleKind = .once
+            newRoutineOnceDate = date
+        case .daily(let hour, let minute):
+            newRoutineScheduleKind = .daily
+            newRoutineDailyTime = Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: Date()) ?? Date()
+        case .interval(let minutes):
+            newRoutineScheduleKind = .interval
+            newRoutineIntervalMinutes = minutes
+        }
+    }
+
+    private func cancelEditingRoutine() {
+        editingRoutineID = nil
+        newRoutineInstruction = ""
+        newRoutineTargetGroupID = nil
+    }
+
+    private func saveRoutineEdit() {
+        guard let routineID = editingRoutineID else { return }
+        let instruction = newRoutineInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !instruction.isEmpty else { return }
+
+        let schedule: Routine.Schedule
+        switch newRoutineScheduleKind {
+        case .once:
+            schedule = .once(newRoutineOnceDate)
+        case .daily:
+            let components = Calendar.current.dateComponents([.hour, .minute], from: newRoutineDailyTime)
+            schedule = .daily(hour: components.hour ?? 9, minute: components.minute ?? 0)
+        case .interval:
+            schedule = .interval(minutes: max(1, newRoutineIntervalMinutes))
+        }
+
+        let succeeded = bot.updateRoutine(
+            id: routineID, instruction: instruction, schedule: schedule, targetGroupID: newRoutineTargetGroupID
+        )
+        guard succeeded else {
+            routineSaveError = "That change couldn't be saved — it may exactly match another routine, or the "
+                + "write to disk failed. Try again; if this keeps happening, check Console.app for a "
+                + "\"[RoutineStore]\" error."
+            return
+        }
+        cancelEditingRoutine()
     }
 }

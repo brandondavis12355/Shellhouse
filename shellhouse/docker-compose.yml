@@ -90,7 +90,7 @@ services:
     shm_size: "1gb"              # Chromium crashes on the default 64MB
     security_opt:
       - seccomp:unconfined       # required for Chromium's own sandbox
-      - no-new-privileges:true   # but nothing inside can gain more than it starts with
+      - no-new-privileges:${SANDBOX_NO_NEW_PRIVS:-true}   # nothing inside can gain more than it starts with (set SANDBOX_NO_NEW_PRIVS=false only alongside SANDBOX_ALLOW_SUDO=1)
     cap_drop:
       - ALL
     cap_add:
@@ -121,6 +121,13 @@ services:
       # as a nested mapping by this compose version (compose-go), which fails
       # the whole file with "environment.[0]: unexpected type map[string]interface {}".
       - "MANAGER_TOKEN=${MANAGER_TOKEN:?MANAGER_TOKEN must be set in .env - generate with: openssl rand -hex 32}"
+      # 1 = per-bot sandboxes allow passwordless sudo for `box` (drops
+      # no-new-privileges, adds back caps root needs for apt). Default off.
+      - SANDBOX_ALLOW_SUDO=${SANDBOX_ALLOW_SUDO:-0}
+      # 1 (default) = each bot gets its own workspace volume; 0 = legacy shared
+      # volume with per-bot subdirectories (needed for the web/API screenshot
+      # serving, which reads the shared volume).
+      - SANDBOX_PER_BOT_VOLUMES=${SANDBOX_PER_BOT_VOLUMES:-1}
       - MANAGER_SOCKET=/run/sandbox-manager/manager.sock
       - MANAGER_AUDIT_LOG=/var/log/sandbox-manager/audit.log
       - SANDBOX_BACKEND=${SANDBOX_BACKEND:-docker}

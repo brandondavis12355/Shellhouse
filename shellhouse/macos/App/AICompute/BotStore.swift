@@ -77,11 +77,32 @@ struct BotTemplate: Codable {
         return try PropertyListDecoder().decode(BotTemplate.self, from: data)
     }
 
-    func write(to url: URL) throws {
+    /// XML plist bytes. NUL characters are the one thing the XML plist
+    /// format refuses to encode at all (and one stray NUL in a memory or
+    /// prompt would otherwise fail the whole export), so they're stripped.
+    func encodedXML() throws -> Data {
+        var copy = self
+        func clean(_ text: String) -> String { text.replacingOccurrences(of: "\0", with: "") }
+        copy.name = clean(name)
+        copy.tagline = clean(tagline)
+        copy.group = clean(group)
+        copy.systemPromptText = clean(systemPromptText)
+        copy.memories = memories.map(clean)
+        copy.routines = routines.map { var routine = $0; routine.instruction = clean($0.instruction); return routine }
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .xml
-        let data = try encoder.encode(self)
-        try data.write(to: url, options: .atomic)
+        return try encoder.encode(copy)
+    }
+
+    func write(to url: URL) throws {
+        let data = try encodedXML()
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            // Atomic writes need a sibling temp file; a sandboxed app may
+            // only be allowed the exact file the save panel returned.
+            try data.write(to: url)
+        }
     }
 }
 
@@ -180,8 +201,15 @@ enum TranscriptStore {
         }
     }
 
+    private static let writeQueue = DispatchQueue(label: "TranscriptStore.write", qos: .utility)
+
+    /// Serial, so back-to-back saves can never land out of order.
+    static func saveInBackground(id: String, _ entries: [TranscriptEntry]) {
+        writeQueue.async { save(id: id, entries) }
+    }
+
     static func delete(id: String) {
-        try? FileManager.default.removeItem(at: fileURL(for: id))
+        writeQueue.async { try? FileManager.default.removeItem(at: fileURL(for: id)) }
     }
 }
 
@@ -294,24 +322,42 @@ struct Routine: Codable, Identifiable, Equatable {
         case interval(minutes: Int)
 
         /// The next moment this schedule should fire, computed fresh from
-        /// `now` rather than stored — so a routine loaded after the app was
-        /// quit for a week still lands on the right time instead of an
-        /// instant-fire backlog, and a `.once` whose date has already
-        /// passed reports `nil` (spent) instead of firing immediately.
-        func nextFireDate(after now: Date = Date()) -> Date? {
+        /// `now` rather than stored. `lastFiredAt` (the routine's own,
+        /// passed in by the caller) is what distinguishes "missed while
+        /// the app wasn't running" from "already handled" — a schedule
+        /// point that's already passed AND hasn't been fired since fires
+        /// right away (a returned date `<= now`, which callers treat as
+        /// "fire immediately") instead of silently waiting for the next
+        /// regular occurrence.
+        func nextFireDate(after now: Date = Date(), lastFiredAt: Date? = nil) -> Date? {
             switch self {
             case .once(let when):
-                return when > now ? when : nil
+                // Already fired once ever — a `.once` routine is removed
+                // from storage right after it fires (see `Bot.fireRoutine`),
+                // so `lastFiredAt` only stays non-nil here in the brief
+                // window before that removal lands; treat it as spent.
+                return lastFiredAt == nil ? when : nil
             case .daily(let hour, let minute):
                 let calendar = Calendar.current
                 var components = calendar.dateComponents([.year, .month, .day], from: now)
                 components.hour = hour
                 components.minute = minute
                 components.second = 0
-                guard let candidate = calendar.date(from: components) else { return nil }
-                return candidate > now ? candidate : calendar.date(byAdding: .day, value: 1, to: candidate)
+                guard let todayCandidate = calendar.date(from: components) else { return nil }
+                if todayCandidate > now { return todayCandidate }
+                // Today's time has passed. If it hasn't fired since then
+                // (app was closed, asleep, etc. through it), it was missed
+                // — fire now rather than waiting until tomorrow.
+                if lastFiredAt == nil || lastFiredAt! < todayCandidate {
+                    return now
+                }
+                return calendar.date(byAdding: .day, value: 1, to: todayCandidate)
             case .interval(let minutes):
-                return now.addingTimeInterval(TimeInterval(max(1, minutes) * 60))
+                guard let lastFiredAt else {
+                    return now.addingTimeInterval(TimeInterval(max(1, minutes) * 60))
+                }
+                let due = lastFiredAt.addingTimeInterval(TimeInterval(max(1, minutes) * 60))
+                return due > now ? due : now
             }
         }
 
