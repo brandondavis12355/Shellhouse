@@ -68,6 +68,8 @@ struct ContentView: View {
     /// bot's settings" are never the same screen even by navigation, not
     /// just visually distinct sections of it.
     @State private var showingAppSettings = false
+    @State private var showingFriends = false
+    @Bindable private var friendsManager = FriendsManager.shared
     /// The bot currently being configured, if any — `.sheet(item:)` rather
     /// than a bool, so opening it always has a specific bot attached and
     /// dismissing it (setting this back to `nil`) is the one signal that
@@ -203,6 +205,7 @@ struct ContentView: View {
                         Button("New bot…") { startNewBotDraft() }
                         Button("New group chat…") { startNewGroupChat() }
                         Divider()
+                        Button("Friends…") { showingFriends = true }
                         Button("New bot from template…") { importBotTemplate() }
                     } label: {
                         Image(systemName: "plus")
@@ -212,19 +215,43 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                Button(action: { showingAppSettings = true }) {
-                    HStack {
-                        Image(systemName: "gearshape")
-                            .imageScale(.large)
-                        Text("Settings").font(.system(size: 14))
-                        Spacer()
+                VStack(spacing: 0) {
+                    Button(action: { showingFriends = true }) {
+                        HStack {
+                            Image(systemName: "person.2")
+                                .imageScale(.large)
+                            Text("Friends").font(.system(size: 14))
+                            if friendsManager.incomingCount > 0 {
+                                Text("\(friendsManager.incomingCount)")
+                                    .font(.caption2).bold()
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6).padding(.vertical, 1)
+                                    .background(Color.red, in: Capsule())
+                            }
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .padding(.leading, 14)
+                    .padding(.trailing, 10)
+                    .padding(.top, 12)
+                    .help("Friends — connect to a relay, invite people, accept requests.")
+
+                    Button(action: { showingAppSettings = true }) {
+                        HStack {
+                            Image(systemName: "gearshape")
+                                .imageScale(.large)
+                            Text("Settings").font(.system(size: 14))
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 14)
+                    .padding(.trailing, 10)
+                    .padding(.vertical, 12)
                 }
-                .buttonStyle(.plain)
-                .padding(.leading, 14)
-                .padding(.trailing, 10)
-                .padding(.vertical, 12)
             }
         } detail: {
             if let group = selectedGroup {
@@ -252,6 +279,9 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(preferredColorScheme)
+        .sheet(isPresented: $showingFriends) {
+            FriendsView()
+        }
         .sheet(isPresented: $showingAppSettings) {
             AppSettingsView(
                 appearanceMode: $appearanceMode,
@@ -413,6 +443,10 @@ struct ContentView: View {
             groupChats = GroupChatStore.load().map { GroupChatSession(id: $0.id, name: $0.name, memberBotIDs: $0.memberBotIDs, botDirectory: botDirectory, coordinatorBotID: $0.coordinatorBotID, stallLimit: $0.stallLimit, confirmTimeoutMinutes: $0.confirmTimeoutMinutes) }
             botDirectory.syncGroups(groupChats)
             StartupConfigLogger.log(bots: bots, groups: groupChats)
+            // Reconnect to the friends relay (if configured) so the sidebar
+            // badge reflects pending requests without opening the sheet.
+            await FriendsManager.shared.connectIfConfigured()
+            FriendsManager.shared.startAutoRefresh()
         }
         .onChange(of: DebugSettings.shared.isEnabled) { _, isOn in
             if isOn { StartupConfigLogger.log(bots: bots, groups: groupChats) }

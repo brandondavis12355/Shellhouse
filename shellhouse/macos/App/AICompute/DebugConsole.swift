@@ -420,6 +420,13 @@ enum StartupConfigLogger {
                     lines.append("Goal [\(group.name)]: “\(goal.title)” · \(goal.status.rawValue) · \(goal.doneCount)/\(goal.steps.count) steps · \(goal.messagesSinceProgress)/\(goal.stallLimit) since progress")
                 }
             }
+            let friends = FriendsManager.shared
+            switch friends.phase {
+            case .notConfigured: lines.append("Friends relay: not configured")
+            case .connecting: lines.append("Friends relay: connecting…")
+            case .connected: lines.append("Friends relay: connected · \(friends.friends.count) friend(s) · \(friends.incoming.count) request(s) waiting")
+            case .failed(let message): lines.append("Friends relay: NOT connected — \(message)")
+            }
             lines.append("Group chat: async member workers · bot-to-bot cap \(GroupWakePlanner.maxBotMessagesPerUserMessage) per user message · reply gate on")
             lines.append("Shell: run_shell requires approval unless a per-binary or all-shell grant applies")
             lines.append("Debug mode: on")
