@@ -153,6 +153,17 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// aren't user-visible "a message is processing" in the same chat, and
     /// stopping one from here would be surprising).
     private var drainTask: Task<Void, Never>?
+    /// What the live `runtime` was built with — see `currentRuntimeSettingsKey`.
+    private var runtimeSettingsKey: String?
+    /// Everything baked into an `AgentRuntime` at creation that the user can
+    /// change in Settings: provider, model, vision, endpoint, budgets, and
+    /// whether a new API key is pending.
+    private var currentRuntimeSettingsKey: String {
+        [
+            modelProvider.rawValue, selectedModel, String(modelHasVision), remoteBaseURLText,
+            maxTokensText, maxIterationsText, String(remoteAPIKeyInput.hashValue),
+        ].joined(separator: "|")
+    }
     /// Whether THIS chat specifically (not a delegation/group turn — see
     /// `isBusy`'s broader scope) has a message in flight right now — what
     /// the "Stop" button in `BotDetailView` actually gates on.
@@ -2310,6 +2321,14 @@ final class Bot: Identifiable, @unchecked Sendable {
             // mid-stream, skipping the normal `.toolStarted`/task-summary
             // resets below).
             streamingIndex = nil
+            // The model/provider/budgets can be changed between messages (the
+            // settings only lock while the bot is working). A live runtime is
+            // bound to the settings it was built with, so if they changed,
+            // drop it: the branch below rebuilds one with the new settings and
+            // reseeds it from this chat's history, so the conversation carries on.
+            if runtime != nil, runtimeSettingsKey != currentRuntimeSettingsKey {
+                runtime = nil
+            }
             if let runtime {
                 await runtime.send(withRelevantMemoryContext(queued.text), images: queued.images)
             } else {
@@ -2401,6 +2420,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                     }
                 )
                 runtime = newRuntime
+                runtimeSettingsKey = currentRuntimeSettingsKey
                 hasStarted = true
                 // `text` (the message about to be sent) is already the last
                 // entry in `displayMessages` (appended by `submitInput`

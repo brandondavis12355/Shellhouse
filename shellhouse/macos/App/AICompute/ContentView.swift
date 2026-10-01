@@ -1601,8 +1601,8 @@ private struct BotSettingsTab: View {
                     Text("Local (Ollama)").tag(ModelProvider.ollama)
                     Text("Remote (OpenAI-compatible)").tag(ModelProvider.remote)
                 }
-                .disabled(bot.hasStarted)
-                .help(bot.hasStarted ? "Locked in for this conversation — start a new one to switch providers." : "")
+                .disabled(bot.isBusy)
+                .help(bot.isBusy ? "Locked while this bot is working — change it once it's idle. The conversation carries over." : "")
 
                 if bot.modelProvider == .ollama {
                     HStack {
@@ -1611,29 +1611,29 @@ private struct BotSettingsTab: View {
                                 Text(model).tag(model)
                             }
                         }
-                        .disabled(bot.hasStarted || bot.availableModels.isEmpty)
-                        .help(bot.hasStarted ? "Locked in for this conversation — start a new one to use a different model." : "")
+                        .disabled(bot.isBusy || bot.availableModels.isEmpty)
+                        .help(bot.isBusy ? "Locked while this bot is working — change it once it's idle. The conversation carries over." : "")
 
                         Toggle("Vision", isOn: $bot.modelHasVision)
-                            .disabled(bot.hasStarted)
+                            .disabled(bot.isBusy)
                             .help("Whether this model can see screenshots. Ollama doesn't advertise this, so it's manual.")
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         TextField("Base URL (e.g. https://api.openai.com/v1)", text: $bot.remoteBaseURLText)
                             .textFieldStyle(.roundedBorder)
-                            .disabled(bot.hasStarted)
+                            .disabled(bot.isBusy)
                         HStack {
                             TextField("Model id (e.g. gpt-4o)", text: $bot.selectedModel)
                                 .textFieldStyle(.roundedBorder)
-                                .disabled(bot.hasStarted)
+                                .disabled(bot.isBusy)
                             Toggle("Vision", isOn: $bot.modelHasVision)
-                                .disabled(bot.hasStarted)
+                                .disabled(bot.isBusy)
                                 .help("Whether this model can see screenshots — no reliable way to detect this across providers, so it's manual.")
                         }
                         SecureField("API key (leave blank to keep the saved one)", text: $bot.remoteAPIKeyInput)
                             .textFieldStyle(.roundedBorder)
-                            .disabled(bot.hasStarted)
+                            .disabled(bot.isBusy)
                             .help("Stored in the Keychain, never in bots.json — typing a new value here replaces the saved one when you close this sheet.")
                     }
                 }
@@ -1643,15 +1643,15 @@ private struct BotSettingsTab: View {
                     TextField("200000", text: $bot.maxTokensText)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 90)
-                        .disabled(bot.hasStarted)
+                        .disabled(bot.isBusy)
                     Text("Max iterations").font(.caption)
                     TextField("40", text: $bot.maxIterationsText)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 60)
-                        .disabled(bot.hasStarted)
+                        .disabled(bot.isBusy)
                 }
-                .help(bot.hasStarted
-                    ? "Locked in for this conversation — start a new one to change budgets."
+                .help(bot.isBusy
+                    ? "Locked while this bot is working."
                     : "Raise this if you've selected several skills — the whole system prompt resends every turn, "
                     + "so a large one burns through the token budget in a handful of turns.")
             }
