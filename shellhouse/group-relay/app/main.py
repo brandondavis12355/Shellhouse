@@ -36,6 +36,7 @@ MAX_MESSAGE_CHARS = 8000
 MAX_LONG_POLL_SECONDS = 30
 MAX_MESSAGES_PER_GROUP = int(os.environ.get("RELAY_MAX_MESSAGES_PER_GROUP", "5000"))
 REGISTRATION_TOKEN = os.environ.get("RELAY_REGISTRATION_TOKEN", "")
+TRUST_PROXY = os.environ.get("RELAY_TRUST_PROXY", "0") == "1"
 
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -92,6 +93,10 @@ async def register(request: Request):
     set, callers must also present it in X-Registration-Token (a shared secret
     the relay owner hands to people they want to allow in)."""
     ip = request.client.host if request.client else "?"
+    if TRUST_PROXY and request.headers.get("X-Forwarded-For"):
+        # Only when the relay sits behind YOUR reverse proxy: take the client
+        # address the proxy appended (last hop), never a client-supplied first one.
+        ip = request.headers["X-Forwarded-For"].split(",")[-1].strip() or ip
     if not auth.limiter.allow(f"register:{ip}", auth.REGISTRATIONS_PER_IP_PER_MINUTE):
         raise HTTPException(status_code=429, detail="too many registrations")
     if REGISTRATION_TOKEN and not auth.constant_time_equals(
@@ -181,6 +186,17 @@ async def redeem_invite(ident=Depends(auth.authenticate)):
             raise generic
         if store.are_friends(db, issuer, user_id):
             raise generic
+        # Crossed invites: the issuer already asked THIS user. Both sides want
+        # the friendship, so accept it instead of leaving two opposite pending rows.
+        crossed = db.execute(
+            "UPDATE friendships SET status='accepted' WHERE requester_id=? AND addressee_id=? AND status='pending'",
+            (issuer, user_id),
+        )
+        if crossed.rowcount:
+            db.execute("UPDATE invites SET used_at=? WHERE code_hash=?", (store.now(), invite["code_hash"]))
+            issuer_row = store.get_user(db, issuer)
+            audit("invite_redeemed_crossed", user=user_id, issuer=issuer)
+            return {"status": "accepted", "friend": {"user_id": issuer, "display_name": issuer_row["display_name"]}}
         count = db.execute(
             "SELECT COUNT(*) FROM friendships WHERE requester_id=? OR addressee_id=?", (user_id, user_id)
         ).fetchone()[0]
@@ -410,6 +426,16 @@ async def post_message(group_id: str, ident=Depends(auth.authenticate)):
     req = parse(PostMessageRequest, body)
     if req.kind not in ("human", "bot", "system"):
         raise HTTPException(status_code=422, detail="kind must be human, bot or system")
+    if req.client_msg_id:
+        # A retry of something already stored is free: it must not burn the
+        # sender's rate budget (a flaky network would otherwise lock them out).
+        with store.connect(write=False) as db:
+            existing = db.execute(
+                "SELECT seq FROM messages WHERE group_id=? AND speaker_user_id=? AND client_msg_id=?",
+                (group_id, user_id, req.client_msg_id),
+            ).fetchone()
+            if existing is not None and store.is_member(db, group_id, user_id):
+                return {"seq": existing["seq"], "duplicate": True}
     if not auth.limiter.allow(f"msg:{user_id}", auth.MESSAGES_PER_MINUTE):
         raise HTTPException(status_code=429, detail="message rate limit exceeded")
     text = clean_text(req.text, MAX_MESSAGE_CHARS)

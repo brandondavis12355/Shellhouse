@@ -297,6 +297,11 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(preferredColorScheme)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            // Debounced saves would otherwise lose the last few hundred ms of messages.
+            bots.forEach { $0.flushTranscriptNow() }
+            groupChats.forEach { $0.flushPersistenceNow() }
+        }
         .onChange(of: joinedGroups.sessions.map(\.groupID)) { _, ids in
             // A joined group vanished (removed, left, deleted): don't leave it selected.
             if let selected = selectedItemID, selected.hasPrefix("joined:"),

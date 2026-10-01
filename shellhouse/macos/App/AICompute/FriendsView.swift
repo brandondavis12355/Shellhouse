@@ -181,7 +181,9 @@ final class FriendsManager {
         var redeemed = false
         await perform { client in
             let result = try await client.redeemInvite(code: code)
-            self.notice = ("Request sent to \(result.friend.displayName). They need to accept it.", false)
+            self.notice = result.status == "accepted"
+                ? ("You and \(result.friend.displayName) both invited each other — you're now friends.", false)
+                : ("Request sent to \(result.friend.displayName). They need to accept it.", false)
             redeemed = true
         }
         return redeemed

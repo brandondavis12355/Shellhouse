@@ -154,6 +154,18 @@ final class GroupChatSession: Identifiable {
 
     private var persistTask: Task<Void, Never>?
 
+    /// App quit: flush the debounced transcript and goal writes immediately.
+    func flushPersistenceNow() {
+        if persistTask != nil {
+            persistTask?.cancel(); persistTask = nil
+            GroupTranscriptStore.saveNow(groupID: id, displayMessages)
+        }
+        if goalPersistTask != nil {
+            goalPersistTask?.cancel(); goalPersistTask = nil
+            GroupGoalStore.saveNow(groupID: id, goal)
+        }
+    }
+
     func cancelPendingPersist() {
         persistTask?.cancel()
         persistTask = nil

@@ -498,6 +498,21 @@ final class Bot: Identifiable, @unchecked Sendable {
         TranscriptStore.delete(id: id)
     }
 
+    /// App quit: write the transcript right now instead of waiting out the
+    /// debounce (which would drop the last ~400 ms of messages).
+    func flushTranscriptNow() {
+        guard transcriptSaveTask != nil else { return }
+        transcriptSaveTask?.cancel()
+        transcriptSaveTask = nil
+        TranscriptStore.saveNow(id: id, displayMessages.map {
+            TranscriptEntry(
+                role: $0.role, text: $0.text, attachmentNames: $0.attachmentNames.isEmpty ? nil : $0.attachmentNames,
+                interBotPeerID: $0.interBotPeerID, interBotPeerName: $0.interBotPeerName, timestamp: $0.timestamp,
+                toolName: $0.toolName, isTaskSummary: $0.isTaskSummary
+            )
+        })
+    }
+
     /// Stops a debounced save from resurrecting a transcript file that's
     /// about to be (or just was) deleted.
     func cancelPendingTranscriptSave() {
@@ -2270,7 +2285,10 @@ final class Bot: Identifiable, @unchecked Sendable {
     private func drainQueue() async {
         guard !isDrainingQueue, let sandbox, let handle else { return }
         isDrainingQueue = true
-        while !messageQueue.isEmpty {
+        // A cancelled loop (Stop) must not pick up a message submitted right
+        // after Stop: it would run inside the cancelled task and be cancelled
+        // immediately. Leave it queued for the fresh drain started below.
+        while !messageQueue.isEmpty && !Task.isCancelled {
             let queued = messageQueue.removeFirst()
             let queuedSpan = BotActivity.shared.begin(bot: self, kind: .queued, detail: "own chat")
             do {
@@ -2423,7 +2441,13 @@ final class Bot: Identifiable, @unchecked Sendable {
             releaseRunLock()
         }
         isDrainingQueue = false
+        let wasCancelled = Task.isCancelled
         drainTask = nil
+        if wasCancelled && !messageQueue.isEmpty {
+            // Stop → quick resubmit: the new message was queued while this
+            // (cancelled) loop was still unwinding. Start a clean one for it.
+            drainTask = Task { await drainQueue() }
+        }
     }
 
     /// Streamed tokens are buffered and applied to `displayMessages` at

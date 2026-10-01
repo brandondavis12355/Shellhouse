@@ -282,3 +282,33 @@ def test_retention_keeps_only_newest_messages(client, make_user, befriend, monke
     for i in range(8):
         bob.call("POST", f"/v1/groups/{gid}/messages", {"text": f"x{i}"})
     assert [m["text"] for m in alice.call("GET", f"/v1/groups/{other}/messages").json()["messages"]] == ["keep me"]
+
+
+def test_crossed_invites_become_friends_without_duplicate_rows(client, make_user):
+    alice, bob = make_user("Alice"), make_user("Bob")
+    a_code = alice.call("POST", "/v1/invites").json()["code"]
+    b_code = bob.call("POST", "/v1/invites").json()["code"]
+    assert bob.call("POST", "/v1/invites/redeem", {"code": a_code}).json()["status"] == "pending"
+    result = alice.call("POST", "/v1/invites/redeem", {"code": b_code}).json()
+    assert result["status"] == "accepted"
+    assert [f["display_name"] for f in alice.call("GET", "/v1/friends").json()["friends"]] == ["Bob"]
+    assert alice.call("GET", "/v1/friends").json()["incoming"] == []
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM friendships").fetchone()[0] == 1
+
+
+def test_retried_duplicate_post_does_not_use_rate_budget(client, make_user, befriend, monkeypatch):
+    monkeypatch.setattr(auth, "MESSAGES_PER_MINUTE", 2)
+    alice, bob, gid = _two_member_group(make_user, befriend)
+    first = bob.call("POST", f"/v1/groups/{gid}/messages", {"text": "one", "client_msg_id": "c1"}).json()
+    for _ in range(5):
+        again = bob.call("POST", f"/v1/groups/{gid}/messages", {"text": "one", "client_msg_id": "c1"})
+        assert again.status_code == 200 and again.json() == {"seq": first["seq"], "duplicate": True}
+    assert bob.call("POST", f"/v1/groups/{gid}/messages", {"text": "two"}).status_code == 200
+
+
+def test_removed_member_cannot_replay_a_stored_duplicate(client, make_user, befriend):
+    alice, bob, gid = _two_member_group(make_user, befriend)
+    bob.call("POST", f"/v1/groups/{gid}/messages", {"text": "hi", "client_msg_id": "c9"})
+    alice.call("DELETE", f"/v1/groups/{gid}/members/{bob.user_id}")
+    assert bob.call("POST", f"/v1/groups/{gid}/messages", {"text": "hi", "client_msg_id": "c9"}).status_code == 404

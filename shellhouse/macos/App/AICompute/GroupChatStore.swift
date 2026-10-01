@@ -82,6 +82,11 @@ enum GroupTranscriptStore {
 
     private static let writeQueue = DispatchQueue(label: "GroupTranscriptStore.write", qos: .utility)
 
+    /// Blocks until written (after anything already queued) — for app quit.
+    static func saveNow(groupID: String, _ messages: [GroupMessage]) {
+        writeQueue.sync { save(groupID: groupID, messages) }
+    }
+
     static func saveInBackground(groupID: String, _ messages: [GroupMessage]) {
         writeQueue.async { save(groupID: groupID, messages) }
     }
@@ -118,6 +123,13 @@ enum GroupGoalStore {
     static func load(groupID: String) -> GroupGoal? {
         guard let data = try? Data(contentsOf: fileURL(for: groupID)) else { return nil }
         return try? JSONDecoder().decode(GroupGoal.self, from: data)
+    }
+
+    static func saveNow(groupID: String, _ goal: GroupGoal?) {
+        writeQueue.sync {
+            guard let goal else { try? FileManager.default.removeItem(at: fileURL(for: groupID)); return }
+            if let data = try? JSONEncoder().encode(goal) { try? data.write(to: fileURL(for: groupID), options: .atomic) }
+        }
     }
 
     static func saveInBackground(groupID: String, _ goal: GroupGoal?) {

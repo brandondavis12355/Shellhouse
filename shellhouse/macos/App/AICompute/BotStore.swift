@@ -240,6 +240,11 @@ enum TranscriptStore {
         writeQueue.async { save(id: id, entries) }
     }
 
+    /// Blocks until written (after anything already queued) — for app quit.
+    static func saveNow(id: String, _ entries: [TranscriptEntry]) {
+        writeQueue.sync { save(id: id, entries) }
+    }
+
     static func delete(id: String) {
         writeQueue.async { try? FileManager.default.removeItem(at: fileURL(for: id)) }
     }
