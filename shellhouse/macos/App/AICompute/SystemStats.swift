@@ -1,3 +1,4 @@
+import AgentCore
 import Foundation
 
 /// The Linux sandbox host's address — the single source of truth for it,
@@ -5,8 +6,10 @@ import Foundation
 /// that file), rather than the same host/user string living in two places
 /// that could drift apart.
 enum RemoteHost {
-    static let host = "192.0.2.10"
-    static let user = "alex-dev"
+    /// Editable in Settings > Linux host (the address changes with the network).
+    static var settings: HostSettings { HostSettingsStore.load() }
+    static var host: String { settings.host }
+    static var user: String { settings.user }
 }
 
 /// One machine's rough resource snapshot for the Settings sheet — load

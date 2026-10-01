@@ -54,7 +54,8 @@ public final class SSHTunnel: @unchecked Sendable {
         }
     }
 
-    private let config: Config
+    private var storedConfig: Config
+    private var config: Config { lock.lock(); defer { lock.unlock() }; return storedConfig }
     private let onStderr: (String) -> Void
     private let restartDelay: UInt64 = 5_000_000_000  // 5s, in nanoseconds
 
@@ -64,8 +65,26 @@ public final class SSHTunnel: @unchecked Sendable {
     private var restartTask: Task<Void, Never>?
 
     public init(config: Config, onStderr: @escaping (String) -> Void = { _ in }) {
-        self.config = config
+        self.storedConfig = config
         self.onStderr = onStderr
+    }
+
+    /// Point the tunnel at a different host/user (the Linux host's address
+    /// changed with the network): tears the current `ssh` down, waits for its
+    /// local ports to free up, then starts a new one. Safe to call repeatedly.
+    public func reconfigure(_ newConfig: Config) {
+        stop()
+        lock.lock()
+        storedConfig = newConfig
+        lock.unlock()
+        Task.detached { [self] in
+            // `start()` reuses a tunnel it finds already listening; give the
+            // one we just stopped a moment to release its ports first.
+            for _ in 0..<30 where isLocalPortOpen(port: newConfig.localManagerPort) || isLocalPortOpen(port: newConfig.novncLocalPort) {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            start()
+        }
     }
 
     /// Idempotent: safe to call again if it's already running.

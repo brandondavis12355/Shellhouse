@@ -317,7 +317,12 @@ struct ContentView: View {
                 appearanceMode: $appearanceMode,
                 defaultMaxTokens: $defaultMaxTokens,
                 defaultMaxIterations: $defaultMaxIterations,
-                onSkillsChanged: { for bot in bots { bot.refreshAvailableSkills() } }
+                onSkillsChanged: { for bot in bots { bot.refreshAvailableSkills() } },
+                onHostChanged: {
+                    // Give the new tunnel a few seconds, then re-boot any bot that
+                    // never got its sandbox (boot() itself waits for the tunnel).
+                    for bot in bots where bot.handle == nil { Task { await bot.boot() } }
+                }
             )
         }
         .sheet(item: $botSettingsTarget) { bot in
@@ -920,6 +925,9 @@ struct AppSettingsView: View {
     @Binding var defaultMaxTokens: String
     @Binding var defaultMaxIterations: String
     var onSkillsChanged: () -> Void = {}
+    /// The Linux host's address was saved — bots that couldn't reach the
+    /// sandbox before should try again.
+    var onHostChanged: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
 
     /// A singleton, not a `@Binding` threaded down from `ContentView` —
@@ -947,6 +955,10 @@ struct AppSettingsView: View {
                     Text("Dark").tag("dark")
                 }
                 .pickerStyle(.segmented)
+
+                Divider()
+
+                HostSettingsSection(onChanged: onHostChanged)
 
                 Divider()
 

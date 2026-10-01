@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         config: .init(
             host: RemoteHost.host,
             user: RemoteHost.user,
-            managerSocketPath: "/home/\(RemoteHost.user)/shellhouse/sandbox-manager-run/manager.sock"
+            managerSocketPath: RemoteHost.settings.managerSocketPath
         ),
         onStderr: { line in
             // ssh's own diagnostics (auth failure, host unreachable, ...) —
