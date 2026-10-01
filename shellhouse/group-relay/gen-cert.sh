@@ -1,14 +1,19 @@
 #!/bin/sh
 # Generates a self-signed certificate for the relay into ./certs/ (fullchain.pem,
-# privkey.pem). Usage: ./gen-cert.sh <host-or-ip-friends-will-connect-to>
+# privkey.pem). Usage: ./gen-cert.sh <host-or-ip> [more hosts/IPs...]
+# (every name/address friends might use goes in the certificate)
 # Friends' apps must trust/pin this certificate (phase 2 pins its fingerprint).
 set -e
-HOST="${1:?usage: gen-cert.sh <hostname-or-ip>}"
+HOST="${1:?usage: gen-cert.sh <hostname-or-ip> [more...]}"
 mkdir -p certs
-case "$HOST" in
-  *[!0-9.]*) SAN="DNS:$HOST" ;;
-  *)         SAN="IP:$HOST" ;;
-esac
+SAN=""
+for name in "$@"; do
+  case "$name" in
+    *[!0-9.]*) entry="DNS:$name" ;;
+    *)         entry="IP:$name" ;;
+  esac
+  SAN="${SAN:+$SAN,}$entry"
+done
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 825 \
   -keyout certs/privkey.pem -out certs/fullchain.pem \
   -subj "/CN=$HOST" -addext "subjectAltName=$SAN"
