@@ -276,7 +276,7 @@ struct ContentView: View {
                 JoinedGroupView(session: joined, onLeft: { selectedItemID = bots.first.map { "bot:\($0.id)" } })
                     .id(joined.groupID)
             } else if let bot = selectedBot {
-                BotDetailView(bot: bot, onOpenSettings: { botSettingsTarget = bot }, allBots: bots)
+                BotDetailView(bot: bot, onOpenSettings: { botSettingsTarget = bot })
                     // Forces a fresh view identity per bot so `.onAppear`
                     // in `BotDetailView` actually fires on every switch —
                     // without this, SwiftUI treats switching which bot is

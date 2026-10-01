@@ -81,8 +81,6 @@ struct InterBotThreadTarget: Identifiable {
 struct BotDetailView: View {
     @Bindable var bot: Bot
     var onOpenSettings: () -> Void
-    /// Every bot, for the live status strip at the bottom of the chat.
-    var allBots: [Bot] = []
     /// Off by default — the computer is a secondary, opt-in view now (see
     /// the desktop-icon button below), not something shown for every bot
     /// the moment you open it.
@@ -187,16 +185,8 @@ struct BotDetailView: View {
                             }
                         }
 
-                        Group {
-                            if !bot.isProcessingMessage {
-                                Text(bot.messageQueue.isEmpty ? bot.status : "\(bot.status) • \(bot.messageQueue.count) queued")
-                                    .font(.body)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        BotStatusStrip(bots: allBots)
+                        OwnBotStatusView(bot: bot)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                         if !bot.pendingAttachments.isEmpty {
                             ScrollView(.horizontal, showsIndicators: false) {

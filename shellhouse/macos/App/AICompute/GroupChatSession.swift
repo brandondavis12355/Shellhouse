@@ -210,8 +210,16 @@ final class GroupChatSession: Identifiable {
         return Set(members.filter { mentioned.contains($0.name.lowercased()) }.map(\.id))
     }
 
-    private func formatRecentTranscript(limit: Int = 30) -> String {
-        displayMessages.suffix(limit).map { message in
+    /// The transcript window handed to a member. Kept short on purpose: every
+    /// member re-processes it on every turn, and with several bots sharing one
+    /// local model that prompt processing is the bottleneck (see
+    /// `Bot.fullSystemPrompt(isolated:)`). Long messages are clipped.
+    private func formatRecentTranscript(limit: Int = 16, clipTo: Int = 1500) -> String {
+        displayMessages.suffix(limit).map { original in
+            var message = original
+            if message.text.count > clipTo { message.text = String(message.text.prefix(clipTo)) + " …[clipped]" }
+            return message
+        }.map { message in
             if message.externalUserID != nil {
                 // A friend's text is untrusted: label it, and indent continuation
                 // lines so it can't forge another speaker's "Name:" line.
@@ -225,7 +233,7 @@ final class GroupChatSession: Identifiable {
     /// True if anything a friend wrote is inside the window the model sees this
     /// turn. Such a turn runs in "untrusted" mode (see `Bot.respondInGroup`).
     private func turnIsUntrusted() -> Bool {
-        displayMessages.suffix(30).contains { $0.externalUserID != nil }
+        displayMessages.suffix(16).contains { $0.externalUserID != nil }
     }
 
     static let sharedGroupNotice = """
@@ -355,7 +363,7 @@ final class GroupChatSession: Identifiable {
             if decision == .optional {
                 debugLog(bot, "new messages — checking whether to reply")
                 let goalContext = goal.flatMap { $0.isLive ? goalBlockText($0) : nil }
-                guard await bot.wantsToRespondInGroup(groupName: name, transcript: formatRecentTranscript(), goalContext: goalContext) else { continue }
+                guard await bot.wantsToRespondInGroup(groupName: name, transcript: formatRecentTranscript(limit: 8, clipTo: 500), goalContext: goalContext) else { continue }
             }
             let untrusted = turnIsUntrusted()
             if relayGroupID != nil {

@@ -2092,13 +2092,21 @@ final class Bot: Identifiable, @unchecked Sendable {
         }
         let selected = availableSkills.filter { selectedSkillIDs.contains($0.id) }
         if !selected.isEmpty {
-            result += "\n\n---\n\nSkills available via the use_skill tool. Each is a playbook for a specific "
-                + "task — call use_skill(name: \"<name>\") to load one's full instructions ONLY when its "
-                + "description actually matches what you're about to do:\n\n"
-            for skill in selected {
-                var summary = skill.description.isEmpty ? skill.name : skill.description
-                if isolated, summary.count > 90 { summary = String(summary.prefix(90)) + "…" }
-                result += "- \(skill.id): \(summary)\n"
+            if isolated {
+                // Group turns/delegations/routines: names only. The one-line
+                // descriptions were ~1.5k tokens re-processed on EVERY member's
+                // turn — and with several bots sharing one local model, that
+                // prompt processing (not generation) is what makes them take
+                // turns instead of running side by side.
+                result += "\n\n---\n\nPlaybooks you can load with use_skill(name) when one clearly fits what you're doing: "
+                    + selected.map(\.id).joined(separator: ", ") + "."
+            } else {
+                result += "\n\n---\n\nSkills available via the use_skill tool. Each is a playbook for a specific "
+                    + "task — call use_skill(name: \"<name>\") to load one's full instructions ONLY when its "
+                    + "description actually matches what you're about to do:\n\n"
+                for skill in selected {
+                    result += "- \(skill.id): \(skill.description.isEmpty ? skill.name : skill.description)\n"
+                }
             }
         }
         if !memories.isEmpty {
@@ -2562,8 +2570,8 @@ final class Bot: Identifiable, @unchecked Sendable {
             }
             persistTranscript()
             hasUnread = true
-        case .toolStarted(let name, _):
-            status = "Running \(name)…"
+        case .toolStarted(let name, let argumentsJSON):
+            status = "Running \(name)\(Self.toolDetail(argumentsJSON))…"
             // A real action just happened — whatever text comes next is a
             // genuinely new thought reacting to it, not another attempt
             // at the same one, so it earns its own bubble instead of
@@ -2582,6 +2590,20 @@ final class Bot: Identifiable, @unchecked Sendable {
             contextSummary = ContextSummary(text: summary, coveredMessageCount: displayMessages.count)
             ContextSummaryStore.save(id: id, contextSummary!)
         }
+    }
+
+    /// ": <what it's acting on>" for the 1:1 status line — the command, file,
+    /// URL or query, clipped — so "Running run_shell…" says WHICH command.
+    static func toolDetail(_ argumentsJSON: String) -> String {
+        guard let data = argumentsJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "" }
+        for key in ["command", "path", "url", "query", "app", "text", "name"] {
+            if let value = object[key] as? String, !value.isEmpty {
+                let oneLine = value.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                return ": " + (oneLine.count > 70 ? String(oneLine.prefix(70)) + "…" : oneLine)
+            }
+        }
+        return ""
     }
 
     private func describe(_ status: AgentRuntime.Status) -> String {

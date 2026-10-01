@@ -399,7 +399,8 @@ enum StartupConfigLogger {
                 if parallel == "1" { lines.append("  → bot replies are served one at a time; raise OLLAMA_NUM_PARALLEL to let bots overlap") }
             } else {
                 let defaults = OllamaManager.Config()
-                lines.append("Ollama parallel: couldn't read the running server's environment; when this app starts `ollama serve` itself it uses OLLAMA_NUM_PARALLEL=\(defaults.numParallel), MAX_LOADED_MODELS=\(defaults.maxLoadedModels)")
+                lines.append("Ollama parallel: not readable from inside the app sandbox (check with `ps -Eww -p $(lsof -ti tcp:11434 -sTCP:LISTEN) | tr ' ' '\\n' | grep OLLAMA_`); when this app starts `ollama serve` itself it uses OLLAMA_NUM_PARALLEL=\(defaults.numParallel), MAX_LOADED_MODELS=\(defaults.maxLoadedModels)")
+                lines.append("  note: bots send requests at the same time, but a local model still has to process each bot's whole prompt (prefill) — with big prompts and a large model that is what makes replies arrive one after another. See ~/.ollama/logs/server.log: 'cache hit total=… left=…' shows prompt size per request.")
             }
 
             lines.append("── Bots (\(bots.count)) ──")

@@ -1,3 +1,4 @@
+import AgentCore
 import SwiftUI
 
 /// A small animated "<Name> is responding…" line — shown in place of the
@@ -48,18 +49,42 @@ private struct BouncingDots: View {
 }
 
 
-/// Every bot's live status in one wrapped block at the bottom of a chat —
-/// "is working…" (thinking / running tools) and "is responding…" (its reply
-/// is streaming) are distinct, alongside "checking", "waiting" (queued
-/// behind its own other run), "needs approval", and idle.
+/// Live status of a set of bots, one sentence per state — "Mr. Smith and
+/// Bugbot are working…", "Cleo is responding…". Bots in the same state share
+/// a line; when a line names several bots its color rotates through theirs
+/// every couple of seconds, so "more than one" is visible at a glance. Idle
+/// bots are hidden, and the whole thing disappears when everyone is idle.
 struct BotStatusStrip: View {
     let bots: [Bot]
     private var activity = BotActivity.shared
+    private static let colorSwapSeconds: TimeInterval = 2.5
 
     init(bots: [Bot]) { self.bots = bots }
 
-    private enum State {
+    private enum State: CaseIterable {
         case responding, working, checking, waiting, approval, idle
+
+        var singular: String {
+            switch self {
+            case .responding: return "is responding…"
+            case .working: return "is working…"
+            case .checking: return "is checking the chat…"
+            case .waiting: return "is waiting its turn"
+            case .approval: return "needs your approval"
+            case .idle: return ""
+            }
+        }
+
+        var plural: String {
+            switch self {
+            case .responding: return "are responding…"
+            case .working: return "are working…"
+            case .checking: return "are checking the chat…"
+            case .waiting: return "are waiting their turn"
+            case .approval: return "need your approval"
+            case .idle: return ""
+            }
+        }
     }
 
     private func state(of bot: Bot) -> State {
@@ -73,51 +98,94 @@ struct BotStatusStrip: View {
         return .idle
     }
 
-    /// Idle bots are hidden — the strip only shows bots doing (or waiting
-    /// on) something, and disappears entirely when everyone is idle.
-    private var activeBots: [Bot] {
-        bots.filter { state(of: $0) != .idle }
+    /// One entry per non-empty state, in a stable order, bots in sidebar order.
+    private var lines: [(state: State, bots: [Bot])] {
+        State.allCases.compactMap { state in
+            guard state != .idle else { return nil }
+            let members = bots.filter { self.state(of: $0) == state }
+            return members.isEmpty ? nil : (state, members)
+        }
     }
 
     var body: some View {
-        if !activeBots.isEmpty {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), alignment: .leading)], alignment: .leading, spacing: 4) {
-                ForEach(activeBots) { bot in
-                    chip(for: bot)
+        let current = lines
+        if !current.isEmpty {
+            // Re-evaluated twice a second so the color swap and any state change show promptly.
+            TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(current, id: \.state) { line in
+                        row(line.state, line.bots, at: context.date)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     @ViewBuilder
-    private func chip(for bot: Bot) -> some View {
-        let color = Color(hex: bot.colorHex)
-        switch state(of: bot) {
-        case .responding:
-            RespondingIndicatorView(name: bot.name, colorHex: bot.colorHex, verb: "responding")
-        case .working:
-            HStack(spacing: 6) {
+    private func row(_ state: State, _ bots: [Bot], at date: Date) -> some View {
+        let index = StatusPhrase.colorIndex(at: date.timeIntervalSinceReferenceDate, interval: Self.colorSwapSeconds, count: bots.count)
+        let color = Color(hex: bots[index].colorHex)
+        let text = StatusPhrase.sentence(names: bots.map(\.name), singular: state.singular, plural: state.plural)
+        HStack(spacing: 6) {
+            switch state {
+            case .responding:
+                BouncingDots(colorHex: bots[index].colorHex)
+            case .working, .checking:
                 ProgressView().controlSize(.mini)
-                Text("\(bot.name) is working…").font(.system(size: 13)).italic().foregroundStyle(color)
-            }
-        case .checking:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text("\(bot.name) is checking the chat…").font(.system(size: 13)).italic().foregroundStyle(color.opacity(0.8))
-            }
-        case .waiting:
-            HStack(spacing: 6) {
-                Image(systemName: "hourglass").font(.system(size: 11))
-                Text("\(bot.name) is waiting its turn").font(.system(size: 13)).foregroundStyle(.secondary)
-            }
-        case .approval:
-            HStack(spacing: 6) {
+            case .waiting:
+                Image(systemName: "hourglass").font(.system(size: 11)).foregroundStyle(.secondary)
+            case .approval:
                 Image(systemName: "exclamationmark.shield").font(.system(size: 11)).foregroundStyle(.orange)
-                Text("\(bot.name) needs approval").font(.system(size: 13)).foregroundStyle(.orange)
+            case .idle:
+                EmptyView()
             }
-        case .idle:
-            EmptyView()
+            Text(text)
+                .font(.system(size: 13))
+                .italic(state == .responding || state == .working || state == .checking)
+                .foregroundStyle(state == .waiting ? Color.secondary : (state == .approval ? Color.orange : color))
+                .animation(.easeInOut(duration: 0.6), value: index)
+        }
+    }
+}
+
+
+/// A 1:1 chat's status line: specific, because there is only one bot to talk
+/// about — what it is actually doing right now ("Running run_shell…",
+/// "Working… (3/40)", "Waiting for your approval…"), or the animated
+/// "is responding…" once its reply starts streaming. (Group chats use the
+/// more generic `BotStatusStrip`.)
+struct OwnBotStatusView: View {
+    let bot: Bot
+    private var activity = BotActivity.shared
+
+    init(bot: Bot) { self.bot = bot }
+
+    private var isResponding: Bool {
+        activity.spans.contains { $0.botID == bot.id && $0.kind == .running && $0.phase == .responding }
+    }
+
+    var body: some View {
+        if bot.isProcessingMessage {
+            if isResponding {
+                RespondingIndicatorView(name: bot.name, colorHex: bot.colorHex, verb: "responding")
+            } else {
+                HStack(spacing: 6) {
+                    if bot.pendingApproval != nil {
+                        Image(systemName: "exclamationmark.shield").font(.system(size: 11)).foregroundStyle(.orange)
+                    } else {
+                        ProgressView().controlSize(.mini)
+                    }
+                    Text(bot.messageQueue.isEmpty ? bot.status : "\(bot.status) • \(bot.messageQueue.count) queued")
+                        .font(.system(size: 13))
+                        .italic()
+                        .foregroundStyle(bot.pendingApproval != nil ? Color.orange : Color(hex: bot.colorHex))
+                }
+            }
+        } else {
+            Text(bot.messageQueue.isEmpty ? bot.status : "\(bot.status) • \(bot.messageQueue.count) queued")
+                .font(.body)
+                .foregroundStyle(.secondary)
         }
     }
 }
