@@ -17,14 +17,16 @@ struct HostSettingsSection: View {
     private var enteredUser: String? { HostSettings.normalizedUser(from: userInput) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Linux host").font(.headline)
+        VStack(alignment: .leading, spacing: 0) {
+            SectionLabel("Linux host")
+            Card {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Where your sandbox host is on the network you're connected to. Use its IP address, or a name like "
                 + "`linux-host.local` that keeps working when you change networks.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.system(size: 13)).foregroundStyle(.secondary)
             HStack {
                 TextField("Address (IP or hostname)", text: $hostInput)
-                    .textFieldStyle(.roundedBorder)
+                    .themedField()
                     .onSubmit { Task { await saveAndReconnect() } }
                 Menu("Recent") {
                     ForEach(settings.candidates, id: \.self) { candidate in
@@ -34,9 +36,9 @@ struct HostSettingsSection: View {
                 .fixedSize()
                 .disabled(settings.candidates.isEmpty)
             }
-            TextField("SSH user", text: $userInput).textFieldStyle(.roundedBorder)
+            TextField("SSH user", text: $userInput).themedField()
             if !hostInput.isEmpty && enteredHost == nil {
-                Text("That doesn't look like an IP address or hostname.").font(.caption2).foregroundStyle(.orange)
+                Text("That doesn't look like an IP address or hostname.").font(.system(size: 13)).foregroundStyle(Theme.warning)
             }
             HStack {
                 Button("Test") { Task { await test() } }.disabled(enteredHost == nil || enteredUser == nil || isWorking)
@@ -50,9 +52,12 @@ struct HostSettingsSection: View {
             if let result {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: result.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(result.ok ? .green : .orange)
-                    Text(result.text).font(.caption)
+                        .foregroundStyle(result.ok ? Theme.positive : Theme.warning)
+                    Text(result.text).font(.system(size: 13))
                 }
+            }
+        }
+        .padding(16)
             }
         }
         .onAppear {

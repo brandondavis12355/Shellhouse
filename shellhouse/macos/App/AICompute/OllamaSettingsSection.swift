@@ -100,29 +100,32 @@ struct OllamaSettingsSection: View {
     @State private var pullStatus: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Ollama").font(.headline)
+                SectionLabel("Ollama")
                 Spacer()
                 if isRefreshing { ProgressView().controlSize(.small) }
                 Button("Refresh") { Task { await refresh() } }
-                    .font(.caption)
+                    .buttonStyle(.compactPill)
                     .disabled(isRefreshing)
+                    .padding(.trailing, 4)
             }
+            Card {
+        VStack(alignment: .leading, spacing: 10) {
 
             if let binaryPath {
                 HStack {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                    Text("Installed at \(binaryPath)").font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.positive)
+                    Text("Installed at \(binaryPath)").font(.system(size: 13)).foregroundStyle(.secondary)
                 }
 
                 Text(models.isEmpty ? "No models pulled yet." : "Installed models:")
-                    .font(.caption)
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 if !models.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(models, id: \.self) { model in
-                            Text(model).font(.system(.caption, design: .monospaced))
+                            Text(model).font(.system(size: 13, design: .monospaced))
                         }
                     }
                     .padding(.leading, 4)
@@ -130,7 +133,7 @@ struct OllamaSettingsSection: View {
 
                 HStack {
                     TextField("Model to pull, e.g. llama3.1:8b", text: $pullModelName)
-                        .textFieldStyle(.roundedBorder)
+                        .themedField()
                         .disabled(isPulling)
                         .onSubmit { Task { await pull() } }
                     Button(isPulling ? "Pulling…" : "Pull") { Task { await pull() } }
@@ -139,17 +142,17 @@ struct OllamaSettingsSection: View {
                 if isPulling {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("Pulling — large models can take a while.").font(.caption).foregroundStyle(.secondary)
+                        Text("Pulling — large models can take a while.").font(.system(size: 13)).foregroundStyle(.secondary)
                     }
                 }
                 if let pullStatus {
-                    Text(pullStatus).font(.caption).foregroundStyle(.secondary)
+                    Text(pullStatus).font(.system(size: 13)).foregroundStyle(.secondary)
                 }
             } else {
                 HStack {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
                     Text("Ollama isn't installed — bots can't reach a model until it is.")
-                        .font(.caption)
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
 
@@ -170,17 +173,19 @@ struct OllamaSettingsSection: View {
                     Button("Open ollama.com/download") {
                         NSWorkspace.shared.open(URL(string: "https://ollama.com/download")!)
                     }
-                    .font(.caption)
                 }
                 if isInstalling {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("Installing — this can take a minute.").font(.caption).foregroundStyle(.secondary)
+                        Text("Installing — this can take a minute.").font(.system(size: 13)).foregroundStyle(.secondary)
                     }
                 }
                 if let installStatus {
-                    Text(installStatus).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    Text(installStatus).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(3)
                 }
+            }
+        }
+        .padding(16)
             }
         }
         .task { await refresh() }

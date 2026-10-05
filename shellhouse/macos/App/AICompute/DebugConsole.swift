@@ -303,7 +303,7 @@ struct DebugConsoleView: View {
             }
         }
         .frame(maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Theme.bg)
     }
 }
 
@@ -336,7 +336,7 @@ private struct DebugLogRow: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 4)
-                        .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+                        .background(Theme.chip, in: RoundedRectangle(cornerRadius: 4))
                 }
                 Text(kindLabel).font(.caption2).foregroundStyle(.secondary)
                 Text(Self.timeFormatter.string(from: entry.timestamp)).font(.caption2).foregroundStyle(.tertiary)
@@ -567,7 +567,7 @@ struct BotActivityPanel: View {
                 }
             }
             .padding(8)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 

@@ -14,27 +14,27 @@ struct ApprovalCard: View {
     let onDecide: (AgentRuntime.ApprovalDecision) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "exclamationmark.shield")
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.shield.fill")
                     .imageScale(.large)
-                    .foregroundStyle(.orange)
-                Text("Approval needed").font(.title3)
+                    .foregroundStyle(Theme.warning)
+                Text("Approval needed").font(.system(size: 17, weight: .semibold))
             }
             Text(approval.toolName)
-                .font(.system(.title3, design: .monospaced))
+                .font(.system(size: 15, design: .monospaced))
                 .bold()
             if approval.untrusted {
                 Text("A friend's message is part of this conversation, so this needs your approval every time.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.warning)
             }
             Text(approval.argumentsSummary)
-                .font(.system(.body, design: .monospaced))
+                .font(.system(size: 13, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .lineLimit(6)
-            HStack {
+            HStack(spacing: 8) {
                 if let binary = approval.alwaysAllowCandidate {
                     Menu("Always allow \"\(binary)\"…") {
                         Button("For this session") { onDecide(.approveAlwaysSession) }
@@ -54,16 +54,14 @@ struct ApprovalCard: View {
                 }
                 Spacer()
                 Button("Deny") { onDecide(.deny) }
-                    .font(.system(size: 14))
                 Button("Approve") { onDecide(.approve) }
+                    .buttonStyle(.primaryPill)
                     .keyboardShortcut(.defaultAction)
-                    .font(.system(size: 14))
             }
         }
-        .padding(12)
-        .background(Color.orange.opacity(0.12))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.4)))
-        .cornerRadius(8)
+        .padding(16)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(Theme.warning.opacity(0.45), lineWidth: 1))
     }
 }
 
@@ -118,45 +116,35 @@ struct BotDetailView: View {
     @State private var highlightedSuggestionIndex = 0
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 48)
-                Text(bot.name).font(.title2)
-                if !bot.tagline.isEmpty {
-                    Text(bot.tagline)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Color(hex: bot.colorHex).opacity(0.18), in: Capsule())
+        VStack(spacing: 0) {
+            ChatTopBar {
+                SidebarToggleButton()
+            } center: {
+                HeaderPill(
+                    title: bot.name,
+                    help: "Bot settings — name, color, role, system prompt, skills, permissions, model, budgets.",
+                    action: onOpenSettings
+                ) {
+                    BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 30)
                 }
-                Spacer()
-                Button(action: onOpenSettings) {
-                    Image(systemName: "gearshape")
+            } trailing: {
+                if showComputer {
+                    GlassCircleButton(
+                        systemName: computerExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                        help: computerExpanded ? "Shrink the computer back down" : "Expand the computer over the chat"
+                    ) { computerExpanded.toggle() }
                 }
-                .imageScale(.large)
-                .help("Bot settings — name, color, role, system prompt, skills, permissions, model, budgets.")
-                Button("Export…") { exportTranscript() }
-                    .disabled(bot.displayMessages.isEmpty)
-                    .font(.system(size: 15))
-                Button {
+                GlassCircleButton(
+                    systemName: "desktopcomputer",
+                    help: showComputer ? "Hide the computer panel" : "Show the computer panel"
+                ) {
                     showComputer.toggle()
                     if !showComputer { computerExpanded = false }
-                } label: {
-                    Image(systemName: showComputer ? "desktopcomputer" : "desktopcomputer.and.arrow.down")
                 }
-                .imageScale(.large)
-                .help(showComputer ? "Hide the computer panel" : "Show the computer panel")
-                if showComputer {
-                    Button {
-                        computerExpanded.toggle()
-                    } label: {
-                        Image(systemName: computerExpanded
-                            ? "arrow.down.right.and.arrow.up.left"
-                            : "arrow.up.left.and.arrow.down.right")
-                    }
-                    .imageScale(.large)
-                    .help(computerExpanded ? "Shrink the computer back down" : "Expand the computer over the chat")
+                GlassCircleMenu(help: "More") {
+                    Button("Bot settings…", action: onOpenSettings)
+                    Button("Export transcript…") { exportTranscript() }
+                        .disabled(bot.displayMessages.isEmpty)
                 }
             }
 
@@ -166,15 +154,17 @@ struct BotDetailView: View {
             // `minWidth` each pane happens to declare.
             HSplitView {
                 if !computerExpanded {
-                    VStack(spacing: 8) {
+                    VStack(spacing: 10) {
                         TranscriptView(
                             messages: bot.displayMessages, botName: bot.name, botColorHex: bot.colorHex, botID: bot.id,
                             mentionColors: mentionColors,
+                            peerAvatarStyles: Dictionary(uniqueKeysWithValues: otherBots.map { ($0.name.lowercased(), $0.avatarStyle) }),
                             onOpenInterBotThread: { peerID, peerName in
                                 activeInterBotThread = InterBotThreadTarget(peerID: peerID, peerName: peerName)
                             }
                         )
 
+                        VStack(spacing: 10) {
                         if let pending = bot.pendingApproval {
                             ApprovalCard(approval: pending.approval) { decision in
                                 pending.continuation.resume(returning: decision)
@@ -221,8 +211,8 @@ struct BotDetailView: View {
                                                 .padding(.horizontal, 8)
                                                 .padding(.vertical, 4)
                                                 .background(
-                                                    index == highlightedSuggestionIndex ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12),
-                                                    in: RoundedRectangle(cornerRadius: 6)
+                                                    index == highlightedSuggestionIndex ? Theme.selection : Theme.card,
+                                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                                                 )
                                             }
                                             .buttonStyle(.plain)
@@ -265,8 +255,8 @@ struct BotDetailView: View {
                                                     // Slash suggestions take keyboard priority when both are
                                                     // showing at once (see `activeSuggestionList`), so this
                                                     // list only shows its own highlight when slash isn't active.
-                                                    (slashSuggestions.isEmpty && index == highlightedSuggestionIndex) ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12),
-                                                    in: RoundedRectangle(cornerRadius: 6)
+                                                    (slashSuggestions.isEmpty && index == highlightedSuggestionIndex) ? Theme.selection : Theme.card,
+                                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                                                 )
                                             }
                                             .buttonStyle(.plain)
@@ -282,17 +272,21 @@ struct BotDetailView: View {
                             }
                         }
 
-                        HStack(alignment: .bottom) {
+                        HStack(alignment: .bottom, spacing: 10) {
                             Button(action: pickAttachments) {
-                                Image(systemName: "paperclip")
+                                GlassCircleLabel(systemName: "plus", size: 48)
                             }
-                            .imageScale(.large)
+                            .buttonStyle(PressableButtonStyle())
                             .disabled(bot.sandbox == nil)
+                            .opacity(bot.sandbox == nil ? 0.4 : 1)
                             .help("Attach a file or image to send alongside your message.")
-                            TextField("Ask \(bot.name) to do something… (try / to invoke a skill)", text: $bot.input, axis: .vertical)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 16))
-                                .disabled(bot.sandbox == nil)
+                            ComposerPill {
+                                TextField("Ask \(bot.name)", text: $bot.input, axis: .vertical)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 16))
+                                    .lineLimit(1...8)
+                                    .disabled(bot.sandbox == nil)
+                                    .help("Try / to invoke a skill, or @ to mention another bot. Shift+Return for a new line.")
                                 .onSubmit { bot.submitInput() }
                                 // Only intercepts Shift+Return, to insert a
                                 // newline instead of submitting — anything
@@ -343,18 +337,21 @@ struct BotDetailView: View {
                                     slashTracker.handleChange(old: old, new: new)
                                     highlightedSuggestionIndex = 0
                                 }
-                            if bot.isProcessingMessage {
-                                Button("Stop", role: .destructive) { bot.stop() }
-                                    .font(.system(size: 16))
-                                    .controlSize(.large)
-                                    .help("Stops the message currently being processed and clears anything still queued behind it.")
+                            } actions: {
+                                if bot.isProcessingMessage {
+                                    StopCircleButton(help: "Stops the message currently being processed and clears anything still queued behind it.") { bot.stop() }
+                                }
+                                SendCircleButton(
+                                    isEnabled: !((bot.input.isEmpty && bot.pendingAttachments.isEmpty) || bot.sandbox == nil),
+                                    help: bot.isBusy ? "Queue this message" : "Send"
+                                ) { bot.submitInput() }
                             }
-                            Button(bot.isBusy ? "Queue" : "Send") { bot.submitInput() }
-                                .disabled((bot.input.isEmpty && bot.pendingAttachments.isEmpty) || bot.sandbox == nil)
-                                .font(.system(size: 16))
-                                .controlSize(.large)
                         }
+                        .padding(.bottom, 14)
+                        }
+                        .frame(maxWidth: Theme.chatColumnWidth)
                     }
+                    .padding(.horizontal, 20)
                     .frame(minWidth: 360)
                 }
 
@@ -363,10 +360,14 @@ struct BotDetailView: View {
                         bot.status = "WKWebView load error: \(error)"
                     }
                     .frame(minWidth: computerExpanded ? nil : 480)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 14)
+                    .padding(.leading, computerExpanded ? 16 : 6)
                 }
             }
         }
-        .padding()
+        .background(Theme.bg)
         // Must be >= this view's own inner `HSplitView` minimum (chat's
         // 360 + the computer panel's 480 = 840 when both are visible) —
         // a lower outer minimum (560 was tried, and briefly shipped)
@@ -519,6 +520,6 @@ struct AttachmentChip: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Color.secondary.opacity(0.15), in: Capsule())
+        .background(Theme.chip, in: Capsule())
     }
 }

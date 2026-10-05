@@ -141,23 +141,6 @@ final class JoinedGroups {
     }
 }
 
-struct JoinedGroupSidebarRow: View {
-    let session: JoinedGroupSession
-    var body: some View {
-        HStack {
-            Image(systemName: "person.2.wave.2").foregroundStyle(.teal)
-            Text(session.name).lineLimit(1)
-            Spacer()
-            if session.unreadCount > 0 {
-                Text("\(session.unreadCount)")
-                    .font(.caption2).bold().foregroundStyle(.white)
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(Color.red, in: Capsule())
-            }
-        }
-    }
-}
-
 struct JoinedGroupView: View {
     @Bindable var session: JoinedGroupSession
     var onLeft: () -> Void = {}
@@ -173,32 +156,34 @@ struct JoinedGroupView: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Image(systemName: "person.2.wave.2").imageScale(.large).foregroundStyle(.teal)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(session.name).font(.title2)
-                    Text("Shared by \(session.ownerName) · \(session.members.count) people")
-                        .font(.caption).foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            ChatTopBar {
+                SidebarToggleButton()
+            } center: {
+                HeaderPill(title: session.name, help: "Shared by \(session.ownerName) · \(session.members.count) people") {
+                    Image(systemName: "person.2.wave.2")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.teal)
+                        .frame(width: 30, height: 30)
+                        .background(Theme.chip, in: Circle())
                 }
-                Spacer()
+            } trailing: {
                 if !session.connectionNote.isEmpty {
-                    Text(session.connectionNote).font(.caption).foregroundStyle(.orange)
+                    Text(session.connectionNote).font(.system(size: 13)).foregroundStyle(Theme.warning)
                 }
-                Menu {
+                GlassCircleMenu(help: "Members and options") {
                     ForEach(session.members) { member in Text(member.displayName) }
                     Divider()
                     Button("Leave group…", role: .destructive) { confirmLeave = true }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
             }
 
             Text("The bots here belong to \(session.ownerName) and run on their computer. Everything you post is visible to everyone in the group.")
-                .font(.caption2).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 4)
 
             if session.ended {
                 Spacer()
@@ -209,7 +194,7 @@ struct JoinedGroupView: View {
                 composer
             }
         }
-        .padding(12)
+        .background(Theme.bg)
         .frame(minWidth: 560, minHeight: 500)
         .onAppear { session.markRead() }
         .onChange(of: session.messages.last?.seq) { _, _ in session.markRead() }
@@ -231,9 +216,13 @@ struct JoinedGroupView: View {
                             .id(message.seq)
                     }
                 }
-                .padding(8)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .frame(maxWidth: Theme.chatColumnWidth)
+                .frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
+            .topFade()
             .onChange(of: session.messages.last?.seq) { _, last in
                 if let last { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) } }
             }
@@ -243,19 +232,25 @@ struct JoinedGroupView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let error = session.error {
-                Text(error).font(.caption).foregroundStyle(.orange)
+                Text(error).font(.system(size: 13)).foregroundStyle(Theme.warning)
             }
-            HStack(alignment: .bottom) {
-                TextField("Message the group… (@mention a bot to call on it)", text: $session.input, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
+            ComposerPill {
+                TextField("Message the group", text: $session.input, axis: .vertical)
+                    .textFieldStyle(.plain)
                     .font(.system(size: 16))
+                    .lineLimit(1...8)
+                    .help("@mention a bot to call on it.")
                     .onSubmit { Task { await session.send() } }
-                Button(session.isSending ? "Sending…" : "Send") { Task { await session.send() } }
-                    .disabled(session.input.trimmingCharacters(in: .whitespaces).isEmpty || session.isSending)
-                    .font(.system(size: 16))
-                    .controlSize(.large)
+            } actions: {
+                SendCircleButton(
+                    isEnabled: !(session.input.trimmingCharacters(in: .whitespaces).isEmpty || session.isSending),
+                    help: session.isSending ? "Sending…" : "Send"
+                ) { Task { await session.send() } }
             }
         }
+        .frame(maxWidth: Theme.chatColumnWidth)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 14)
     }
 }
 
@@ -278,29 +273,32 @@ private struct JoinedMessageRow: View {
 
     var body: some View {
         if message.kind == .system {
-            Text(message.text).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+            Text(message.text).font(.system(size: 13)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
         } else {
             HStack(spacing: 0) {
-                if isMine { Spacer(minLength: 48) }
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(isMine ? "You" : message.speakerName)
-                            .font(.caption2).fontWeight(.semibold).foregroundStyle(color)
-                        if message.kind == .bot {
-                            Text("bot").font(.caption2)
-                                .padding(.horizontal, 5)
-                                .background(color.opacity(0.2), in: Capsule())
-                                .foregroundStyle(color)
+                if isMine { Spacer(minLength: 72) }
+                VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+                    if !isMine {
+                        HStack(spacing: 6) {
+                            Text(message.speakerName)
+                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(color)
+                            if message.kind == .bot {
+                                Text("bot").font(.system(size: 11))
+                                    .padding(.horizontal, 6)
+                                    .background(color.opacity(0.2), in: Capsule())
+                                    .foregroundStyle(color)
+                            }
                         }
-                        Text(Self.timeFormatter.string(from: Date(timeIntervalSince1970: message.ts)))
-                            .font(.caption2).foregroundStyle(.tertiary)
+                        .padding(.leading, 6)
                     }
-                    MentionPillText(text: message.text, mentionColors: mentionColors).textSelection(.enabled)
+                    MentionPillText(text: message.text, mentionColors: mentionColors, fontSize: 16)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 18).padding(.vertical, 13)
+                        .background(isMine ? Theme.userBubble : Theme.bubble)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
+                        .help(Self.timeFormatter.string(from: Date(timeIntervalSince1970: message.ts)))
                 }
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(color.opacity(0.16))
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                if !isMine { Spacer(minLength: 48) }
+                if !isMine { Spacer(minLength: 72) }
             }
         }
     }

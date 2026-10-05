@@ -22,9 +22,9 @@ struct GroupGoalCard: View {
                     footer(goal)
                 }
             }
-            .padding(10)
-            .background(statusColor(goal.status).opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(statusColor(goal.status).opacity(0.35)))
+            .padding(14)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(statusColor(goal.status).opacity(0.35), lineWidth: 1))
         }
     }
 
@@ -71,7 +71,7 @@ struct GroupGoalCard: View {
             if goal.isLive {
                 HStack {
                     TextField("Add a step…", text: $newStepText)
-                        .textFieldStyle(.roundedBorder).font(.caption)
+                        .themedField().font(.system(size: 13))
                         .onSubmit(addStep)
                     Button("Add", action: addStep).disabled(newStepText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
@@ -90,7 +90,7 @@ struct GroupGoalCard: View {
                 HStack {
                     Button("Confirm complete") { group.confirmGoal() }.keyboardShortcut(.defaultAction)
                     TextField("Not yet — what's missing?", text: $feedback)
-                        .textFieldStyle(.roundedBorder).font(.caption)
+                        .themedField().font(.system(size: 13))
                         .onSubmit(sendFeedback)
                     Button("Not yet", action: sendFeedback).disabled(feedback.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
@@ -102,7 +102,7 @@ struct GroupGoalCard: View {
                 HStack {
                     Button("Continue") { group.continueGoal() }.keyboardShortcut(.defaultAction)
                     TextField("Redirect — tell them what to do instead", text: $feedback)
-                        .textFieldStyle(.roundedBorder).font(.caption)
+                        .themedField().font(.system(size: 13))
                         .onSubmit(sendFeedback)
                     Button("Redirect", action: sendFeedback).disabled(feedback.trimmingCharacters(in: .whitespaces).isEmpty)
                     Button("Stop", role: .destructive) { group.stopGoal() }

@@ -242,24 +242,27 @@ struct FriendsView: View {
     @State private var showConnection = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        SheetScaffold(title: "Friends") {
+            VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    Text("Friends").font(.title2).bold()
                     Spacer()
                     statusPill
                 }
+                .padding(.horizontal, 16)
 
                 if let notice = manager.notice {
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                            .foregroundStyle(notice.isError ? .orange : .green)
-                        Text(notice.text).font(.caption)
+                            .foregroundStyle(notice.isError ? Theme.warning : Theme.positive)
+                        Text(notice.text).font(.system(size: 13))
                         Spacer()
                         Button { manager.notice = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
                     }
-                    .padding(8)
-                    .background((notice.isError ? Color.orange : Color.green).opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .padding(12)
+                    .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.fieldRadius, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.fieldRadius, style: .continuous)
+                        .strokeBorder((notice.isError ? Theme.warning : Theme.positive).opacity(0.5), lineWidth: 1))
+                    .padding(.top, 8)
                 }
 
                 connectionSection
@@ -271,17 +274,14 @@ struct FriendsView: View {
                     friendsSection
                 }
             }
-            .padding(20)
-        }
-        .frame(width: 520, height: 640)
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+        } footer: {
+            SheetFooter {
+                Button("Done") { dismiss() }
+                    .buttonStyle(.primaryPill)
+                    .keyboardShortcut(.defaultAction)
             }
-            .padding(12)
-            .background(.bar)
         }
+        .frame(width: 520, height: 680)
         .task {
             showConnection = !manager.isConnected
             if manager.phase == .notConfigured { await manager.connectIfConfigured() }
@@ -317,35 +317,35 @@ struct FriendsView: View {
             switch manager.phase {
             case .notConfigured: return ("Not connected", .gray)
             case .connecting: return ("Connecting…", .yellow)
-            case .connected: return ("Connected", .green)
-            case .failed: return ("Can't connect", .orange)
+            case .connected: return ("Connected", Theme.positive)
+            case .failed: return ("Can't connect", Theme.warning)
             }
         }()
         return HStack(spacing: 5) {
             Circle().fill(color).frame(width: 8, height: 8)
-            Text(text).font(.caption)
+            Text(text).font(.system(size: 13)).foregroundStyle(.secondary)
         }
     }
 
     private var connectionSection: some View {
-        DisclosureGroup("Relay connection", isExpanded: $showConnection) {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
+            ExpandableCard("Relay connection", summary: manager.isConnected ? "Connected" : nil, startsExpanded: showConnection) {
                 Text("The relay is a small service running on your network that friends' apps share. Ask whoever runs it for its address and certificate fingerprint.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
                 TextField("Relay address (e.g. 10.0.0.5 or relay.lan:8443)", text: $manager.settings.address)
-                    .textFieldStyle(.roundedBorder)
+                    .themedField()
                 TextField("Certificate fingerprint (SHA-256)", text: $manager.settings.fingerprint)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.caption, design: .monospaced))
+                    .themedField()
+                    .font(.system(size: 13, design: .monospaced))
                 if !manager.settings.fingerprint.isEmpty && !manager.settings.isFingerprintValid {
                     Text("That doesn't look like a SHA-256 fingerprint (64 hex characters).")
-                        .font(.caption2).foregroundStyle(.orange)
+                        .font(.system(size: 13)).foregroundStyle(Theme.warning)
                 }
                 TextField("Your name (shown to friends)", text: $manager.settings.displayName)
-                    .textFieldStyle(.roundedBorder)
+                    .themedField()
                 HStack {
                     SecureField(manager.tokenIsSet ? "Registration token (saved)" : "Registration token (if the relay needs one)", text: $tokenInput)
-                        .textFieldStyle(.roundedBorder)
+                        .themedField()
                     Button("Save") {
                         Task { await manager.saveRegistrationToken(tokenInput); tokenInput = "" }
                     }
@@ -355,107 +355,123 @@ struct FriendsView: View {
                     }
                 }
                 if case .failed(let message) = manager.phase {
-                    Text(message).font(.caption).foregroundStyle(.orange)
+                    Text(message).font(.system(size: 13)).foregroundStyle(Theme.warning)
                 }
                 HStack {
                     Button(manager.isConnected ? "Reconnect" : "Connect") { Task { await manager.connect() } }
+                        .buttonStyle(.primaryPill)
                         .disabled(!manager.settings.isComplete || manager.phase == .connecting)
                     if manager.isConnected {
                         Button("Disconnect") { manager.disconnect() }
                     }
                     Spacer()
                     if let id = manager.myUserID {
-                        Text("Your ID: \(id.prefix(10))…").font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
+                        Text("Your ID: \(id.prefix(10))…").font(.system(size: 12)).foregroundStyle(.tertiary).textSelection(.enabled)
                     }
                 }
             }
-            .padding(.top, 6)
+            .padding(.top, 22)
         }
     }
 
     private var inviteSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Invite someone").font(.headline)
-            Text("Generate a one-time code and send it to them privately. It works once and expires after 24 hours.")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Button("Generate invite code") { Task { await manager.createInvite() } }
-                    .disabled(manager.isBusy)
-                if let code = manager.inviteCode {
-                    Text(code)
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(code, forType: .string)
+        VStack(alignment: .leading, spacing: 0) {
+            SectionLabel("Invite someone")
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Generate a one-time code and send it to them privately. It works once and expires after 24 hours.")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                    HStack {
+                        Button("Generate invite code") { Task { await manager.createInvite() } }
+                            .disabled(manager.isBusy)
+                        if let code = manager.inviteCode {
+                            Text(code)
+                                .font(.system(size: 14, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .background(Theme.chip, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(code, forType: .string)
+                            }
+                        }
                     }
                 }
+                .padding(16)
             }
         }
     }
 
     private var addFriendSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Add a friend").font(.headline)
-            HStack {
-                TextField("Paste their invite code", text: $redeemCode)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(sendRequest)
-                Button("Send request", action: sendRequest)
-                    .disabled(redeemCode.trimmingCharacters(in: .whitespaces).isEmpty || manager.isBusy)
+        VStack(alignment: .leading, spacing: 0) {
+            SectionLabel("Add a friend")
+            Card {
+                HStack {
+                    TextField("Paste their invite code", text: $redeemCode)
+                        .themedField()
+                        .onSubmit(sendRequest)
+                    Button("Send request", action: sendRequest)
+                        .disabled(redeemCode.trimmingCharacters(in: .whitespaces).isEmpty || manager.isBusy)
+                }
+                .padding(16)
             }
         }
     }
 
+    @ViewBuilder
     private var requestsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !manager.incoming.isEmpty {
-                Text("Requests to you (\(manager.incoming.count))").font(.headline)
-                ForEach(manager.incoming) { friend in
-                    HStack {
-                        Image(systemName: "person.crop.circle.badge.questionmark")
-                        Text(friend.displayName)
-                        Spacer()
-                        Button("Accept") { Task { await manager.accept(friend) } }
-                        Button("Decline") { Task { await manager.decline(friend) } }
-                        Button("Block", role: .destructive) { pendingBlock = friend }
+        if !manager.incoming.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                SectionLabel("Requests to you (\(manager.incoming.count))")
+                Card {
+                    ForEach(Array(manager.incoming.enumerated()), id: \.element.id) { index, friend in
+                        if index > 0 { CardDivider() }
+                        SettingRow(friend.displayName) {
+                            HStack(spacing: 8) {
+                                Button("Accept") { Task { await manager.accept(friend) } }
+                                    .buttonStyle(.compactPill)
+                                Button("Decline") { Task { await manager.decline(friend) } }
+                                    .buttonStyle(.compactPill)
+                                Button("Block", role: .destructive) { pendingBlock = friend }
+                                    .buttonStyle(.compactPill)
+                            }
+                        }
                     }
                 }
             }
-            if !manager.outgoing.isEmpty {
-                Text("Waiting for them to accept").font(.headline)
-                ForEach(manager.outgoing) { friend in
-                    HStack {
-                        Image(systemName: "hourglass")
-                        Text(friend.displayName)
-                        Spacer()
-                        Button("Cancel request") { Task { await manager.cancelRequest(friend) } }
+        }
+        if !manager.outgoing.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                SectionLabel("Waiting for them to accept")
+                Card {
+                    ForEach(Array(manager.outgoing.enumerated()), id: \.element.id) { index, friend in
+                        if index > 0 { CardDivider() }
+                        SettingRow(friend.displayName, titleColor: .secondary) {
+                            Button("Cancel request") { Task { await manager.cancelRequest(friend) } }
+                                .buttonStyle(.compactPill)
+                        }
                     }
-                    .foregroundStyle(.secondary)
                 }
             }
         }
     }
 
     private var friendsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Your friends (\(manager.friends.count))").font(.headline)
-            if manager.friends.isEmpty {
-                Text("No friends yet. Generate an invite code above and send it to someone.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(manager.friends) { friend in
-                HStack {
-                    Image(systemName: "person.crop.circle")
-                    Text(friend.displayName)
-                    Spacer()
-                    Menu("Manage") {
-                        Button("Remove friend", role: .destructive) { pendingRemoval = friend }
-                        Button("Block…", role: .destructive) { pendingBlock = friend }
+        VStack(alignment: .leading, spacing: 0) {
+            SectionLabel("Your friends (\(manager.friends.count))")
+            Card {
+                if manager.friends.isEmpty {
+                    SettingRow("No friends yet", subtitle: "Generate an invite code above and send it to someone.", titleColor: .secondary)
+                }
+                ForEach(Array(manager.friends.enumerated()), id: \.element.id) { index, friend in
+                    if index > 0 { CardDivider() }
+                    SettingRow(friend.displayName) {
+                        Menu("Manage") {
+                            Button("Remove friend", role: .destructive) { pendingRemoval = friend }
+                            Button("Block…", role: .destructive) { pendingBlock = friend }
+                        }
+                        .fixedSize()
                     }
-                    .fixedSize()
                 }
             }
         }
@@ -480,23 +496,23 @@ struct GroupSharingSection: View {
     @State private var confirmStop = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Friends").font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Friends").font(.system(size: 13)).foregroundStyle(.secondary)
             if !friends.isConnected {
                 Text("Connect to a relay and add friends first (Friends, in the sidebar) to share this group.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
             } else if !group.isShared {
                 Text("Friends you add can read this chat and post in it. Your bots keep running only on your Mac. "
                     + "Only messages from now on are shared; earlier history stays private. Friends' messages are treated as "
                     + "untrusted: tools that need approval always ask you while a friend's message is in the conversation.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
                 Button("Share with friends") { Task { await share() } }.disabled(isWorking)
             } else {
                 if !group.relayStatus.isEmpty {
-                    Text(group.relayStatus).font(.caption).foregroundStyle(.orange)
+                    Text(group.relayStatus).font(.system(size: 13)).foregroundStyle(Theme.warning)
                 }
                 if friends.friends.isEmpty {
-                    Text("You have no friends yet — invite someone from Friends.").font(.caption).foregroundStyle(.secondary)
+                    Text("You have no friends yet — invite someone from Friends.").font(.system(size: 13)).foregroundStyle(.secondary)
                 }
                 ForEach(friends.friends) { friend in
                     Toggle(isOn: Binding(
@@ -509,7 +525,7 @@ struct GroupSharingSection: View {
                 }
                 Button("Stop sharing…", role: .destructive) { confirmStop = true }.disabled(isWorking)
             }
-            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
+            if let error { Text(error).font(.system(size: 13)).foregroundStyle(Theme.warning) }
         }
         .task { await reloadMembers() }
         .confirmationDialog("Stop sharing “\(group.name)”?", isPresented: $confirmStop, titleVisibility: .visible) {

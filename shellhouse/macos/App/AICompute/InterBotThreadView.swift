@@ -21,59 +21,37 @@ struct InterBotThreadView: View {
     }()
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("\(myBotName) ↔ \(peerName)").font(.headline)
-                Spacer()
-                Text("Read-only").font(.caption).foregroundStyle(.secondary)
-            }
-            .padding()
-
-            Divider()
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(messages) { message in
-                        threadBubble(message)
-                    }
+        SheetScaffold(title: "\(myBotName) ↔ \(peerName)", subtitle: "Read-only") {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(messages) { message in
+                    threadBubble(message)
                 }
-                .padding()
             }
-
-            Divider()
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
-            }
-            .padding(12)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
         }
-        .frame(width: 480, height: 480)
+        .frame(width: 520, height: 520)
         .task { messages = InterBotStore.load(myBotID, peerID) }
     }
 
     private func threadBubble(_ message: InterBotMessage) -> some View {
         let isMine = message.fromBotID == myBotID
         return HStack(spacing: 0) {
-            if isMine { Spacer(minLength: 32) }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(message.fromBotName)
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(isMine ? Color(hex: myBotColorHex) : .secondary)
-                    Text(Self.timeFormatter.string(from: message.timestamp))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+            if isMine { Spacer(minLength: 40) }
+            VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+                Text(message.fromBotName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isMine ? Color(hex: myBotColorHex) : .secondary)
+                    .padding(.horizontal, 6)
                 Text(message.text)
-                    .font(.callout)
+                    .font(.system(size: 15))
                     .textSelection(.enabled)
+                    .padding(.horizontal, 16).padding(.vertical, 11)
+                    .background(isMine ? Theme.userBubble : Theme.bubble)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .help(Self.timeFormatter.string(from: message.timestamp))
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background((isMine ? Color(hex: myBotColorHex) : Color.secondary).opacity(0.14))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            if !isMine { Spacer(minLength: 32) }
+            if !isMine { Spacer(minLength: 40) }
         }
     }
 }

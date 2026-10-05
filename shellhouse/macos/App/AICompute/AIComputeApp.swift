@@ -82,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard mainWindow == nil else { return }
         if let window = NSApp.windows.first {
             window.delegate = self
+            window.backgroundColor = Theme.windowBackground
             mainWindow = window
         } else if attemptsLeft > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -137,5 +138,7 @@ struct AIComputeApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1280, height: 820)
     }
 }

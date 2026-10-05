@@ -1,3 +1,4 @@
+import AgentCore
 import SwiftUI
 
 struct GroupChatDetailView: View {
@@ -29,28 +30,20 @@ struct GroupChatDetailView: View {
     @State private var highlightedSuggestionIndex = 0
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                MemberAvatarStack(members: resolvedMembers)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(group.name).font(.title2)
-                    HStack(spacing: 6) {
-                        Text("\(group.memberBotIDs.count) member\(group.memberBotIDs.count == 1 ? "" : "s")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if group.isShared {
-                            Label("Shared with friends", systemImage: "person.2.wave.2")
-                                .font(.caption2)
-                                .foregroundStyle(.teal)
-                        }
-                    }
+        VStack(spacing: 0) {
+            ChatTopBar {
+                SidebarToggleButton()
+            } center: {
+                HeaderPill(title: group.name, help: "Group settings — rename, members, delete.", action: onOpenSettings) {
+                    MemberAvatarStack(members: resolvedMembers, size: 28, maxShown: 3)
                 }
-                Spacer()
-                Button(action: onOpenSettings) {
-                    Image(systemName: "gearshape")
+            } trailing: {
+                if group.isShared {
+                    Image(systemName: "person.2.wave.2")
+                        .foregroundStyle(.teal)
+                        .help("Shared with friends")
                 }
-                .imageScale(.large)
-                .help("Group settings — rename, members, delete.")
+                GlassCircleButton(systemName: "info", help: "Group settings — rename, members, delete.", action: onOpenSettings)
             }
 
             if group.goal != nil {
@@ -58,15 +51,21 @@ struct GroupChatDetailView: View {
                     group: group,
                     ownerName: resolvedMembers.first(where: { $0.id == group.goal?.ownerBotID })?.name ?? "owner"
                 )
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
             }
 
             GroupChatTranscriptView(
                 messages: group.displayMessages,
                 memberColors: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.id, $0.colorHex) }),
+                memberStyles: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.id, $0.avatarStyle) }),
                 mentionColors: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.name.lowercased(), $0.colorHex) })
             )
+            .padding(.horizontal, 20)
 
             BotStatusStrip(bots: resolvedMembers)
+                .padding(.horizontal, 24)
+                .padding(.top, 6)
 
             if !mentionSuggestionItems.isEmpty {
                 ScrollViewReader { scrollProxy in
@@ -100,8 +99,8 @@ struct GroupChatDetailView: View {
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 4)
                                     .background(
-                                        index == highlightedSuggestionIndex ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12),
-                                        in: RoundedRectangle(cornerRadius: 6)
+                                        index == highlightedSuggestionIndex ? Theme.selection : Theme.card,
+                                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -134,12 +133,15 @@ struct GroupChatDetailView: View {
                     Spacer()
                     Button("Add members…", action: onOpenSettings)
                 }
-                .padding(.vertical, 4)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
             } else {
-                HStack(alignment: .bottom) {
-                    TextField("Message the group… (@mention a member to call on them)", text: $group.input, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
+                ComposerPill {
+                    TextField("Message the group", text: $group.input, axis: .vertical)
+                        .textFieldStyle(.plain)
                         .font(.system(size: 16))
+                        .lineLimit(1...8)
+                        .help("@mention a member to call on them. Shift+Return for a new line.")
                         .onSubmit { group.submitInput() }
                         // Only intercepts Shift+Return, to insert a
                         // newline instead of submitting — see
@@ -176,14 +178,16 @@ struct GroupChatDetailView: View {
                     // something else in while a member is mid-response
                     // should still land in the transcript right away, not
                     // wait for that response to finish first.
-                    Button("Send") { group.submitInput() }
-                        .disabled(group.input.isEmpty)
-                        .font(.system(size: 16))
-                        .controlSize(.large)
+
+                } actions: {
+                    SendCircleButton(isEnabled: !group.input.isEmpty, help: "Send") { group.submitInput() }
                 }
+                .frame(maxWidth: Theme.chatColumnWidth)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 14)
             }
         }
-        .padding()
+        .background(Theme.bg)
         // Lower than before (was 700/600) — see `BotDetailView`'s
         // matching comment: this fought the debug console's own
         // `HSplitView` divider, which can't shrink this side below
@@ -272,15 +276,16 @@ struct GroupChatDetailView: View {
 struct MemberAvatarStack: View {
     let members: [Bot]
     var size: CGFloat = 34
+    var maxShown = 4
 
     var body: some View {
         HStack(spacing: -size * 0.35) {
-            ForEach(members.prefix(4)) { bot in
+            ForEach(members.prefix(maxShown)) { bot in
                 BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: size)
                     .overlay(Circle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
             }
-            if members.count > 4 {
-                Text("+\(members.count - 4)")
+            if members.count > maxShown {
+                Text("+\(members.count - maxShown)")
                     .font(.caption2).bold()
                     .frame(width: size, height: size)
                     .background(Color.secondary.opacity(0.2), in: Circle())
@@ -297,71 +302,119 @@ struct GroupChatSettingsView: View {
     var onDelete: () -> Void
     @Environment(\.dismiss) private var dismiss
 
+    // Edits are made on a draft and only applied by Save; Cancel (or Esc)
+    // throws them away. (Sharing and Delete act immediately — they're
+    // actions on the relay / the group itself, not fields.)
+    @State private var name = ""
+    @State private var memberIDs: [String] = []
+    @State private var coordinatorBotID: String?
+    @State private var stallLimit = GroupGoal.defaultStallLimit
+    @State private var confirmTimeoutMinutes = 60
     @State private var showingDeleteConfirm = false
 
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private var hasChanges: Bool {
+        trimmedName != group.name || memberIDs != group.memberBotIDs || coordinatorBotID != group.coordinatorBotID
+            || stallLimit != group.stallLimit || confirmTimeoutMinutes != group.confirmTimeoutMinutes
+    }
+
+    private var selectedMembers: [Bot] {
+        memberIDs.compactMap { id in allBots.first { $0.id == id } }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Group settings").font(.title2).bold()
+        SheetScaffold(title: "Group settings", onClose: { dismiss() }, content: {
+            VStack(alignment: .leading, spacing: 0) {
+                AvatarCluster(members: selectedMembers, size: 150)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+                    .padding(.bottom, 18)
 
-            Text("Name").font(.caption).foregroundStyle(.secondary)
-            TextField("Group name", text: $group.name).textFieldStyle(.roundedBorder)
+                Card {
+                    TextField("Group name", text: $name)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 20, weight: .semibold))
+                        .multilineTextAlignment(.center)
+                        .padding(.vertical, 16)
+                        .padding(.horizontal, 16)
+                }
 
-            Text("Members (\(group.memberBotIDs.count)/\(GroupChatSession.maxMembers))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(allBots) { bot in
-                        let isMember = group.memberBotIDs.contains(bot.id)
-                        Toggle(isOn: Binding(
-                            get: { isMember },
-                            set: { on in
-                                if on { group.addMember(bot) } else { group.removeMember(bot.id) }
-                            }
-                        )) {
-                            HStack {
-                                BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 22)
-                                Text(bot.name)
-                            }
+                SectionLabel("Members (\(memberIDs.count)/\(GroupChatSession.maxMembers))")
+                Card {
+                    ForEach(Array(allBots.enumerated()), id: \.element.id) { index, bot in
+                        if index > 0 { CardDivider(inset: 58) }
+                        let isMember = memberIDs.contains(bot.id)
+                        HStack(spacing: 12) {
+                            BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 30)
+                            Text(bot.name).font(.system(size: 17))
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { isMember },
+                                set: { on in
+                                    if on, !memberIDs.contains(bot.id) { memberIDs.append(bot.id) }
+                                    if !on { memberIDs.removeAll { $0 == bot.id } }
+                                }
+                            ))
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .tint(Theme.positive)
+                            .disabled(!isMember && memberIDs.count >= GroupChatSession.maxMembers)
                         }
-                        // `memberBotIDs.count`, not `group.members.count` — the
-                        // latter resolves through `botDirectory` (a plain,
-                        // non-`@Observable` bridge), which doesn't reliably
-                        // trigger a re-render on its own the moment
-                        // `addMember`/`removeMember` mutate `memberBotIDs`.
-                        .disabled(!isMember && group.memberBotIDs.count >= GroupChatSession.maxMembers)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
                     }
                 }
-            }
-            .frame(height: 200)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                SectionFooter("Group Chats can have up to \(GroupChatSession.maxMembers) members.")
 
-            Divider()
-            GroupSharingSection(group: group)
-
-            Divider()
-            Text("Goals").font(.caption).foregroundStyle(.secondary)
-            Picker("Coordinator (owns goals by default)", selection: $group.coordinatorBotID) {
-                Text("Auto (manager-like role, else first member)").tag(String?.none)
-                ForEach(allBots.filter { group.memberBotIDs.contains($0.id) }) { bot in
-                    Text(bot.name).tag(String?.some(bot.id))
+                SectionLabel("Goals")
+                Card {
+                    SettingRow("Coordinator", subtitle: "Owns goals by default") {
+                        Picker("", selection: $coordinatorBotID) {
+                            Text("Auto").tag(String?.none)
+                            ForEach(allBots.filter { memberIDs.contains($0.id) }) { bot in
+                                Text(bot.name).tag(String?.some(bot.id))
+                            }
+                        }
+                        .labelsHidden().pickerStyle(.menu).fixedSize()
+                    }
+                    CardDivider()
+                    SettingRow("Pause after \(stallLimit) messages without progress") {
+                        Stepper("", value: $stallLimit, in: 10...200, step: 5).labelsHidden()
+                    }
+                    CardDivider()
+                    SettingRow("Auto-close unconfirmed goals after \(confirmTimeoutMinutes) min") {
+                        Stepper("", value: $confirmTimeoutMinutes, in: 5...1440, step: 5).labelsHidden()
+                    }
                 }
-            }
-            Stepper("Pause after \(group.stallLimit) messages without progress", value: $group.stallLimit, in: 10...200, step: 5)
-            Stepper("Auto-close unconfirmed goals after \(group.confirmTimeoutMinutes) min", value: $group.confirmTimeoutMinutes, in: 5...1440, step: 5)
 
-            Divider()
-            Button("Delete group…", role: .destructive) { showingDeleteConfirm = true }
-                .foregroundStyle(.red)
+                SectionLabel("Friends")
+                Card {
+                    GroupSharingSection(group: group)
+                        .padding(16)
+                }
+                SectionFooter("Sharing takes effect immediately, without Save.")
 
-            Spacer()
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                Card {
+                    Button { showingDeleteConfirm = true } label: {
+                        SettingRow("Delete group…", titleColor: Theme.destructive)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 22)
             }
-        }
-        .padding(20)
-        .frame(width: 460, height: 520)
+        }, footer: {
+            SheetFooter {
+                if hasChanges { Text("Unsaved changes").font(.system(size: 13)).foregroundStyle(Theme.warning) }
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Save") { save() }
+                    .buttonStyle(.primaryPill)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!hasChanges || trimmedName.isEmpty)
+            }
+        })
+        .frame(width: 520, height: 700)
+        .onAppear(perform: loadDraft)
         .alert("Delete \(group.name)?", isPresented: $showingDeleteConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {
@@ -371,5 +424,27 @@ struct GroupChatSettingsView: View {
         } message: {
             Text("Permanently deletes this group and its shared transcript. The member bots themselves aren't affected.")
         }
+    }
+
+    private func loadDraft() {
+        name = group.name
+        memberIDs = group.memberBotIDs
+        coordinatorBotID = group.coordinatorBotID
+        stallLimit = group.stallLimit
+        confirmTimeoutMinutes = group.confirmTimeoutMinutes
+    }
+
+    private func save() {
+        group.name = trimmedName
+        let current = group.memberBotIDs
+        for id in current where !memberIDs.contains(id) { group.removeMember(id) }
+        for id in memberIDs where !current.contains(id) {
+            if let bot = allBots.first(where: { $0.id == id }) { group.addMember(bot) }
+        }
+        // A coordinator who is no longer a member falls back to Auto.
+        group.coordinatorBotID = coordinatorBotID.flatMap { memberIDs.contains($0) ? $0 : nil }
+        group.stallLimit = stallLimit
+        group.confirmTimeoutMinutes = confirmTimeoutMinutes
+        dismiss()
     }
 }

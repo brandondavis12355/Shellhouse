@@ -12,6 +12,9 @@ struct GroupChatTranscriptView: View {
     /// bubble matches its avatar color elsewhere in the app. A member
     /// removed from the group (or the app) just falls back to gray.
     let memberColors: [String: String]
+    /// `speakerBotID` -> avatar style index, for the small avatar beside a
+    /// member's bubble.
+    var memberStyles: [String: Int] = [:]
     /// Lowercased member name -> hex, for rendering an `@Name` token
     /// inside a message as a colored pill instead of plain text (see
     /// `MentionPillText`). Separate map from `memberColors` (keyed by id)
@@ -24,17 +27,20 @@ struct GroupChatTranscriptView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
-                        LazyVStack(alignment: .leading, spacing: 14) {
+                        LazyVStack(alignment: .leading, spacing: 12) {
                             ForEach(messages) { message in
                                 GroupMessageBubble(
                                     message: message,
                                     colorHex: message.speakerBotID.flatMap { memberColors[$0] },
+                                    avatarStyle: message.speakerBotID.flatMap { memberStyles[$0] },
                                     mentionColors: mentionColors
                                 )
                                 .id(message.id)
                             }
                         }
-                        .padding(8)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: Theme.chatColumnWidth)
+                        .frame(maxWidth: .infinity)
                         // See `TranscriptView`'s matching comment — pins
                         // short transcripts to the top of the pane
                         // instead of leaving them centered/bottom-heavy
@@ -44,6 +50,7 @@ struct GroupChatTranscriptView: View {
                     .frame(minHeight: geometry.size.height, alignment: .top)
                 }
                 .defaultScrollAnchor(.bottom)
+                .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
                     if let last = messages.last?.id {
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
@@ -57,11 +64,16 @@ struct GroupChatTranscriptView: View {
 private struct GroupMessageBubble: View {
     let message: GroupMessage
     let colorHex: String?
+    let avatarStyle: Int?
     let mentionColors: [String: String]
 
     private var isFriend: Bool { message.externalUserID != nil }
     private var isUser: Bool { message.speakerBotID == nil && !isFriend }
-    private var color: Color { isFriend ? .teal : (isUser ? .blue : Color(hex: colorHex ?? "#8E8E93")) }
+    /// Speaker-name tint: the member's own color; teal for a friend.
+    private var nameColor: Color {
+        if isFriend { return .teal }
+        return Color(hex: colorHex ?? "#8E8E93")
+    }
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -72,43 +84,58 @@ private struct GroupMessageBubble: View {
     var body: some View {
         if message.isSystem == true {
             Text(message.text)
-                .font(.caption)
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 2)
+                .padding(.vertical, 4)
         } else {
             bubble
         }
     }
 
     private var bubble: some View {
-        HStack(spacing: 0) {
-            if isUser { Spacer(minLength: 48) }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(message.speakerName)
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(color)
-                    if isFriend {
-                        Text("friend")
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .background(Color.teal.opacity(0.2), in: Capsule())
-                            .foregroundStyle(.teal)
+        HStack(alignment: .top, spacing: 10) {
+            if isUser { Spacer(minLength: 72) }
+            if !isUser { speakerAvatar }
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+                if !isUser {
+                    HStack(spacing: 6) {
+                        Text(message.speakerName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(nameColor)
+                        if isFriend {
+                            Text("friend")
+                                .font(.system(size: 11))
+                                .padding(.horizontal, 6)
+                                .background(Color.teal.opacity(0.2), in: Capsule())
+                                .foregroundStyle(.teal)
+                        }
                     }
-                    Text(Self.timeFormatter.string(from: message.timestamp))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    .padding(.leading, 6)
                 }
-                MentionPillText(text: message.text, mentionColors: mentionColors)
+                MentionPillText(text: message.text, mentionColors: mentionColors, fontSize: 16)
                     .textSelection(.enabled)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 13)
+                    .background(isUser ? Theme.userBubble : Theme.bubble)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
+                    .help("\(isUser ? "You" : message.speakerName) · \(Self.timeFormatter.string(from: message.timestamp))")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(color.opacity(0.16))
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            if !isUser { Spacer(minLength: 48) }
+            if !isUser { Spacer(minLength: 72) }
+        }
+    }
+
+    @ViewBuilder
+    private var speakerAvatar: some View {
+        if let colorHex {
+            BotAvatar(colorHex: colorHex, style: AvatarStyle(rawValue: avatarStyle ?? 0) ?? .blob, size: 32)
+        } else {
+            Image(systemName: "person.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .frame(width: 32, height: 32)
+                .background(Theme.chip, in: Circle())
         }
     }
 }

@@ -30,6 +30,9 @@ struct TranscriptView: View {
     /// could delegate to via `message_bot`, same idea as the group chat's
     /// own member pills.
     var mentionColors: [String: String] = [:]
+    /// Lowercased OTHER-bot name -> avatar style index, so a "Messaged <name>"
+    /// note can show that bot's own avatar inline.
+    var peerAvatarStyles: [String: Int] = [:]
     /// Called with (peerID, peerName) when a "Messaged <name>…" notice is
     /// tapped. Owned by `BotDetailView`, NOT a `@State` local to the
     /// tapped bubble — a bubble's identity is tied to its message, and a
@@ -43,18 +46,21 @@ struct TranscriptView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
-                        LazyVStack(alignment: .leading, spacing: 14) {
+                        LazyVStack(alignment: .leading, spacing: 12) {
                             ForEach(messages) { message in
                                 if message.role != .system {
                                     MessageBubble(
                                         message: message, botName: botName, botColorHex: botColorHex, botID: botID,
-                                        mentionColors: mentionColors, onOpenInterBotThread: onOpenInterBotThread
+                                        mentionColors: mentionColors, peerAvatarStyles: peerAvatarStyles,
+                                        onOpenInterBotThread: onOpenInterBotThread
                                     )
                                     .id(message.id)
                                 }
                             }
                         }
-                        .padding(8)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: Theme.chatColumnWidth)
+                        .frame(maxWidth: .infinity)
                         // Absorbs whatever's left over when there aren't
                         // enough messages to fill the viewport — without
                         // it, `.frame(minHeight:)` below would still
@@ -79,6 +85,7 @@ struct TranscriptView: View {
                 // instantiated the last row's view yet at that point, so the
                 // scroll-to-target can silently miss on first open.
                 .defaultScrollAnchor(.bottom)
+                .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
                     if let last = messages.last?.id {
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
@@ -99,17 +106,16 @@ private struct MessageBubble: View {
     let botColorHex: String
     let botID: String
     let mentionColors: [String: String]
+    let peerAvatarStyles: [String: Int]
     let onOpenInterBotThread: (String, String) -> Void
     /// Collapsed by default for both `toolResultRow` and
     /// `taskSummaryRow` — a plain per-row toggle, not persisted, so it
     /// resets to collapsed if the row is scrolled far enough off-screen
-    /// to be recreated. Acceptable here (unlike the inter-bot-thread
-    /// sheet this used to also gate): staying collapsed on rebuild is the
-    /// same default state anyway, not a surprising loss.
+    /// to be recreated.
     @State private var isExpanded = false
 
-    private static let bodyFontSize = NSFont.systemFontSize + 4
-    private static let toolFontSize = NSFont.smallSystemFontSize + 4
+    private static let bodyFontSize: CGFloat = 16
+    private static let toolFontSize: CGFloat = 13
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -117,18 +123,7 @@ private struct MessageBubble: View {
         return formatter
     }()
 
-    private var roleStyle: (label: String, color: Color, isUser: Bool, font: Font) {
-        switch message.role {
-        case .user:
-            return ("You", .blue, true, .system(size: Self.bodyFontSize))
-        case .assistant:
-            return (botName, Color(hex: botColorHex), false, .system(size: Self.bodyFontSize))
-        case .tool:
-            return ("Tool", .orange, false, .system(size: Self.toolFontSize, design: .monospaced))
-        case .system:
-            return ("", .clear, false, .system(size: Self.bodyFontSize))
-        }
-    }
+    private var isUser: Bool { message.role == .user }
 
     var body: some View {
         if let peerID = message.interBotPeerID, let peerName = message.interBotPeerName {
@@ -138,69 +133,60 @@ private struct MessageBubble: View {
         } else if message.isTaskSummary {
             taskSummaryRow
         } else {
-            let style = roleStyle
-            HStack(spacing: 0) {
-                if style.isUser { Spacer(minLength: 48) }
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(style.label)
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(style.color)
-                        Text(Self.timeFormatter.string(from: message.timestamp))
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    if !message.text.isEmpty {
-                        // Mention pills take over the whole message's
-                        // rendering (word-level, no markdown highlighting)
-                        // only when there's actually an @-mention of a
-                        // known bot in it — the common case with no
-                        // mention keeps the richer code/bold/link
-                        // highlighting below.
-                        if MentionPillText.containsKnownMention(message.text, mentionColors: mentionColors) {
-                            MentionPillText(text: message.text, mentionColors: mentionColors, fontSize: style.font == .system(size: Self.toolFontSize, design: .monospaced) ? Self.toolFontSize : Self.bodyFontSize)
-                                .textSelection(.enabled)
-                        } else {
-                            Text(highlightedText)
-                                .font(style.font)
-                                .textSelection(.enabled)
-                        }
-                    }
-                    if !message.attachmentNames.isEmpty {
-                        ForEach(message.attachmentNames, id: \.self) { filename in
-                            AttachmentChip(filename: filename, isImage: isImageFilename(filename))
-                        }
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(style.color.opacity(0.16))
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                if !style.isUser { Spacer(minLength: 48) }
-            }
+            bubble
         }
     }
 
-    /// "Messaged <name>…" — tapping it reveals the read-only exchange
-    /// (`InterBotThreadView`) between this bot and the one it delegated
-    /// to. Not a normal chat bubble on purpose: this is the ONE thing the
-    /// user sees in-line about a delegation unless they go looking.
+    private var bubble: some View {
+        HStack(spacing: 0) {
+            if isUser { Spacer(minLength: 72) }
+            VStack(alignment: .leading, spacing: 8) {
+                if !message.text.isEmpty {
+                    // Mention pills take over the whole message's rendering
+                    // (word-level, no markdown highlighting) only when
+                    // there's actually an @-mention of a known bot in it —
+                    // the common case keeps the richer code/bold/link
+                    // highlighting below.
+                    if MentionPillText.containsKnownMention(message.text, mentionColors: mentionColors) {
+                        MentionPillText(text: message.text, mentionColors: mentionColors, fontSize: Self.bodyFontSize)
+                            .textSelection(.enabled)
+                    } else {
+                        Text(highlightedText)
+                            .font(.system(size: Self.bodyFontSize))
+                            .textSelection(.enabled)
+                    }
+                }
+                ForEach(message.attachmentNames, id: \.self) { filename in
+                    AttachmentCard(filename: filename, isImage: isImageFilename(filename))
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 13)
+            .background(isUser ? Theme.userBubble : Theme.bubble)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
+            .help("\(isUser ? "You" : botName) · \(Self.timeFormatter.string(from: message.timestamp))")
+            if !isUser { Spacer(minLength: 72) }
+        }
+    }
+
+    /// "Messaged <avatar> Name" — tapping it reveals the read-only exchange
+    /// (`InterBotThreadView`) between this bot and the one it delegated to.
     private func interBotNotice(peerID: String, peerName: String) -> some View {
-        Button {
+        let colorHex = mentionColors[peerName.lowercased()] ?? "#8E8E93"
+        let style = AvatarStyle(rawValue: peerAvatarStyles[peerName.lowercased()] ?? 0) ?? .blob
+        return Button {
             onOpenInterBotThread(peerID, peerName)
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: "arrow.turn.up.right")
-                    .font(.caption)
-                Text("Messaged \(peerName)…")
-                    .font(.caption)
-                    .italic()
+                Text("Messaged")
+                BotAvatar(colorHex: colorHex, style: style, size: 20)
+                Text(peerName)
             }
+            .font(.system(size: 14))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Color.secondary.opacity(0.12), in: Capsule())
+            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Read-only — tap to see this bot's exchange with \(peerName).")
@@ -211,54 +197,43 @@ private struct MessageBubble: View {
     /// `displayMessages`/persisted transcript regardless of whether this
     /// is ever expanded; this only controls what's shown, not what's kept.
     private var toolResultRow: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            Text(message.text)
-                .font(.system(size: Self.toolFontSize, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .padding(.top, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "terminal")
-                    .font(.caption)
-                Text("Ran \(message.toolName ?? "a tool")…")
-                    .font(.caption)
-                    .italic()
+        TranscriptNote(
+            label: "Ran \(message.toolName ?? "a tool")",
+            showsChevron: true,
+            isExpanded: isExpanded,
+            action: { withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() } },
+            icon: { Image(systemName: "terminal").font(.system(size: 12)) },
+            detail: {
+                Text(message.text)
+                    .font(.system(size: Self.toolFontSize, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
-            .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-        .frame(maxWidth: 420, alignment: .leading)
+        )
     }
 
     /// The `finish_task` summary — usually a near-duplicate recap of
-    /// whatever the model already said in the reply just before it (see
-    /// `AgentRuntime.loop`'s finish_task branch), so this stays collapsed
-    /// by default rather than showing the same result twice in a row.
+    /// whatever the model already said in the reply just before it, so this
+    /// stays collapsed by default rather than showing the same result twice.
     private var taskSummaryRow: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            Text(message.text)
-                .font(.system(size: Self.bodyFontSize))
-                .textSelection(.enabled)
-                .padding(.top, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle")
-                    .font(.caption)
-                Text("Done — tap for summary")
-                    .font(.caption)
-                    .italic()
+        TranscriptNote(
+            label: "Done — tap for summary",
+            showsChevron: true,
+            isExpanded: isExpanded,
+            action: { withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() } },
+            icon: { Image(systemName: "checkmark.circle").font(.system(size: 12)) },
+            detail: {
+                Text(message.text)
+                    .font(.system(size: Self.bodyFontSize))
+                    .textSelection(.enabled)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
-            .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-        .frame(maxWidth: 420, alignment: .leading)
+        )
     }
 
     /// Bridges `TranscriptHighlighter`'s `NSAttributedString` (code/bold/
@@ -266,7 +241,7 @@ private struct MessageBubble: View {
     /// something `Text` can render. Falls back to the plain string on a
     /// bridging failure rather than showing nothing.
     private var highlightedText: AttributedString {
-        let ns = TranscriptHighlighter.highlight(message.text, baseFont: .systemFont(ofSize: roleStyle.font == .system(size: Self.toolFontSize, design: .monospaced) ? Self.toolFontSize : Self.bodyFontSize))
+        let ns = TranscriptHighlighter.highlight(message.text, baseFont: .systemFont(ofSize: Self.bodyFontSize))
         return (try? AttributedString(ns, including: \.appKit)) ?? AttributedString(message.text)
     }
 

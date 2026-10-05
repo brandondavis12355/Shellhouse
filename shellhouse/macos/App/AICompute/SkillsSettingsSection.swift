@@ -40,9 +40,9 @@ struct SkillsSettingsSection: View {
     private var builtInSkills: [Skill] { skills.filter { !SkillLibrary.isUserSkill(id: $0.id) } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Skills").font(.headline)
+                SectionLabel("Skills")
                 Spacer()
                 Button(isAdding ? "Cancel" : "New skill…") {
                     if isAdding {
@@ -53,15 +53,18 @@ struct SkillsSettingsSection: View {
                         isAdding = true
                     }
                 }
-                .font(.caption)
+                .buttonStyle(.compactPill)
+                .padding(.trailing, 4)
             }
+            Card {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Playbooks a bot can load with its use_skill tool. Built-in ones ship with the app; anything "
                 + "added here is saved on this Mac and available to every bot.")
-                .font(.caption)
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
 
             if skills.isEmpty {
-                Text("No skills found.").font(.caption).foregroundStyle(.secondary)
+                Text("No skills found.").font(.system(size: 13)).foregroundStyle(.secondary)
             } else {
                 DisclosureGroup("Show \(skills.count) skills", isExpanded: $isListExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -79,30 +82,31 @@ struct SkillsSettingsSection: View {
             }
 
             if isAdding {
-                Divider()
+                Divider().overlay(Theme.hairline)
 
-                Text(editingSkillID != nil ? "Edit skill" : "New skill").font(.subheadline).bold()
+                Text(editingSkillID != nil ? "Edit skill" : "New skill").font(.system(size: 15, weight: .semibold))
 
                 TextField("Name (e.g. \"Weekly report\")", text: $newName)
-                    .textFieldStyle(.roundedBorder)
+                    .themedField()
                 TextField("One-line description, shown in the skill index", text: $newDescription)
-                    .textFieldStyle(.roundedBorder)
+                    .themedField()
 
                 Text("Paste the skill's instructions below:")
-                    .font(.caption)
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 TextEditor(text: $newBody)
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.system(size: 13, design: .monospaced))
                     .frame(height: 140)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    .themedEditor()
 
                 if let errorMessage {
-                    Text(errorMessage).font(.caption).foregroundStyle(.red)
+                    Text(errorMessage).font(.system(size: 13)).foregroundStyle(Theme.destructive)
                 }
 
                 HStack {
                     Spacer()
                     Button(editingSkillID != nil ? "Save changes" : "Save") { save() }
+                        .buttonStyle(.primaryPill)
                         .disabled(
                             newName.trimmingCharacters(in: .whitespaces).isEmpty
                                 || newBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -110,20 +114,20 @@ struct SkillsSettingsSection: View {
                 }
             }
 
-            Divider()
+            Divider().overlay(Theme.hairline)
 
-            Text("Install from skills.sh").font(.subheadline).bold()
+            Text("Install from skills.sh").font(.system(size: 15, weight: .semibold))
             Text("Uses `npx skills@latest` (the vercel-labs/skills ecosystem — npmjs.com/package/skills, an "
                 + "external, third-party package) to pull down and import a published skill. Needs Node.js.")
-                .font(.caption)
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
 
             HStack {
                 TextField("Package, e.g. \"vercel-labs/agent-skills\" or \"notion\"", text: $installPackage)
-                    .textFieldStyle(.roundedBorder)
+                    .themedField()
                     .disabled(isInstalling)
                 TextField("Skill name (optional — blank installs all)", text: $installSkillFilter)
-                    .textFieldStyle(.roundedBorder)
+                    .themedField()
                     .frame(width: 180)
                     .disabled(isInstalling)
                 Button(isInstalling ? "Installing…" : "Install") { Task { await installFromRegistry() } }
@@ -133,12 +137,15 @@ struct SkillsSettingsSection: View {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text("Running npx skills@latest — first run downloads the CLI itself, can take a moment.")
-                        .font(.caption)
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
             }
             if let installStatus {
-                Text(installStatus).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                Text(installStatus).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(3)
+            }
+        }
+        .padding(16)
             }
         }
         .task { refresh() }
@@ -174,9 +181,9 @@ struct SkillsSettingsSection: View {
             ForEach(list) { skill in
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(skill.name).font(.caption).bold()
+                        Text(skill.name).font(.system(size: 13, weight: .semibold))
                         if !skill.description.isEmpty {
-                            Text(skill.description).font(.caption2).foregroundStyle(.secondary)
+                            Text(skill.description).font(.system(size: 12)).foregroundStyle(.secondary)
                         }
                     }
                     Spacer()

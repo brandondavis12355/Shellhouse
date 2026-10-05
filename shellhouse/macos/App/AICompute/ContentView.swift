@@ -90,7 +90,7 @@ struct ContentView: View {
     @State private var showingCreateGroup = false
     @State private var pendingDeleteGroup: GroupChatSession?
 
-    @AppStorage("appearanceMode") private var appearanceMode = "system"
+    @AppStorage("appearanceMode") private var appearanceMode = "dark"
     @AppStorage("defaultMaxTokens") private var defaultMaxTokens = "200000"
     @AppStorage("defaultMaxIterations") private var defaultMaxIterations = "40"
 
@@ -151,151 +151,78 @@ struct ContentView: View {
         botsAwaitingApproval.first { $0.id != selectedBot?.id }
     }
 
-    var body: some View {
-        // `HSplitView`, not a plain `HStack` — gives the debug pane a
-        // user-draggable divider (same mechanism `BotDetailView` uses
-        // for its chat/computer split) instead of a fixed width.
-        HSplitView {
-        NavigationSplitView {
-            List(selection: $selectedItemID) {
-                ForEach(groupedBots, id: \.group) { section in
-                    Section(section.group) {
-                        ForEach(section.bots) { bot in
-                            BotSidebarRow(bot: bot)
-                                .tag("bot:\(bot.id)")
-                                .contextMenu {
-                                    Button("Rename…") {
-                                        renamingBot = bot
-                                        renameText = bot.name
-                                    }
-                                    Button("Bot settings…") { botSettingsTarget = bot }
-                                    Divider()
-                                    Button("Duplicate…") { duplicateBot(bot) }
-                                    Button("Export as template…") { exportBotAsTemplate(bot) }
-                                    Divider()
-                                    Button("Delete…", role: .destructive) { pendingDeleteBot = bot }
-                                }
-                        }
-                        .onMove { source, destination in
-                            moveBots(inSection: section.group, from: source, to: destination)
-                        }
-                    }
-                }
-                if !joinedGroups.sessions.isEmpty {
-                    Section("Shared with me") {
-                        ForEach(joinedGroups.sessions) { session in
-                            JoinedGroupSidebarRow(session: session)
-                                .tag("joined:\(session.groupID)")
-                        }
-                    }
-                }
-                if !groupChats.isEmpty {
-                    Section("Group Chats") {
-                        ForEach(groupChats) { group in
-                            GroupChatSidebarRow(group: group, allBots: bots)
-                                .tag("group:\(group.id)")
-                                .contextMenu {
-                                    Button("Group settings…") { groupSettingsTarget = group }
-                                    Divider()
-                                    Button("Delete…", role: .destructive) { pendingDeleteGroup = group }
-                                }
-                        }
-                        .onMove { source, destination in
-                            groupChats.move(fromOffsets: source, toOffset: destination)
-                            saveGroupChats()
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Bots")
-            // A minimum sized so a row's avatar, name, and role pill are
-            // always fully visible — below this, `BotSidebarRow`'s
-            // `Text`s would truncate to the point of being useless rather
-            // than just looking cramped. `max` keeps it from being dragged
-            // so wide it crowds out the chat.
-            .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
-            .toolbar {
-                ToolbarItem {
-                    Menu {
-                        Button("New bot…") { startNewBotDraft() }
-                        Button("New group chat…") { startNewGroupChat() }
-                        Divider()
-                        Button("Friends…") { showingFriends = true }
-                        Button("New bot from template…") { importBotTemplate() }
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .imageScale(.large)
-                    .help("Add a bot (its own sandbox), a group chat (up to 6 existing bots), or a bot imported from a template file.")
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                VStack(spacing: 0) {
-                    Button(action: { showingFriends = true }) {
-                        HStack {
-                            Image(systemName: "person.2")
-                                .imageScale(.large)
-                            Text("Friends").font(.system(size: 14))
-                            if friendsManager.incomingCount > 0 {
-                                Text("\(friendsManager.incomingCount)")
-                                    .font(.caption2).bold()
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 6).padding(.vertical, 1)
-                                    .background(Color.red, in: Capsule())
-                            }
-                            Spacer()
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.leading, 14)
-                    .padding(.trailing, 10)
-                    .padding(.top, 12)
-                    .help("Friends — connect to a relay, invite people, accept requests.")
+    @State private var sidebarVisible = true
 
-                    Button(action: { showingAppSettings = true }) {
-                        HStack {
-                            Image(systemName: "gearshape")
-                                .imageScale(.large)
-                            Text("Settings").font(.system(size: 14))
-                            Spacer()
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.leading, 14)
-                    .padding(.trailing, 10)
-                    .padding(.vertical, 12)
-                }
+    private var sidebarActions: SidebarActions {
+        SidebarActions(
+            openSettings: { showingAppSettings = true },
+            openFriends: { showingFriends = true },
+            newBot: { startNewBotDraft() },
+            newGroup: { startNewGroupChat() },
+            importTemplate: { importBotTemplate() },
+            rename: { bot in renamingBot = bot; renameText = bot.name },
+            botSettings: { botSettingsTarget = $0 },
+            duplicate: { duplicateBot($0) },
+            exportTemplate: { exportBotAsTemplate($0) },
+            delete: { pendingDeleteBot = $0 },
+            groupSettings: { groupSettingsTarget = $0 },
+            deleteGroup: { pendingDeleteGroup = $0 },
+            reorderBot: { dragged, target in reorderBots(dragged: dragged, before: target) },
+            reorderGroup: { dragged, target in reorderGroups(dragged: dragged, before: target) }
+        )
+    }
+
+    @ViewBuilder
+    private var detailView: some View {
+        if let group = selectedGroup {
+            GroupChatDetailView(group: group, allBots: bots, onOpenSettings: { groupSettingsTarget = group })
+                .id(group.id)
+        } else if let joined = selectedJoinedGroup {
+            JoinedGroupView(session: joined, onLeft: { selectedItemID = bots.first.map { "bot:\($0.id)" } })
+                .id(joined.groupID)
+        } else if let bot = selectedBot {
+            BotDetailView(bot: bot, onOpenSettings: { botSettingsTarget = bot })
+                // Forces a fresh view identity per bot so `.onAppear`
+                // in `BotDetailView` actually fires on every switch.
+                .id(bot.id)
+        } else {
+            VStack(spacing: 8) {
+                Text("No bot selected").font(.title3)
+                Text("Add one with the + button, or pick one from the sidebar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-        } detail: {
-            if let group = selectedGroup {
-                GroupChatDetailView(group: group, allBots: bots, onOpenSettings: { groupSettingsTarget = group })
-                    .id(group.id)
-            } else if let joined = selectedJoinedGroup {
-                JoinedGroupView(session: joined, onLeft: { selectedItemID = bots.first.map { "bot:\($0.id)" } })
-                    .id(joined.groupID)
-            } else if let bot = selectedBot {
-                BotDetailView(bot: bot, onOpenSettings: { botSettingsTarget = bot })
-                    // Forces a fresh view identity per bot so `.onAppear`
-                    // in `BotDetailView` actually fires on every switch —
-                    // without this, SwiftUI treats switching which bot is
-                    // shown as an update to the same view rather than a new
-                    // one appearing, and the unread-clearing `onAppear`
-                    // silently never re-runs after the first bot.
-                    .id(bot.id)
-            } else {
-                VStack(spacing: 8) {
-                    Text("No bot selected").font(.title3)
-                    Text("Add one with the + button, or pick one from the sidebar.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                // Matches `BotDetailView`/`GroupChatDetailView`'s own
-                // (lowered) minimum — see their comments on why.
-                .frame(minWidth: 560, minHeight: 500)
-            }
+            .frame(minWidth: 560, minHeight: 500)
         }
+    }
+
+    var body: some View {
+        // Outer `HSplitView`: the debug pane gets a user-draggable divider.
+        HSplitView {
+        // Inner: sidebar | detail. A plain split rather than
+        // `NavigationSplitView` so the sidebar is a flat black list with no
+        // system material or floating chrome.
+        HSplitView {
+            if sidebarVisible {
+                SidebarView(
+                    groupedBots: groupedBots,
+                    allBots: bots,
+                    groupChats: groupChats,
+                    joinedGroups: joinedGroups.sessions,
+                    selectedItemID: $selectedItemID,
+                    friendRequestCount: friendsManager.incomingCount,
+                    actions: sidebarActions
+                )
+                .frame(minWidth: 270, idealWidth: 320, maxWidth: 380)
+            }
+            detailView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Theme.bg)
+        }
+        .background(Theme.bg)
+        .environment(\.sidebarControl, SidebarControl(isVisible: sidebarVisible, toggle: { sidebarVisible.toggle() }))
+        .tint(Theme.accent)
+        .buttonStyle(.pill)
         .preferredColorScheme(preferredColorScheme)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             // Debounced saves would otherwise lose the last few hundred ms of messages.
@@ -502,7 +429,7 @@ struct ContentView: View {
         if DebugSettings.shared.isEnabled {
             DebugConsoleView(bots: bots)
                 .frame(minWidth: 260, idealWidth: 380, maxWidth: 700)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background(Theme.bg)
         }
         }
     }
@@ -535,6 +462,28 @@ struct ContentView: View {
         bots = bots.map { $0.group == group ? (reordered.next() ?? $0) : $0 }
         botDirectory.sync(bots)
         saveBots()
+    }
+
+    /// Drag-reorder within a sidebar section: `dragged` takes the slot just
+    /// before `target`. Only within the same section (see `moveBots`).
+    private func reorderBots(dragged: String, before target: String) {
+        guard let from = bots.firstIndex(where: { $0.id == dragged }),
+              let to = bots.firstIndex(where: { $0.id == target }),
+              bots[from].group == bots[to].group else { return }
+        let moved = bots.remove(at: from)
+        let insertAt = bots.firstIndex(where: { $0.id == target }) ?? bots.endIndex
+        bots.insert(moved, at: insertAt)
+        botDirectory.sync(bots)
+        saveBots()
+    }
+
+    private func reorderGroups(dragged: String, before target: String) {
+        guard let from = groupChats.firstIndex(where: { $0.id == dragged }),
+              groupChats.contains(where: { $0.id == target }) else { return }
+        let moved = groupChats.remove(at: from)
+        let insertAt = groupChats.firstIndex(where: { $0.id == target }) ?? groupChats.endIndex
+        groupChats.insert(moved, at: insertAt)
+        saveGroupChats()
     }
 
     private func saveGroupChats() {
@@ -726,96 +675,6 @@ struct ContentView: View {
     }
 }
 
-/// App-wide settings — appearance and new-bot defaults. Nothing here is
-/// specific to any one bot; that's `BotSettingsView`, a completely separate
-/// sheet (see `ContentView`'s `showingAppSettings` vs. `botSettingsTarget`)
-/// rather than another tab of this one, so the two are never reachable from
-/// the same screen. Deliberately small and honest: every control here
-/// actually does something (appearance really changes
-/// `.preferredColorScheme`; the budget defaults really seed new bots'
-/// fields) rather than padding this out with inert toggles.
-/// One sidebar row — factored out of `ContentView`'s `body` because the
-/// combined avatar/name/role-pill/preview layout, inlined into that
-/// already-large `body`, pushed the compiler's type-checker over its time
-/// budget (a real "unable to type-check this expression" error, not a
-/// style preference).
-private struct BotSidebarRow: View {
-    let bot: Bot
-
-    var body: some View {
-        HStack(spacing: 12) {
-            BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 58)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(bot.name)
-                        .font(.system(size: 17))
-                        .fontWeight(bot.hasUnread ? .semibold : .regular)
-                    if !bot.tagline.isEmpty {
-                        Text(bot.tagline)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(Color(hex: bot.colorHex).opacity(0.18), in: Capsule())
-                    }
-                }
-                if let preview = bot.lastMessagePreview {
-                    // Unread reads brighter and bolder — same "you haven't
-                    // looked at this yet" language as Messages on iPhone —
-                    // and fades back to a plain secondary preview the
-                    // instant `BotDetailView` marks it read.
-                    Text(preview)
-                        .font(.subheadline)
-                        .fontWeight(bot.hasUnread ? .semibold : .regular)
-                        .foregroundStyle(bot.hasUnread ? .primary : .tertiary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 0)
-            if bot.hasUnread {
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 9, height: 9)
-            }
-        }
-        .padding(.vertical, 3)
-    }
-}
-
-private struct GroupChatSidebarRow: View {
-    let group: GroupChatSession
-    /// See `GroupChatDetailView.resolvedMembers`'s doc comment — same
-    /// reason this doesn't just read `group.members` directly.
-    let allBots: [Bot]
-
-    private var resolvedMembers: [Bot] {
-        let byID = Dictionary(uniqueKeysWithValues: allBots.map { ($0.id, $0) })
-        return group.memberBotIDs.compactMap { byID[$0] }
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            MemberAvatarStack(members: resolvedMembers, size: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(group.name).font(.system(size: 17))
-                if let preview = group.displayMessages.last {
-                    Text("\(preview.speakerName): \(preview.text)")
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                } else {
-                    Text("\(group.memberBotIDs.count) member\(group.memberBotIDs.count == 1 ? "" : "s")")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 3)
-    }
-}
-
 /// The create-group sheet — name plus an up-to-6 member picker. Deliberately
 /// no draft-object dance like `startNewBotDraft`'s: creating a
 /// `GroupChatSession` has no expensive boot step, so there's nothing to
@@ -829,54 +688,58 @@ struct CreateGroupChatView: View {
     @State private var memberIDs: [String] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("New group chat").font(.title2).bold()
+        SheetScaffold(title: "New group chat", onClose: onCancel) {
+            VStack(alignment: .leading, spacing: 0) {
+                SectionLabel("Name")
+                Card {
+                    TextField("Group name", text: $name)
+                        .themedField()
+                        .padding(16)
+                }
 
-            Text("Name").font(.caption).foregroundStyle(.secondary)
-            TextField("Group name", text: $name).textFieldStyle(.roundedBorder)
-
-            Text("Members (\(memberIDs.count)/\(GroupChatSession.maxMembers))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if allBots.isEmpty {
-                Text("Add a bot first — a group chat needs existing bots as members.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(allBots) { bot in
-                        let isMember = memberIDs.contains(bot.id)
-                        Toggle(isOn: Binding(
-                            get: { isMember },
-                            set: { on in
-                                if on, memberIDs.count < GroupChatSession.maxMembers { memberIDs.append(bot.id) }
-                                else if !on { memberIDs.removeAll { $0 == bot.id } }
+                SectionLabel("Members (\(memberIDs.count)/\(GroupChatSession.maxMembers))")
+                if allBots.isEmpty {
+                    Card {
+                        SettingRow("Add a bot first", subtitle: "A group chat needs existing bots as members.", titleColor: .secondary)
+                    }
+                } else {
+                    Card {
+                        ForEach(Array(allBots.enumerated()), id: \.element.id) { index, bot in
+                            let isMember = memberIDs.contains(bot.id)
+                            if index > 0 { CardDivider() }
+                            HStack(spacing: 12) {
+                                BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 28)
+                                Text(bot.name).font(.system(size: 16))
+                                Spacer(minLength: 12)
+                                Toggle("", isOn: Binding(
+                                    get: { isMember },
+                                    set: { on in
+                                        if on, memberIDs.count < GroupChatSession.maxMembers { memberIDs.append(bot.id) }
+                                        else if !on { memberIDs.removeAll { $0 == bot.id } }
+                                    }
+                                ))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .tint(Theme.positive)
+                                .disabled(!isMember && memberIDs.count >= GroupChatSession.maxMembers)
                             }
-                        )) {
-                            HStack {
-                                BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 22)
-                                Text(bot.name)
-                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .frame(minHeight: 50)
                         }
-                        .disabled(!isMember && memberIDs.count >= GroupChatSession.maxMembers)
                     }
                 }
             }
-            .frame(height: 200)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-
-            Spacer()
-            HStack {
-                Spacer()
+        } footer: {
+            SheetFooter {
                 Button("Cancel", role: .cancel) { onCancel() }
                 Button("Create") { onCreate(name.isEmpty ? "New Group" : name, memberIDs) }
+                    .buttonStyle(.primaryPill)
                     .keyboardShortcut(.defaultAction)
                     .disabled(memberIDs.isEmpty)
             }
         }
-        .padding(20)
-        .frame(width: 460, height: 500)
+        .frame(width: 480, height: 560)
     }
 }
 
@@ -900,19 +763,20 @@ private struct ApprovalBannerView: View {
                         .font(.system(size: 13, weight: .semibold))
                     if let toolName = bot.pendingApproval?.approval.toolName {
                         Text(extraCount > 0 ? "\(toolName) — +\(extraCount) more waiting" : toolName)
-                            .font(.caption)
+                            .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.orange.opacity(0.4), lineWidth: 1))
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.warning.opacity(0.45), lineWidth: 1))
             .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
         }
         .buttonStyle(.plain)
@@ -945,125 +809,119 @@ struct AppSettingsView: View {
     @State private var isSavingToken = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Settings").font(.title2).bold()
-
-                Picker("Appearance", selection: $appearanceMode) {
-                    Text("System").tag("system")
-                    Text("Light").tag("light")
-                    Text("Dark").tag("dark")
+        SheetScaffold(title: "Settings") {
+            VStack(alignment: .leading, spacing: 0) {
+                SectionLabel("Display")
+                Card {
+                    PickerRow(
+                        title: "Appearance",
+                        selection: $appearanceMode,
+                        options: [("system", "System"), ("light", "Light"), ("dark", "Night · Black")]
+                    )
                 }
-                .pickerStyle(.segmented)
-
-                Divider()
 
                 HostSettingsSection(onChanged: onHostChanged)
 
-                Divider()
-
-                Text("Sandbox manager token").font(.headline)
-                Text("The shared secret `sandbox-manager` requires on every call (X-Manager-Token). "
-                    + "Get the value from MANAGER_TOKEN in the Linux host's .env.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if let tokenInfo {
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        Text("Set — fingerprint \(tokenInfo.fingerprint)")
-                            .font(.caption)
+                SectionLabel("Sandbox manager token")
+                Card {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("The shared secret `sandbox-manager` requires on every call (X-Manager-Token). "
+                            + "Get the value from MANAGER_TOKEN in the Linux host's .env.")
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
-                        if let modified = tokenInfo.modified {
-                            Text("· updated \(modified.formatted(date: .abbreviated, time: .shortened))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+
+                        if let tokenInfo {
+                            HStack {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.positive)
+                                Text("Set — fingerprint \(tokenInfo.fingerprint)")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                                if let modified = tokenInfo.modified {
+                                    Text("· updated \(modified.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        } else {
+                            HStack {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
+                                Text("Not set — bots can't reach the sandbox manager until this is added.")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        HStack {
+                            SecureField("New token value", text: $tokenInput)
+                                .themedField()
+                            Button(tokenInfo == nil ? "Save" : "Rotate") { Task { await saveToken() } }
+                                .disabled(tokenInput.isEmpty || isSavingToken)
+                            if tokenInfo != nil {
+                                Button("Remove", role: .destructive) { Task { await removeToken() } }
+                                    .disabled(isSavingToken)
+                            }
+                        }
+                        if let tokenStatus {
+                            Text(tokenStatus).font(.system(size: 13)).foregroundStyle(.secondary)
                         }
                     }
-                } else {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                        Text("Not set — bots can't reach the sandbox manager until this is added.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    .padding(16)
                 }
 
-                HStack {
-                    SecureField("New token value", text: $tokenInput)
-                        .textFieldStyle(.roundedBorder)
-                    Button(tokenInfo == nil ? "Save" : "Rotate") { Task { await saveToken() } }
-                        .disabled(tokenInput.isEmpty || isSavingToken)
-                    if tokenInfo != nil {
-                        Button("Remove", role: .destructive) { Task { await removeToken() } }
-                            .disabled(isSavingToken)
-                    }
+                SectionLabel("Debug")
+                Card {
+                    ToggleRow(
+                        title: "Debug mode",
+                        subtitle: "Shows a live console of every bot's raw activity — status changes, tool calls and "
+                            + "their results, and the model's own token stream — in a right-hand pane, including "
+                            + "from group turns and delegations that are otherwise a black box in the normal chat.",
+                        isOn: $debugSettings.isEnabled
+                    )
                 }
-                if let tokenStatus {
-                    Text(tokenStatus).font(.caption).foregroundStyle(.secondary)
-                }
-
-                Divider()
-
-                Text("Debug").font(.headline)
-                Toggle("Debug mode", isOn: $debugSettings.isEnabled)
-                Text("Shows a live console of every bot's raw activity — status changes, tool calls and "
-                    + "their results, and the model's own token stream — in a right-hand pane, including "
-                    + "from group turns and delegations that are otherwise a black box in the normal chat.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Divider()
 
                 OllamaSettingsSection()
 
-                Divider()
-
                 SkillsSettingsSection(onChanged: onSkillsChanged)
 
-                Divider()
-
-                Text("Defaults for new bots").font(.headline)
-                Text("Applied when a bot is created; each bot can still change its own after, in that bot's own settings.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    Text("Max tokens")
-                    TextField("200000", text: $defaultMaxTokens).textFieldStyle(.roundedBorder).frame(width: 100)
-                    Text("Max iterations")
-                    TextField("40", text: $defaultMaxIterations).textFieldStyle(.roundedBorder).frame(width: 60)
+                SectionLabel("Defaults for new bots")
+                Card {
+                    SettingRow("Max tokens") {
+                        TextField("200000", text: $defaultMaxTokens).themedField().frame(width: 120)
+                    }
+                    CardDivider()
+                    SettingRow("Max iterations") {
+                        TextField("40", text: $defaultMaxIterations).themedField().frame(width: 120)
+                    }
                 }
-
-                Divider()
+                SectionFooter("Applied when a bot is created; each bot can still change its own after, in that bot's own settings.")
 
                 HStack {
-                    Text("Resource stats").font(.headline)
+                    SectionLabel("Resource stats")
                     Spacer()
                     if isRefreshingStats {
                         ProgressView().controlSize(.small)
                     }
                     Button("Refresh") { Task { await refreshStats() } }
+                        .buttonStyle(.compactPill)
                         .disabled(isRefreshingStats)
-                        .font(.caption)
+                        .padding(.trailing, 4)
                 }
-
-                HStack(alignment: .top, spacing: 24) {
-                    MachineStatsView(title: "This Mac", stats: localStats)
-                    MachineStatsView(title: "Linux host (\(RemoteHost.host))", stats: remoteStats)
+                Card {
+                    HStack(alignment: .top, spacing: 24) {
+                        MachineStatsView(title: "This Mac", stats: localStats)
+                        MachineStatsView(title: "Linux host (\(RemoteHost.host))", stats: remoteStats)
+                    }
+                    .padding(16)
                 }
             }
-            .padding(20)
-        }
-        .frame(width: 480, height: 620)
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+        } footer: {
+            SheetFooter {
+                Button("Done") { dismiss() }
+                    .buttonStyle(.primaryPill)
+                    .keyboardShortcut(.defaultAction)
             }
-            .padding(12)
-            .background(.bar)
         }
+        .frame(width: 540, height: 700)
         .task {
             await refreshStats()
             await refreshTokenInfo()
@@ -1118,11 +976,11 @@ private struct MachineStatsView: View {
     let stats: MachineStats?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.subheadline).bold()
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 14, weight: .semibold))
             if let stats {
                 if let error = stats.error {
-                    Text(error).font(.caption).foregroundStyle(.secondary)
+                    Text(error).font(.system(size: 13)).foregroundStyle(.secondary)
                 } else {
                     if let load = stats.loadAverage1m {
                         row("Load avg", String(format: "%.2f", load) + (stats.coreCount.map { " / \($0) cores" } ?? ""))
@@ -1135,7 +993,7 @@ private struct MachineStatsView: View {
                     }
                 }
             } else {
-                Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                Text("Loading…").font(.system(size: 13)).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1143,9 +1001,9 @@ private struct MachineStatsView: View {
 
     private func row(_ label: String, _ value: String) -> some View {
         HStack {
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(label).font(.system(size: 13)).foregroundStyle(.secondary)
             Spacer()
-            Text(value).font(.caption).monospacedDigit()
+            Text(value).font(.system(size: 13)).monospacedDigit()
         }
     }
 }
@@ -1184,57 +1042,67 @@ struct BotSettingsView: View {
     @State private var showingDeleteBotConfirm = false
     @State private var showingResetSandboxConfirm = false
 
+    private var closeAction: (() -> Void)? {
+        if case .create(_, let onCancel) = mode { return onCancel }
+        return nil
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            BotSettingsTab(bot: bot, groupChats: groupChats)
-                .frame(maxHeight: .infinity)
+        SheetScaffold(
+            title: bot.name.isEmpty ? "Bot settings" : bot.name,
+            subtitle: bot.name.isEmpty ? nil : "Bot settings",
+            onClose: closeAction
+        ) {
+            VStack(alignment: .leading, spacing: 0) {
+                BotSettingsTab(bot: bot, groupChats: groupChats)
 
-            if case .edit = mode {
-                Divider()
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Danger zone").font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Button("Delete conversation…", role: .destructive) {
-                            showingDeleteConversationConfirm = true
+                if case .edit = mode {
+                    SectionLabel("Danger zone")
+                    Card {
+                        Button { showingDeleteConversationConfirm = true } label: {
+                            SettingRow("Delete conversation…", titleColor: Theme.destructive)
                         }
+                        .buttonStyle(.plain)
                         .disabled(bot.isBusy || bot.displayMessages.isEmpty)
-                        .foregroundStyle(.red)
+                        .opacity(bot.isBusy || bot.displayMessages.isEmpty ? 0.4 : 1)
 
-                        Button("Reset sandbox…", role: .destructive) {
-                            showingResetSandboxConfirm = true
+                        CardDivider()
+
+                        Button { showingResetSandboxConfirm = true } label: {
+                            SettingRow("Reset sandbox…", subtitle: "Destroy this bot's Linux VM and boot a fresh one.", titleColor: Theme.destructive)
                         }
+                        .buttonStyle(.plain)
                         .disabled(bot.handle == nil)
-                        .foregroundStyle(.red)
+                        .opacity(bot.handle == nil ? 0.4 : 1)
                         .help("Destroy this bot's Linux VM and boot a fresh one — use if it may be compromised.")
 
-                        Button("Delete bot…", role: .destructive) {
-                            showingDeleteBotConfirm = true
-                        }
-                        .disabled(bot.isBusy)
-                        .foregroundStyle(.red)
+                        CardDivider()
 
-                        Spacer()
+                        Button { showingDeleteBotConfirm = true } label: {
+                            SettingRow("Delete bot…", titleColor: Theme.destructive)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(bot.isBusy)
+                        .opacity(bot.isBusy ? 0.4 : 1)
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
             }
-
-            Divider().padding(.top, 12)
-            HStack {
-                Spacer()
+        } footer: {
+            SheetFooter {
                 switch mode {
                 case .edit:
-                    Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                    Button("Done") { dismiss() }
+                        .buttonStyle(.primaryPill)
+                        .keyboardShortcut(.defaultAction)
                 case .create(let onSave, let onCancel):
                     Button("Cancel", role: .cancel) { onCancel() }
                     Button("Save") { onSave() }
+                        .buttonStyle(.primaryPill)
                         .keyboardShortcut(.defaultAction)
                 }
             }
-            .padding(12)
         }
-        .frame(width: 560, height: 660)
+        .frame(width: 560, height: 700)
         .alert("Delete this conversation?", isPresented: $showingDeleteConversationConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) { bot.clearConversation() }
@@ -1311,37 +1179,38 @@ private struct BotSettingsTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 0) {
                 identitySection
 
-                DisclosureGroup("Custom Instructions") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Optional. Added to the built-in behavior (tools, how tasks finish, verification), which every bot always has and which can't be edited here.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextEditor(text: $bot.systemPromptText)
-                            .font(.system(.caption, design: .monospaced))
-                            .frame(height: 120)
-                            .disabled(bot.hasStarted)
-                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-                    }
+                ExpandableCard("Custom Instructions", summary: bot.systemPromptText.isEmpty ? "None" : "Set") {
+                    Text("Optional. Added to the built-in behavior (tools, how tasks finish, verification), which every bot always has and which can't be edited here.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $bot.systemPromptText)
+                        .font(.system(size: 13, design: .monospaced))
+                        .frame(height: 120)
+                        .disabled(bot.hasStarted)
+                        .themedEditor()
                 }
                 .help(bot.hasStarted ? "Locked in for this conversation — start a new one to use different instructions." : "")
+                .padding(.top, 16)
 
-                DisclosureGroup("Skills (\(bot.selectedSkillIDs.count) of \(bot.availableSkills.count) selected)") {
+                ExpandableCard("Skills", summary: "\(bot.selectedSkillIDs.count) of \(bot.availableSkills.count)") {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 6) {
                             Toggle(isOn: Binding(
                                 get: { bot.selectedSkillIDs.count == bot.availableSkills.count && !bot.availableSkills.isEmpty },
                                 set: { selectAll in
                                     bot.selectedSkillIDs = selectAll ? Set(bot.availableSkills.map(\.id)) : []
                                 }
                             )) {
-                                Text("Select all").font(.caption).bold()
+                                Text("Select all").font(.system(size: 14, weight: .semibold))
                             }
+                            .toggleStyle(.switch)
+                            .tint(Theme.positive)
                             .disabled(bot.hasStarted || bot.availableSkills.isEmpty)
 
-                            Divider()
+                            Divider().overlay(Theme.hairline)
 
                             ForEach(bot.availableSkills) { skill in
                                 Toggle(isOn: Binding(
@@ -1352,43 +1221,45 @@ private struct BotSettingsTab: View {
                                     }
                                 )) {
                                     VStack(alignment: .leading, spacing: 1) {
-                                        Text(skill.name).font(.caption)
+                                        Text(skill.name).font(.system(size: 14))
                                         if !skill.description.isEmpty {
                                             Text(skill.description)
-                                                .font(.caption2)
+                                                .font(.system(size: 12))
                                                 .foregroundStyle(.secondary)
                                         }
                                     }
                                 }
+                                .toggleStyle(.switch)
+                                .tint(Theme.positive)
                                 .disabled(bot.hasStarted)
                             }
                         }
                     }
-                    .frame(height: 160)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    .frame(height: 200)
                 }
                 .help(bot.hasStarted ? "Locked in for this conversation — start a new one to use different skills." : "")
+                .padding(.top, 12)
 
-                DisclosureGroup("Permissions (\(bot.sessionAllowedBinaries.count) this session, \(bot.globalAllowedBinaries.count) always, \(bot.blanketShellScopes.count) all-shell)") {
-                    VStack(alignment: .leading, spacing: 6) {
+                ExpandableCard("Permissions", summary: "\(bot.sessionAllowedBinaries.count) session · \(bot.globalAllowedBinaries.count) always · \(bot.blanketShellScopes.count) all-shell") {
+                    VStack(alignment: .leading, spacing: 8) {
                         ForEach(bot.blanketShellScopes, id: \.self) { scope in
                             HStack {
-                                Text("ALL shell commands").font(.system(.caption, design: .monospaced))
+                                Text("ALL shell commands").font(.system(size: 13, design: .monospaced))
                                 Text(blanketBadge(scope))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 5)
-                                    .background(Color.orange.opacity(0.2))
-                                    .cornerRadius(4)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Theme.warning)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Theme.warning.opacity(0.18), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                                 Spacer()
                                 Button("Revoke") { Task { await bot.revokeAllShell(scope: scope) } }
-                                    .font(.caption)
+                                    .buttonStyle(.compactPill)
                             }
                         }
                         if bot.sessionAllowedBinaries.isEmpty && bot.globalAllowedBinaries.isEmpty && bot.blanketShellScopes.isEmpty {
                             Text("Nothing always-allowed yet — approve a run_shell command and choose "
                                 + "\"Always allow…\" to add one.")
-                                .font(.caption)
+                                .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
                         ForEach(bot.sessionAllowedBinaries, id: \.self) { binary in
@@ -1398,26 +1269,26 @@ private struct BotSettingsTab: View {
                             permissionRow(binary, scope: .global, badge: "always")
                         }
                     }
-                    .padding(.top, 4)
                 }
                 .task { await bot.refreshPermissions() }
+                .padding(.top, 12)
 
-                DisclosureGroup("Memory (\(bot.memories.count))") {
-                    VStack(alignment: .leading, spacing: 6) {
+                ExpandableCard("Memory", summary: "\(bot.memories.count)") {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("Instructions this bot has picked up — from its own `remember` tool during a "
                             + "conversation, or added here by hand. Resent at the start of every future "
                             + "conversation with it.")
-                            .font(.caption)
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
 
                         if bot.memories.isEmpty {
                             Text("Nothing remembered yet.")
-                                .font(.caption)
+                                .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
                         ForEach(Array(bot.memories.enumerated()), id: \.offset) { index, memory in
                             HStack(alignment: .top) {
-                                Text(memory).font(.caption).textSelection(.enabled)
+                                Text(memory).font(.system(size: 14)).textSelection(.enabled)
                                 Spacer()
                                 Button {
                                     bot.removeMemory(at: IndexSet(integer: index))
@@ -1431,33 +1302,33 @@ private struct BotSettingsTab: View {
 
                         HStack {
                             TextField("Add an instruction…", text: $newMemoryText)
-                                .textFieldStyle(.roundedBorder)
+                                .themedField()
                                 .onSubmit { addMemory() }
                             Button("Add") { addMemory() }
                                 .disabled(newMemoryText.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                     }
-                    .padding(.top, 4)
                 }
+                .padding(.top, 12)
 
-                DisclosureGroup("Tasks (\(bot.tasks.count))") {
-                    VStack(alignment: .leading, spacing: 6) {
+                ExpandableCard("Tasks", summary: "\(bot.tasks.count)") {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("One-shot tasks this bot is carrying — from its own remember_task tool, or added "
                             + "here by hand. Unlike Memory, these are meant to be removed once done: this bot's "
                             + "own complete_task tool clears them, or remove one yourself below. They follow "
                             + "it into a group turn or a delegation, which otherwise have no access to this "
                             + "chat's history.")
-                            .font(.caption)
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
 
                         if bot.tasks.isEmpty {
                             Text("Nothing in progress.")
-                                .font(.caption)
+                                .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
                         ForEach(Array(bot.tasks.enumerated()), id: \.offset) { index, task in
                             HStack(alignment: .top) {
-                                Text(task.text).font(.caption).textSelection(.enabled)
+                                Text(task.text).font(.system(size: 14)).textSelection(.enabled)
                                 Spacer()
                                 Button {
                                     bot.removeTask(at: IndexSet(integer: index))
@@ -1471,43 +1342,43 @@ private struct BotSettingsTab: View {
 
                         HStack {
                             TextField("Add a task…", text: $newTaskText)
-                                .textFieldStyle(.roundedBorder)
+                                .themedField()
                                 .onSubmit { addTask() }
                             Button("Add") { addTask() }
                                 .disabled(newTaskText.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                     }
-                    .padding(.top, 4)
                 }
+                .padding(.top, 12)
 
-                DisclosureGroup("Routines (\(bot.routines.count))") {
-                    VStack(alignment: .leading, spacing: 6) {
+                ExpandableCard("Routines", summary: "\(bot.routines.count)") {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("Time-based triggers that queue a message to this bot on their own — added here, "
                             + "or by the bot itself via its create_routine tool. A routine can post into a "
                             + "group chat instead of this one, if this bot is already a member of one.")
-                            .font(.caption)
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
 
                         if bot.routines.isEmpty {
                             Text("No routines yet.")
-                                .font(.caption)
+                                .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
                         ForEach(Array(bot.routines.enumerated()), id: \.offset) { index, routine in
                             HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    HStack(spacing: 4) {
-                                        Text(routine.schedule.summary).font(.caption).bold()
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(routine.schedule.summary).font(.system(size: 14, weight: .semibold))
                                         if let groupID = routine.targetGroupID {
                                             Text("→ \(groupChats.first { $0.id == groupID }?.name ?? "deleted group")")
-                                                .font(.caption2)
+                                                .font(.system(size: 12))
                                                 .foregroundStyle(.secondary)
-                                                .padding(.horizontal, 4)
-                                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                                                .padding(.horizontal, 6)
+                                                .background(Theme.chip, in: Capsule())
                                         }
                                     }
                                     Text(routine.instruction)
-                                        .font(.caption)
+                                        .font(.system(size: 13))
                                         .foregroundStyle(.secondary)
                                         .textSelection(.enabled)
                                 }
@@ -1528,21 +1399,21 @@ private struct BotSettingsTab: View {
                                 .buttonStyle(.plain)
                                 .foregroundStyle(.secondary)
                             }
-                            .padding(6)
+                            .padding(8)
                             .background(
-                                editingRoutineID == routine.id ? Color.accentColor.opacity(0.12) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 6)
+                                editingRoutineID == routine.id ? Theme.accent.opacity(0.14) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                             )
                         }
 
-                        Divider()
+                        Divider().overlay(Theme.hairline)
 
                         if editingRoutineID != nil {
-                            Text("Editing routine").font(.caption).bold().foregroundStyle(.secondary)
+                            Text("Editing routine").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
                         }
 
                         TextField("What should it do when it fires?", text: $newRoutineInstruction)
-                            .textFieldStyle(.roundedBorder)
+                            .themedField()
 
                         Picker("Schedule", selection: $newRoutineScheduleKind) {
                             ForEach(RoutineScheduleKind.allCases) { kind in
@@ -1564,8 +1435,8 @@ private struct BotSettingsTab: View {
                             HStack {
                                 Text("Every")
                                 TextField("30", value: $newRoutineIntervalMinutes, format: .number)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 50)
+                                    .themedField()
+                                    .frame(width: 70)
                                 Text("minutes")
                             }
                         }
@@ -1587,6 +1458,7 @@ private struct BotSettingsTab: View {
                                     addRoutine()
                                 }
                             }
+                            .buttonStyle(.primaryPill)
                             .disabled(newRoutineInstruction.trimmingCharacters(in: .whitespaces).isEmpty)
 
                             if editingRoutineID != nil {
@@ -1594,68 +1466,78 @@ private struct BotSettingsTab: View {
                             }
                         }
                     }
-                    .padding(.top, 4)
                 }
+                .padding(.top, 12)
 
-                Picker("Provider", selection: $bot.modelProvider) {
-                    Text("Local (Ollama)").tag(ModelProvider.ollama)
-                    Text("Remote (OpenAI-compatible)").tag(ModelProvider.remote)
-                }
-                .disabled(bot.isBusy)
-                .help(bot.isBusy ? "Locked while this bot is working — change it once it's idle. The conversation carries over." : "")
+                SectionLabel("Model")
+                Card {
+                    PickerRow(
+                        title: "Provider",
+                        selection: $bot.modelProvider,
+                        options: [(ModelProvider.ollama, "Local (Ollama)"), (ModelProvider.remote, "Remote (OpenAI-compatible)")]
+                    )
+                    .disabled(bot.isBusy)
+                    .help(bot.isBusy ? "Locked while this bot is working — change it once it's idle. The conversation carries over." : "")
 
-                if bot.modelProvider == .ollama {
-                    HStack {
-                        Picker("Model", selection: $bot.selectedModel) {
-                            ForEach(bot.availableModels, id: \.self) { model in
-                                Text(model).tag(model)
+                    CardDivider()
+
+                    if bot.modelProvider == .ollama {
+                        SettingRow("Model") {
+                            Picker("Model", selection: $bot.selectedModel) {
+                                ForEach(bot.availableModels, id: \.self) { model in
+                                    Text(model).tag(model)
+                                }
                             }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .fixedSize()
+                            .disabled(bot.isBusy || bot.availableModels.isEmpty)
+                            .help(bot.isBusy ? "Locked while this bot is working — change it once it's idle. The conversation carries over." : "")
                         }
-                        .disabled(bot.isBusy || bot.availableModels.isEmpty)
-                        .help(bot.isBusy ? "Locked while this bot is working — change it once it's idle. The conversation carries over." : "")
-
-                        Toggle("Vision", isOn: $bot.modelHasVision)
+                        CardDivider()
+                        ToggleRow(title: "Vision", subtitle: "Whether this model can see screenshots. Ollama doesn't advertise this, so it's manual.", isOn: $bot.modelHasVision)
                             .disabled(bot.isBusy)
-                            .help("Whether this model can see screenshots. Ollama doesn't advertise this, so it's manual.")
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        TextField("Base URL (e.g. https://api.openai.com/v1)", text: $bot.remoteBaseURLText)
-                            .textFieldStyle(.roundedBorder)
-                            .disabled(bot.isBusy)
-                        HStack {
+                    } else {
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField("Base URL (e.g. https://api.openai.com/v1)", text: $bot.remoteBaseURLText)
+                                .themedField()
+                                .disabled(bot.isBusy)
                             TextField("Model id (e.g. gpt-4o)", text: $bot.selectedModel)
-                                .textFieldStyle(.roundedBorder)
+                                .themedField()
                                 .disabled(bot.isBusy)
-                            Toggle("Vision", isOn: $bot.modelHasVision)
+                            SecureField("API key (leave blank to keep the saved one)", text: $bot.remoteAPIKeyInput)
+                                .themedField()
                                 .disabled(bot.isBusy)
-                                .help("Whether this model can see screenshots — no reliable way to detect this across providers, so it's manual.")
+                                .help("Stored in the Keychain, never in bots.json — typing a new value here replaces the saved one when you close this sheet.")
                         }
-                        SecureField("API key (leave blank to keep the saved one)", text: $bot.remoteAPIKeyInput)
-                            .textFieldStyle(.roundedBorder)
+                        .padding(16)
+                        CardDivider()
+                        ToggleRow(title: "Vision", subtitle: "Whether this model can see screenshots — no reliable way to detect this across providers, so it's manual.", isOn: $bot.modelHasVision)
                             .disabled(bot.isBusy)
-                            .help("Stored in the Keychain, never in bots.json — typing a new value here replaces the saved one when you close this sheet.")
                     }
-                }
 
-                HStack {
-                    Text("Max tokens").font(.caption)
-                    TextField("200000", text: $bot.maxTokensText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 90)
-                        .disabled(bot.isBusy)
-                    Text("Max iterations").font(.caption)
-                    TextField("40", text: $bot.maxIterationsText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 60)
-                        .disabled(bot.isBusy)
+                    CardDivider()
+
+                    SettingRow("Max tokens") {
+                        TextField("200000", text: $bot.maxTokensText)
+                            .themedField()
+                            .frame(width: 110)
+                            .disabled(bot.isBusy)
+                    }
+                    CardDivider()
+                    SettingRow("Max iterations") {
+                        TextField("40", text: $bot.maxIterationsText)
+                            .themedField()
+                            .frame(width: 110)
+                            .disabled(bot.isBusy)
+                    }
                 }
                 .help(bot.isBusy
                     ? "Locked while this bot is working."
                     : "Raise this if you've selected several skills — the whole system prompt resends every turn, "
                     + "so a large one burns through the token budget in a handful of turns.")
             }
-            .padding(20)
+            .padding(.bottom, 8)
         }
         .alert("Routine not saved", isPresented: Binding(
             get: { routineSaveError != nil },
@@ -1668,35 +1550,55 @@ private struct BotSettingsTab: View {
     }
 
     private var identitySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 68)
-                VStack(alignment: .leading, spacing: 6) {
-                    TextField("Name", text: $bot.name).textFieldStyle(.roundedBorder)
-                    TextField("Role (shown next to the name, e.g. \"UI Expert\")", text: $bot.tagline)
-                        .textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: 0) {
+            BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 96)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+
+            Card {
+                SettingRow("Name") {
+                    TextField("Name", text: $bot.name)
+                        .themedField()
+                        .frame(width: 280)
+                }
+                CardDivider()
+                SettingRow("Role") {
+                    TextField("e.g. \"UI Expert\"", text: $bot.tagline)
+                        .themedField()
+                        .frame(width: 280)
+                }
+                CardDivider()
+                SettingRow("Group") {
+                    TextField("e.g. \"General\"", text: $bot.group)
+                        .themedField()
+                        .frame(width: 280)
+                }
+                CardDivider()
+                SettingRow("Color") {
+                    HStack(spacing: 8) {
+                        ForEach(botColorPalette, id: \.self) { hex in
+                            Circle()
+                                .fill(Color(hex: hex))
+                                .frame(width: 20, height: 20)
+                                .overlay(Circle().stroke(.primary, lineWidth: bot.colorHex.uppercased() == hex.uppercased() ? 2 : 0))
+                                .onTapGesture { bot.colorHex = hex }
+                        }
+                        ColorPicker("Custom", selection: Binding(
+                            get: { Color(hex: bot.colorHex) },
+                            set: { bot.colorHex = $0.toHex() }
+                        ))
+                        .labelsHidden()
+                    }
                 }
             }
-            HStack {
-                Text("Color").font(.caption)
-                ForEach(botColorPalette, id: \.self) { hex in
-                    Circle()
-                        .fill(Color(hex: hex))
-                        .frame(width: 20, height: 20)
-                        .overlay(Circle().stroke(.primary, lineWidth: bot.colorHex.uppercased() == hex.uppercased() ? 2 : 0))
-                        .onTapGesture { bot.colorHex = hex }
-                }
-                ColorPicker("Custom", selection: Binding(
-                    get: { Color(hex: bot.colorHex) },
-                    set: { bot.colorHex = $0.toHex() }
-                ))
-                .labelsHidden()
+
+            SectionLabel("Avatar shape")
+            Card {
+                AvatarPicker(colorHex: bot.colorHex, selection: $bot.avatarStyle)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Text("Group").font(.caption).foregroundStyle(.secondary)
-            TextField("Group (sidebar section, e.g. \"General\")", text: $bot.group)
-                .textFieldStyle(.roundedBorder)
-            Text("Avatar shape").font(.caption).foregroundStyle(.secondary)
-            AvatarPicker(colorHex: bot.colorHex, selection: $bot.avatarStyle)
         }
     }
 
@@ -1711,18 +1613,18 @@ private struct BotSettingsTab: View {
     @ViewBuilder
     private func permissionRow(_ binary: String, scope: RunShellPermissions.Scope, badge: String) -> some View {
         HStack {
-            Text(binary).font(.system(.caption, design: .monospaced))
+            Text(binary).font(.system(size: 13, design: .monospaced))
             Text(badge)
-                .font(.caption2)
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 5)
-                .background(Color.secondary.opacity(0.15))
-                .cornerRadius(4)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(Theme.chip, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             Spacer()
             Button("Revoke") {
                 Task { await bot.revokePermission(binary, scope: scope) }
             }
-            .font(.caption)
+            .buttonStyle(.compactPill)
         }
     }
 
