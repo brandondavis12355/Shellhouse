@@ -24,16 +24,51 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         /// `true` only if the completing turn actually ran a tool. An
         /// unverified "done" is recorded but does not count as progress.
         public var verified: Bool
+        /// For work every listed member must do on their own VM ("each bot
+        /// checks…"): the step is done only once all of them have checked
+        /// in. `nil` for an ordinary single-owner step. Optional so goals
+        /// saved before this existed still decode.
+        public var requiredMembers: [String]?
+        /// Who has checked in on a per-member step, and what each saw.
+        public var memberEvidence: [String: String]?
 
         public init(id: String = UUID().uuidString, text: String, status: StepStatus = .open,
-                    assigneeName: String? = nil, evidence: String? = nil, verified: Bool = false) {
+                    assigneeName: String? = nil, evidence: String? = nil, verified: Bool = false,
+                    requiredMembers: [String]? = nil) {
             self.id = id
             self.text = text
             self.status = status
             self.assigneeName = assigneeName
             self.evidence = evidence
             self.verified = verified
+            self.requiredMembers = (requiredMembers?.isEmpty ?? true) ? nil : requiredMembers
         }
+
+        public var isPerMember: Bool { !(requiredMembers?.isEmpty ?? true) }
+
+        /// Required members who haven't checked in yet, in their listed order.
+        public var membersRemaining: [String] {
+            guard let required = requiredMembers else { return [] }
+            let done = Set((memberEvidence ?? [:]).keys.map { $0.lowercased() })
+            return required.filter { !done.contains($0.lowercased()) }
+        }
+    }
+
+    /// Which members a step's text says must each do it: every member for
+    /// "each bot", "every VM", "all members", "everyone"…; the named ones when
+    /// it names two or more. `nil` when it reads as one member's job.
+    public static func membersRequired(byStepText text: String, memberNames: [String]) -> [String]? {
+        let lower = text.lowercased()
+        let named = memberNames.filter { name in
+            let n = name.lowercased()
+            guard !n.isEmpty else { return false }
+            return lower.range(of: "(^|[^a-z0-9])" + NSRegularExpression.escapedPattern(for: n) + "($|[^a-z0-9])",
+                               options: .regularExpression) != nil
+        }
+        if named.count >= 2 { return named }
+        let everyone = #"\b(each|every|all)\s+(single\s+)?(of\s+the\s+|of\s+our\s+)?(bot|member|vm|machine|agent|sandbox|computer)s?\b|\beveryone\b|\beverybody\b|\beach of (us|you|them)\b"#
+        if lower.range(of: everyone, options: .regularExpression) != nil, memberNames.count >= 2 { return memberNames }
+        return nil
     }
 
     public enum StepUpdateResult: Sendable, Equatable {
@@ -43,6 +78,9 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         case recorded
         /// A non-owner's "done": held for the owner to validate. Never counts as progress.
         case submitted
+        /// One member's verified check-in on a per-member step that still
+        /// waits on others. Counts as progress (resets the stall counter).
+        case memberCheckedIn(remaining: [String])
         case rejected(String)
     }
 
@@ -79,10 +117,10 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     public var openSteps: [Step] { steps.filter { $0.status == .open || $0.status == .inProgress || $0.status == .blocked || $0.status == .review } }
 
     @discardableResult
-    public mutating func addStep(_ text: String) -> Step? {
+    public mutating func addStep(_ text: String, requiredMembers: [String]? = nil) -> Step? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, isLive else { return nil }
-        let step = Step(text: trimmed)
+        let step = Step(text: trimmed, requiredMembers: requiredMembers)
         steps.append(step)
         return step
     }
@@ -99,7 +137,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
 
     public mutating func updateStep(
         id stepID: String, status newStatus: StepStatus, evidence: String?, assigneeName: String?, turnHadToolCalls: Bool,
-        byOwner: Bool = true
+        byOwner: Bool = true, actorName: String? = nil
     ) -> StepUpdateResult {
         guard status == .active else { return .rejected("The goal is \(status.rawValue); steps can't change now.") }
         guard let index = steps.firstIndex(where: { $0.id == stepID }) else {
@@ -113,6 +151,10 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             // Members work steps; only the owner decides they're finished.
             if current == .done { return .rejected("This step is already validated as done by the goal owner.") }
             if current == .review { return .rejected("This step is waiting for the goal owner's validation; only the owner can change it now.") }
+        }
+        if steps[index].isPerMember {
+            return updatePerMemberStep(at: index, status: newStatus, evidence: evidence, actorName: actorName,
+                                       turnHadToolCalls: turnHadToolCalls)
         }
         if let assigneeName, !assigneeName.isEmpty { steps[index].assigneeName = assigneeName }
         if newStatus != .done {
@@ -142,6 +184,47 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             return .progress
         }
         return .recorded
+    }
+
+    /// A per-member step: each listed member checks in their own part with
+    /// evidence from their own tools. Nobody can check in for someone else,
+    /// and the owner re-running a check on its own VM proves nothing about
+    /// another member's, so a member's tool-backed check-in stands on its own.
+    private mutating func updatePerMemberStep(
+        at index: Int, status newStatus: StepStatus, evidence: String?, actorName: String?, turnHadToolCalls: Bool
+    ) -> StepUpdateResult {
+        let required = steps[index].requiredMembers ?? []
+        guard let actor = actorName,
+              let member = required.first(where: { $0.caseInsensitiveCompare(actor) == .orderedSame }) else {
+            return .rejected("This step must be done by each of \(required.joined(separator: ", ")) on their own VM. "
+                + "Only they can check in their part; you can't mark it for them.")
+        }
+        if newStatus != .done {
+            if steps[index].status != .done { steps[index].status = newStatus }
+            if let evidence, !evidence.isEmpty { steps[index].evidence = evidence }
+            return .recorded
+        }
+        let trimmed = (evidence ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= Self.minEvidenceLength else {
+            return .rejected("Checking in needs evidence (at least \(Self.minEvidenceLength) characters): what you ran or checked and what it showed.")
+        }
+        guard turnHadToolCalls else { return .recorded }
+        var byMember = steps[index].memberEvidence ?? [:]
+        let alreadyIn = byMember[member] != nil
+        byMember[member] = trimmed
+        steps[index].memberEvidence = byMember
+        let remaining = steps[index].membersRemaining
+        if remaining.isEmpty {
+            let wasDone = steps[index].status == .done
+            steps[index].status = .done
+            steps[index].verified = true
+            steps[index].evidence = required.compactMap { name in byMember[name].map { "\(name): \($0)" } }.joined(separator: "\n")
+            if !wasDone { messagesSinceProgress = 0; return .progress }
+            return .recorded
+        }
+        steps[index].status = .inProgress
+        if !alreadyIn { messagesSinceProgress = 0 }
+        return .memberCheckedIn(remaining: remaining)
     }
 
     /// Call for every bot-authored message while active. Returns `true` if
@@ -218,8 +301,14 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             case .open: mark = "[ ]"
             case .review: mark = "[?]"
             }
-            let assignee = step.assigneeName.map { " (\($0))" } ?? ""
-            lines.append("  \(index + 1). \(mark) \(step.text)\(assignee)  id=\(step.id)")
+            var who = step.assigneeName.map { " (\($0))" } ?? ""
+            if let required = step.requiredMembers, !required.isEmpty {
+                let remaining = step.membersRemaining
+                who = remaining.isEmpty
+                    ? " (all \(required.count) checked in)"
+                    : " (each member on their own VM: \(required.count - remaining.count)/\(required.count) checked in; waiting on \(remaining.joined(separator: ", ")))"
+            }
+            lines.append("  \(index + 1). \(mark) \(step.text)\(who)  id=\(step.id)")
         }
         lines.append("Progress: \(doneCount)/\(steps.count) steps done; \(messagesSinceProgress)/\(stallLimit) messages since last verified progress.")
         return lines.joined(separator: "\n")

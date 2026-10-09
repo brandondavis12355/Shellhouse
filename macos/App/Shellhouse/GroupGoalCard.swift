@@ -61,7 +61,13 @@ struct GroupGoalCard: View {
                         Text("\(index + 1). \(step.text)")
                             .font(.caption)
                             .strikethrough(step.status == .done)
-                        if let assignee = step.assigneeName, step.status != .done, step.status != .review {
+                        if let required = step.requiredMembers, !required.isEmpty {
+                            let remaining = step.membersRemaining
+                            Text(remaining.isEmpty
+                                 ? "all \(required.count) checked in"
+                                 : "\(required.count - remaining.count)/\(required.count) checked in · waiting on \(remaining.joined(separator: ", "))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        } else if let assignee = step.assigneeName, step.status != .done, step.status != .review {
                             Text(assignee).font(.caption2).foregroundStyle(.secondary)
                         }
                         if step.status == .review {

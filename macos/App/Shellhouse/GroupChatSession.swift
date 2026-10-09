@@ -685,7 +685,9 @@ final class GroupChatSession: Identifiable {
             + "with evidence from THIS turn's tool results — chatter does not count as progress. "
             + "@mention the specific member who should act next, and don't reply just to acknowledge. "
             + "Every member has its OWN Linux VM: a step that installs or changes something affects only the assignee's VM, "
-            + "so if every member needs it, there must be one step per member."
+            + "so if every member needs it, there must be one step per member. "
+            + "A step marked \"each member on their own VM\" is done by every listed member checking in their OWN part "
+            + "(update_goal_step → done with evidence from their own tools); nobody can check in for anyone else."
         let ownerName = members.first(where: { $0.id == goal.ownerBotID })?.name ?? "the owner"
         if botID == goal.ownerBotID {
             text += " You own this goal and are the ONLY one who can mark steps done. Steps marked [?] were submitted by a member: "
@@ -790,7 +792,10 @@ final class GroupChatSession: Identifiable {
                   let stepTexts = arguments["steps"]?.asStringArray, !stepTexts.isEmpty else {
                 return ["error": "propose_goal needs a 'title' and a non-empty 'steps' array."]
             }
-            let steps = stepTexts.prefix(12).map { GroupGoal.Step(text: $0) }
+            let memberNames = members.map(\.name)
+            let steps = stepTexts.prefix(12).map {
+                GroupGoal.Step(text: $0, requiredMembers: GroupGoal.membersRequired(byStepText: $0, memberNames: memberNames))
+            }
             goal = GroupGoal(title: title, ownerBotID: botID, steps: steps, stallLimit: stallLimit)
             persistGoal()
             postSystem("🎯 Goal set by \(bot.name): “\(title)” — \(steps.count) steps.")
@@ -800,7 +805,9 @@ final class GroupChatSession: Identifiable {
         case "add_goal_step":
             guard var g = goal, g.isLive else { return ["error": "No live goal."] }
             guard g.ownerBotID == botID else { return ["error": "Only the goal owner can change the plan."] }
-            guard let text = arguments["text"]?.asString, g.addStep(text) != nil else { return ["error": "add_goal_step needs non-empty 'text'."] }
+            guard let text = arguments["text"]?.asString,
+                  g.addStep(text, requiredMembers: GroupGoal.membersRequired(byStepText: text, memberNames: members.map(\.name))) != nil
+            else { return ["error": "add_goal_step needs non-empty 'text'."] }
             goal = g; persistGoal()
             return ["ok": true, "goal": goalBlockText(g)]
 
@@ -821,7 +828,7 @@ final class GroupChatSession: Identifiable {
             let ownerName = members.first(where: { $0.id == g.ownerBotID })?.name ?? "the goal owner"
             let result = g.updateStep(
                 id: stepID, status: status, evidence: arguments["evidence"]?.asString,
-                assigneeName: assignee, turnHadToolCalls: backedByTools, byOwner: isOwner
+                assigneeName: assignee, turnHadToolCalls: backedByTools, byOwner: isOwner, actorName: bot.name
             )
             goal = g; persistGoal()
             if case .rejected = result {} else { syncGoalTask(goal: g, stepID: stepID, actor: bot, evidence: arguments["evidence"]?.asString) }
@@ -832,6 +839,12 @@ final class GroupChatSession: Identifiable {
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
                 postSystem("✅ Step \(index) done by \(bot.name) — \(g.doneCount)/\(g.steps.count).")
                 return ["ok": true, "counted_as_progress": true, "goal": goalBlockText(g)]
+            case .memberCheckedIn(let remaining):
+                let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
+                postSystem("☑️ \(bot.name) checked in on step \(index) — waiting on \(remaining.joined(separator: ", ")).")
+                return ["ok": true, "counted_as_progress": true,
+                        "note": "Your part is recorded. The step completes once \(remaining.joined(separator: ", ")) check in on their own VMs. @mention them if they haven't started; don't check in again.",
+                        "goal": goalBlockText(g)]
             case .submitted:
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
                 postSystem("🔎 Step \(index) submitted by \(bot.name) — waiting for \(ownerName) to validate.")
