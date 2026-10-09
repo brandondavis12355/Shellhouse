@@ -116,12 +116,6 @@ private struct MessageBubble: View {
 
     private static let bodyFontSize: CGFloat = 16
     private static let toolFontSize: CGFloat = 13
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter
-    }()
 
     private var isUser: Bool { message.role == .user }
 
@@ -140,31 +134,33 @@ private struct MessageBubble: View {
     private var bubble: some View {
         HStack(spacing: 0) {
             if isUser { Spacer(minLength: 72) }
-            VStack(alignment: .leading, spacing: 8) {
-                if !message.text.isEmpty {
-                    // Mention pills take over the whole message's rendering
-                    // (word-level, no markdown highlighting) only when
-                    // there's actually an @-mention of a known bot in it —
-                    // the common case keeps the richer code/bold/link
-                    // highlighting below.
-                    if MentionPillText.containsKnownMention(message.text, mentionColors: mentionColors) {
-                        MentionPillText(text: message.text, mentionColors: mentionColors, fontSize: Self.bodyFontSize)
-                            .textSelection(.enabled)
-                    } else {
-                        Text(highlightedText)
-                            .font(.system(size: Self.bodyFontSize))
-                            .textSelection(.enabled)
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !message.text.isEmpty {
+                        // Mention pills take over the whole message's rendering
+                        // (word-level, no markdown highlighting) only when
+                        // there's actually an @-mention of a known bot in it —
+                        // the common case keeps the richer code/bold/link
+                        // highlighting below.
+                        if MentionPillText.containsKnownMention(message.text, mentionColors: mentionColors) {
+                            MentionPillText(text: message.text, mentionColors: mentionColors, fontSize: Self.bodyFontSize)
+                                .textSelection(.enabled)
+                        } else {
+                            Text(highlightedText)
+                                .font(.system(size: Self.bodyFontSize))
+                                .textSelection(.enabled)
+                        }
+                    }
+                    ForEach(message.attachmentNames, id: \.self) { filename in
+                        AttachmentCard(filename: filename, isImage: isImageFilename(filename))
                     }
                 }
-                ForEach(message.attachmentNames, id: \.self) { filename in
-                    AttachmentCard(filename: filename, isImage: isImageFilename(filename))
-                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 13)
+                .background(isUser ? Theme.userBubble : Theme.bubble)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
+                MessageTimestamp(date: message.timestamp)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 13)
-            .background(isUser ? Theme.userBubble : Theme.bubble)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
-            .help("\(isUser ? "You" : botName) · \(Self.timeFormatter.string(from: message.timestamp))")
             if !isUser { Spacer(minLength: 72) }
         }
     }
@@ -181,6 +177,7 @@ private struct MessageBubble: View {
                 Text("Messaged")
                 BotAvatar(colorHex: colorHex, style: style, size: 20)
                 Text(peerName)
+                Text("· \(MessageTime.label(for: message.timestamp))").foregroundStyle(.tertiary)
             }
             .font(.system(size: 14))
             .foregroundStyle(.secondary)

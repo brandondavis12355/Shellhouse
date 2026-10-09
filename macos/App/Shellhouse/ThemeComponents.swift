@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import AgentCore
 
 // MARK: - Sidebar visibility (shared with the detail headers)
 
@@ -797,5 +798,19 @@ struct SheetFooter<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
+    }
+}
+
+/// Small caption under a chat message saying when it was sent. Hover for the
+/// full date. See `MessageTime` for the format.
+struct MessageTimestamp: View {
+    let date: Date
+
+    var body: some View {
+        Text(MessageTime.label(for: date))
+            .font(.system(size: 11))
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 6)
+            .help(MessageTime.full(for: date))
     }
 }

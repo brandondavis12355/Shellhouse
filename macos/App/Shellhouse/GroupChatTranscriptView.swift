@@ -74,21 +74,17 @@ private struct GroupMessageBubble: View {
         if isFriend { return .teal }
         return Color(hex: colorHex ?? "#8E8E93")
     }
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter
-    }()
-
     var body: some View {
         if message.isSystem == true {
-            Text(message.text)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
+            VStack(spacing: 2) {
+                Text(message.text)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                MessageTimestamp(date: message.timestamp)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
         } else {
             bubble
         }
@@ -120,7 +116,7 @@ private struct GroupMessageBubble: View {
                     .padding(.vertical, 13)
                     .background(isUser ? Theme.userBubble : Theme.bubble)
                     .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
-                    .help("\(isUser ? "You" : message.speakerName) · \(Self.timeFormatter.string(from: message.timestamp))")
+                MessageTimestamp(date: message.timestamp)
             }
             if !isUser { Spacer(minLength: 72) }
         }

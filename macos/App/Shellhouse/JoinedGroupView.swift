@@ -258,9 +258,7 @@ private struct JoinedMessageRow: View {
     let isMine: Bool
     let mentionColors: [String: String]
 
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .short; return f
-    }()
+    private var sentAt: Date { Date(timeIntervalSince1970: message.ts) }
 
     private var color: Color {
         switch message.kind {
@@ -272,7 +270,11 @@ private struct JoinedMessageRow: View {
 
     var body: some View {
         if message.kind == .system {
-            Text(message.text).font(.system(size: 13)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+            VStack(spacing: 2) {
+                Text(message.text).font(.system(size: 13)).foregroundStyle(.secondary)
+                MessageTimestamp(date: sentAt)
+            }
+            .frame(maxWidth: .infinity)
         } else {
             HStack(spacing: 0) {
                 if isMine { Spacer(minLength: 72) }
@@ -295,7 +297,7 @@ private struct JoinedMessageRow: View {
                         .padding(.horizontal, 18).padding(.vertical, 13)
                         .background(isMine ? Theme.userBubble : Theme.bubble)
                         .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
-                        .help(Self.timeFormatter.string(from: Date(timeIntervalSince1970: message.ts)))
+                    MessageTimestamp(date: sentAt)
                 }
                 if !isMine { Spacer(minLength: 72) }
             }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AgentCore
 
 /// The user's read-only window into one bot-to-bot exchange — opened by
 /// tapping a "Messaged <name>…" notice in `TranscriptView`. There's no
@@ -13,12 +14,6 @@ struct InterBotThreadView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var messages: [InterBotMessage] = []
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter
-    }()
 
     var body: some View {
         SheetScaffold(title: "\(myBotName) ↔ \(peerName)", subtitle: "Read-only") {
@@ -49,7 +44,7 @@ struct InterBotThreadView: View {
                     .padding(.horizontal, 16).padding(.vertical, 11)
                     .background(isMine ? Theme.userBubble : Theme.bubble)
                     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .help(Self.timeFormatter.string(from: message.timestamp))
+                MessageTimestamp(date: message.timestamp)
             }
             if !isMine { Spacer(minLength: 40) }
         }
