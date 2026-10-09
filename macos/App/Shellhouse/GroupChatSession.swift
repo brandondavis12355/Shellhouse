@@ -53,7 +53,10 @@ final class GroupChatSession: Identifiable {
     /// While the would-be goal owner is deciding whether the user's newest
     /// message is an actionable request (and, if so, drafting the goal),
     /// other members hold off — otherwise they'd start working before the
-    /// plan exists. Bounded wait; cleared by the owner's worker.
+    /// plan exists. Released the moment the plan does (a successful
+    /// `propose_goal`), when the owner decides the message isn't a request,
+    /// when its worker exits, or after `intakeHoldLimit` at most.
+    static let intakeHoldLimit: Double = 30
     private var intakeOwnerID: String?
     private var intakeGeneration = 0
     // Friends sharing (see FriendsView / group-relay). nil = a private, local group.
@@ -167,7 +170,7 @@ final class GroupChatSession: Identifiable {
             // on the generation so an older message's valve can't release a newer gate.
             let generation = intakeGeneration
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 90_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(Self.intakeHoldLimit * 1_000_000_000))
                 if self?.intakeGeneration == generation { self?.intakeOwnerID = nil }
             }
         }
@@ -452,7 +455,7 @@ final class GroupChatSession: Identifiable {
 
             if let owner = intakeOwnerID, owner != botID {
                 var waited = 0.0
-                while intakeOwnerID != nil, waited < 90, !Task.isCancelled {
+                while intakeOwnerID != nil, waited < Self.intakeHoldLimit, !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 300_000_000)
                     waited += 0.3
                 }
@@ -669,7 +672,8 @@ final class GroupChatSession: Identifiable {
 
     static let intakeInstruction = """
         GOAL INTAKE: the user's latest message is an actionable request and this group has no goal yet. You are \
-        the goal owner. Call propose_goal with a one-line title and 2-8 concrete, verifiable steps (each should be \
+        the goal owner. Your FIRST tool call must be propose_goal (no skills, checks or other tools before it): \
+        the other members are waiting for the plan. Give it a one-line title and 2-8 concrete, verifiable steps (each should be \
         checkable with a command or observation). Every member has its own separate Linux VM, so work that must happen on each machine needs one step per member; never refer to a shared sandbox. Then briefly tell the group the plan in your reply, and @mention \
         the member best placed to start. Do not do the work before proposing the goal.
         """
@@ -798,6 +802,9 @@ final class GroupChatSession: Identifiable {
             }
             goal = GroupGoal(title: title, ownerBotID: botID, steps: steps, stallLimit: stallLimit)
             persistGoal()
+            // The plan exists now: let the other members start on it instead of
+            // waiting for the owner's whole turn to finish.
+            if intakeOwnerID == botID { intakeOwnerID = nil }
             postSystem("🎯 Goal set by \(bot.name): “\(title)” — \(steps.count) steps.")
             _ = bot.postUpdateToUser("Started working on a goal in “\(name)”: \(title) (\(steps.count) steps).", source: "group: \(name)")
             return ["ok": true, "goal": goalBlockText(goal!)]
