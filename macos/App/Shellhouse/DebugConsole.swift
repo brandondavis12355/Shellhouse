@@ -152,7 +152,7 @@ final class DebugLog {
 /// bot's raw agent-loop activity in one scrolling feed: status changes,
 /// tool calls and their results, and the model's live token stream,
 /// including from group turns and delegations, which are otherwise a
-/// black box in the normal chat UI (see `group-chat-turns.md`).
+/// black box in the normal chat UI.
 struct DebugConsoleView: View {
     var bots: [Bot] = []
     private var log = DebugLog.shared

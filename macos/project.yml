@@ -15,7 +15,7 @@ targets:
     platform: macOS
     sources:
       - App/Shellhouse
-      # Rewritten skill playbooks (see SkillLibrary.swift) — a folder
+      # Bundled skill playbooks (see SkillLibrary.swift) — a folder
       # reference, so the whole directory is copied into the app bundle's
       # Resources at build time and read back via Bundle.main.
       - path: ../skills

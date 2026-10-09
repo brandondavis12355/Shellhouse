@@ -2074,7 +2074,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                     },
                     // Self-scoped, unlike list_bots/message_bot/create_bot/
                     // add_bot_to_group (deliberately withheld from an
-                    // isolated run — see group-chat-turns.md) — creating a
+                    // isolated run, so it can't recurse) — creating a
                     // routine here only ever affects THIS bot's own
                     // schedule, no recursion or cross-bot side effect risk.
                     // Left out of this `ToolRegistry` entirely until now,
@@ -2344,7 +2344,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 // turn — and with several bots sharing one local model, that
                 // prompt processing (not generation) is what makes them take
                 // turns instead of running side by side.
-                let alreadyInThisPrompt: Set<String> = ["group-chat-turns", "goal-driven-work"]
+                let alreadyInThisPrompt: Set<String> = ["goal-driven-work"]
                 let loadable = selected.map(\.id).filter { !alreadyInThisPrompt.contains($0) }
                 result += "\n\n---\n\nPlaybooks you can load with use_skill(name) when one clearly fits what you're doing: "
                     + loadable.joined(separator: ", ") + ". The rules for group chats and shared goals are already in this prompt; do not load those playbooks."

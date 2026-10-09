@@ -1,10 +1,8 @@
 import Foundation
 
-/// One rewritten `skills/<name>.md` playbook — see `skills/` at the repo
-/// root. Each is a self-contained markdown file with a YAML frontmatter
-/// (`name:`/`description:`) followed by the actual playbook body, adapted to
-/// this agent's real tool set (unlike the third-party originals they were
-/// derived from, which referenced tools/mechanics this agent doesn't have).
+/// One `skills/<name>.md` playbook — bundled from `skills/` at the repo root,
+/// or added by the user. Each is a self-contained markdown file with a YAML
+/// frontmatter (`name:`/`description:`) followed by the playbook body.
 public struct Skill: Identifiable, Sendable, Equatable {
     public let id: String
     public let name: String
@@ -125,7 +123,7 @@ public enum SkillLibrary {
     /// always just `name:` and `description:`, so a line-based scan is
     /// enough and doesn't pull in a YAML dependency for two strings. Does
     /// handle YAML's folded (`>`/`>-`) and literal (`|`/`|-`) block-scalar
-    /// indicators for `description:`, since several source skills used a
+    /// indicators for `description:`, since a skill may use a
     /// multi-line description that way — everything else is a plain
     /// same-line `key: value`.
     private static func parseFrontmatter(_ text: String, fallbackID: String) -> (name: String, description: String) {

@@ -75,9 +75,10 @@ macos/
   cover chained commands, interpreters, or commands that use secrets.
   File writes, web access and GUI input are allowed by default, and ask
   first whenever a friend's message is in the conversation (shared groups).
-- **Skills** (`../skills/*.md`, about 50) — lazily-loaded
+- **Skills** (`../skills/*.md`, plus any you add in Settings) — lazily-loaded
   playbooks a bot pulls in only when the task actually calls for it,
-  instead of stuffing every possible instruction into every prompt.
+  instead of stuffing every possible instruction into every prompt. Two ship
+  with the app: `goal-driven-work` and `where-to-post`.
 - **The Debug Console** (Settings → Debug) — a live, filterable feed of
   every bot's raw activity: status, tool calls, token stream — including
   the group turns and delegations that are otherwise invisible black
