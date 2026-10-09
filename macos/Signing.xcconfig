@@ -1,0 +1,13 @@
+// Code signing for the Shellhouse app target.
+//
+// Put your own Apple signing team in Signing.local.xcconfig next to this
+// file (it is git-ignored, so it never reaches the repo):
+//
+//     DEVELOPMENT_TEAM = YOUR_TEAM_ID
+//
+// Find the ID in Xcode › Settings › Accounts, or with
+// `security find-identity -v -p codesigning`. A team is needed for the
+// sandbox entitlements (network.server, keychain-access-groups) to apply;
+// without one the app builds ad-hoc.
+DEVELOPMENT_TEAM =
+#include? "Signing.local.xcconfig"

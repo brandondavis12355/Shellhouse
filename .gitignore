@@ -1,4 +1,19 @@
-# Everything here is generated or machine-specific: a fresh clone rebuilds it.
+# Generated, machine-specific or secret: a fresh clone rebuilds or recreates
+# all of it.
+
+# Seed data for the sandbox VM's /home/box and /workspace. May contain real
+# credentials, session state or business data. Never commit it.
+/box/
+/workspace/
+
+# Secrets and runtime state
+.env
+sandbox-manager-run/
+group-relay/certs/
+*.db
+*.sqlite
+# Per-developer signing team, included by macos/Signing.xcconfig
+macos/Signing.local.xcconfig
 
 # Swift / Xcode
 .build/
