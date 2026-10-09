@@ -110,7 +110,7 @@ public enum SkillLibrary {
         Bundle.main.resourceURL?.appendingPathComponent("skills")
     }
 
-    private static func loadDirectory(_ dirURL: URL?) -> [Skill] {
+    static func loadDirectory(_ dirURL: URL?) -> [Skill] {
         guard let dirURL,
               let files = try? FileManager.default.contentsOfDirectory(
                 at: dirURL, includingPropertiesForKeys: nil
