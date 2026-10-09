@@ -51,8 +51,8 @@ work.
   anything the task doesn't need.
 
 ## Branches and commits
-- Make a branch for the work: `git checkout -b <short-name>`. (Use this
-  form; `git switch -c` is flagged as a stricter action.)
+- Make a branch for the work: `git checkout -b <short-name>` (or
+  `git switch -c <short-name>`).
 - `git add` the specific files you changed, then `git commit -m "<what
   and why, in one line>"`. Check `git status` and `git diff --staged`
   first, so you don't commit stray files, build output or anything

@@ -1132,17 +1132,26 @@ public enum ActionClassifier {
 
     static func classifyGit(args: [String], dyn: [Bool], config: GuardrailConfig) -> [Finding] {
         let blob = args.joined(separator: " ")
-        if blob.range(of: #"(^|\s)-c\S*|--config-env|--exec-path|core\.(sshcommand|pager|editor|fsmonitor|hookspath|askpass|gitproxy)|alias\.|diff\.external|filter\.|credential\.helper|protocol\.\S*allow|ext::|--upload-pack|--receive-pack|--exec(=|\s)|\s-O\S*|--open-files-in-pager|--ext-diff|--textconv|\s-x\s"#, options: [.regularExpression, .caseInsensitive]) != nil,
+        // Skip global options to find the subcommand.
+        var k = 0
+        let withValue: Set<String> = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]
+        while k < args.count, args[k].hasPrefix("-") { k += withValue.contains(args[k]) ? 2 : 1 }
+        // `-c key=value` injects config only as a global option (before the
+        // subcommand), or on `clone`, which writes it into the new repo.
+        // After any other subcommand `-c` means something ordinary
+        // (`switch -c` creates a branch, `grep -c` counts, `commit -c`
+        // reuses a message), so it is not flagged there.
+        let global = args.prefix(min(k, args.count))
+        let isConfigFlag: (String) -> Bool = { $0.hasPrefix("-c") || $0 == "--config" || $0.hasPrefix("--config=") || $0.hasPrefix("--config-env") }
+        let injectsConfig = global.contains(where: isConfigFlag)
+            || (k < args.count && args[k] == "clone" && args[(k + 1)...].contains(where: isConfigFlag))
+        if injectsConfig || blob.range(of: #"--exec-path|core\.(sshcommand|pager|editor|fsmonitor|hookspath|askpass|gitproxy)|alias\.|diff\.external|filter\.|credential\.helper|protocol\.\S*allow|ext::|--upload-pack|--receive-pack|--exec(=|\s)|\s-O\S*|--open-files-in-pager|--ext-diff|--textconv|\s-x\s"#, options: [.regularExpression, .caseInsensitive]) != nil,
            !blob.hasPrefix("config --get") {
             return [Finding(.credential, "security.git_exec", "git option or config that runs a command or redirects execution", clean: .askStrict, tainted: .deny)]
         }
         if let sub = args.first(where: { !$0.hasPrefix("-") }), ["difftool", "mergetool", "bisect", "submodule", "instaweb", "daemon", "send-email", "archive", "bundle", "svn", "request-pull"].contains(sub) {
             return [Finding(.external, "security.git_exec", "git \(sub) can run commands or contact remotes", clean: .askStrict, tainted: .deny)]
         }
-        // Skip global options to find the subcommand.
-        var k = 0
-        let withValue: Set<String> = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]
-        while k < args.count, args[k].hasPrefix("-") { k += withValue.contains(args[k]) ? 2 : 1 }
         guard k < args.count else { return [Finding(.observe, "read.git", "git", clean: .allow, tainted: .allow)] }
         let sub = args[k]
         let rest = Array(args[(k + 1)...])
