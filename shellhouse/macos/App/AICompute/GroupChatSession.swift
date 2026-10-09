@@ -37,6 +37,12 @@ final class GroupChatSession: Identifiable {
     /// How many messages of `displayMessages` each member has already been
     /// shown (as of its last worker pass). Anything after that is "new".
     private var seenCount: [String: Int] = [:]
+    /// Per human message: who owes an answer, who gave one (see `GroupTurnPlanner`).
+    private var turnLedger = TurnLedger()
+    /// Members that must answer a specific message now (floor fallback), bypassing the wake planner.
+    private var forcedReplies: [String: String] = [:]
+    /// A stand-up round is under way: members report once, and do not answer each other's reports.
+    private var statusRoundActive = false
 
     /// The group's current goal (live, or finished/cancelled until cleared).
     var goal: GroupGoal?
@@ -104,6 +110,31 @@ final class GroupChatSession: Identifiable {
 
     func removeMember(_ botID: String) {
         memberBotIDs.removeAll { $0 == botID }
+        turnLedger.memberLeft(botID)
+        forcedReplies[botID] = nil
+    }
+
+    /// Wipes the shared transcript. Refused while members are working (they would
+    /// post into a conversation that no longer exists). Members, settings and any
+    /// goal are kept. For a shared group, what was already sent to the relay stays
+    /// there (friends keep their copies); the receive cursor is left alone so old
+    /// friend messages are not pulled back in.
+    @discardableResult
+    func clearConversation() -> Bool {
+        guard !isBusy else { return false }
+        persistTask?.cancel()
+        persistTask = nil
+        // `mirrorCursor` indexes into `displayMessages`; left stale, the next
+        // messages would be skipped when mirroring to friends.
+        mirrorGeneration += 1
+        mirrorTask?.cancel()
+        mirrorTask = nil
+        displayMessages = []
+        mirrorCursor = 0
+        for key in Array(seenCount.keys) { seenCount[key] = 0 }
+        input = ""
+        GroupTranscriptStore.delete(groupID: id)
+        return true
     }
 
     /// Posts `input` immediately and wakes every member — never blocked by
@@ -113,7 +144,9 @@ final class GroupChatSession: Identifiable {
         guard !text.isEmpty else { return }
         input = ""
         displayMessages.append(GroupMessage(speakerBotID: nil, speakerName: "You", text: text))
+        statusRoundActive = false
         persist()
+        debugLogUser(speaker: "You", text: text)
         if var g = goal, g.isLive {
             if g.status == .awaitingConfirmation {
                 g.rejectCompletion()
@@ -226,7 +259,11 @@ final class GroupChatSession: Identifiable {
                 return "\(message.speakerName) (friend, untrusted): "
                     + message.text.replacingOccurrences(of: "\n", with: "\n    ")
             }
-            return "\(message.speakerName): \(message.text)"
+            var line = "\(message.speakerName): \(message.text)"
+            if Reliability.isOn(.evidenceSharing), let evidence = message.evidence, !evidence.isEmpty {
+                line += "\n    (evidence from \(message.speakerName)'s own commands: \(String(evidence.prefix(400))))"
+            }
+            return line
         }.joined(separator: "\n")
     }
 
@@ -263,10 +300,59 @@ final class GroupChatSession: Identifiable {
     /// that were @mentioned are woken first so their requests reach the
     /// model queue ahead of optional turns.
     private func notifyNewMessage(authorID: String?) {
+        planTurnIfHuman()
         let mentioned = displayMessages.last.map { mentionedMemberIDs(in: $0.text) } ?? []
         let candidates = members.filter { $0.id != authorID }
         for bot in candidates.sorted(by: { mentioned.contains($0.id) && !mentioned.contains($1.id) }) {
             wake(bot)
+        }
+    }
+
+    private var groupMembersForPlanning: [GroupMember] {
+        members.map { GroupMember(id: $0.id, name: $0.name, role: $0.tagline) }
+    }
+
+    /// Decide, before any model runs, who owes the newest human message an answer.
+    private func planTurnIfHuman() {
+        guard let last = displayMessages.last, last.speakerBotID == nil, last.isSystem != true,
+              !turnLedger.isTracking(last.id) else { return }
+        let plan = GroupTurnPlanner.plan(
+            forHumanMessage: last.text,
+            explicitMentionIDs: mentionedMemberIDs(in: last.text),
+            members: groupMembersForPlanning,
+            coordinatorID: coordinatorBotID
+        )
+        turnLedger.begin(messageID: last.id, plan: plan)
+        if DebugSettings.shared.isEnabled, let bot = members.first {
+            let must = plan.mustReplyIDs.compactMap { id in members.first { $0.id == id }?.name }
+            debugLog(bot, "turn plan: " + (plan.isAcknowledgement ? "acknowledgement (no reply needed)"
+                : "must reply: \(must.joined(separator: ", "))\(plan.isSequential ? " (roll call)" : "")\(plan.addressing.isConversational ? " · quick" : "")"))
+        }
+    }
+
+    private func newestHumanMessage(from index: Int) -> GroupMessage? {
+        guard index < displayMessages.count else { return nil }
+        return displayMessages[index...].last { $0.speakerBotID == nil && $0.isSystem != true }
+    }
+
+    /// Record how a member's turn on a human message ended, then act on anything the ledger
+    /// says is still owed: a visible notice for a failed required reply, or the floor responder
+    /// if nobody answered at all.
+    private func finishTurn(messageID: String?, bot: Bot, _ outcome: TurnOutcome) {
+        guard let messageID, turnLedger.isTracking(messageID) else { return }
+        turnLedger.record(messageID: messageID, botID: bot.id, outcome)
+        for action in turnLedger.actionsAfterSettling(messageID: messageID) {
+            switch action {
+            case .failureNotice(let botID, let reason):
+                let who = members.first { $0.id == botID }?.name ?? "A member"
+                postSystem("⚠ \(who) couldn't reply: \(reason)")
+            case .fallback(let botID):
+                guard let responder = members.first(where: { $0.id == botID }) else { continue }
+                debugLog(responder, "nobody replied — \(responder.name) answers")
+                turnLedger.reopen(messageID: messageID, botID: botID)
+                forcedReplies[botID] = messageID
+                wake(responder)
+            }
         }
     }
 
@@ -316,13 +402,53 @@ final class GroupChatSession: Identifiable {
         while !Task.isCancelled {
             guard let bot = members.first(where: { $0.id == botID }) else { return }
             let seen = min(max(seenCount[botID] ?? displayMessages.count, 0), displayMessages.count)
-            var decision = GroupWakePlanner.decide(
-                botID: botID, messages: groupMessages(), seenCount: seen,
-                maxBotMessages: stallLimit, goalStatus: goal?.status
-            )
+            var decision: GroupWakePlanner.Decision
+            var forcedMessageID = forcedReplies.removeValue(forKey: botID)
+            if forcedMessageID != nil {
+                decision = .mustReply
+            } else {
+                decision = GroupWakePlanner.decide(
+                    botID: botID, messages: groupMessages(), seenCount: seen,
+                    maxBotMessages: stallLimit, goalStatus: goal?.status
+                )
+            }
             let snapshot = displayMessages.count
             seenCount[botID] = snapshot
-            if decision == .none { return }
+
+            // The human message this wake is about, and what the plan says this member owes it.
+            let humanMessage = forcedMessageID.flatMap { id in displayMessages.first { $0.id == id } } ?? newestHumanMessage(from: seen)
+            let plan = humanMessage.flatMap { turnLedger.plan(messageID: $0.id) }
+            let turnMessageID: String? = (plan != nil) ? humanMessage?.id : nil
+            if decision == .none {
+                finishTurn(messageID: turnMessageID, bot: bot, .passed("nothing to answer"))
+                return
+            }
+            let owes = plan?.obligation(of: botID) ?? .none
+            if owes == .mustReply, decision == .optional {
+                decision = .mustReply   // deterministic: no model gets to veto an answer the user is owed
+                debugLog(bot, "owes a reply (\(plan?.reason(of: botID) ?? "")) — reply gate skipped")
+            }
+            // A stand-up (typed by you, or posted by a routine) is answered from what each member already knows.
+            let trigger = displayMessages[min(seen, displayMessages.count)...].last { $0.isSystem != true && $0.speakerBotID != botID }
+            let isStatusReport = Reliability.isOn(.quickReports) && (decision != .optional || owes == .mustReply)
+                && trigger.map { AddressingAnalyzer.isStatusRequest($0.text) } == true
+            // Bots chiming in on each other's small talk is chatter, not conversation. Judged against the
+            // newest human message overall: the unseen messages are usually just the other bots' replies.
+            let latestHuman = displayMessages.last { $0.speakerBotID == nil && $0.isSystem != true }
+            let latestPlan = latestHuman.flatMap { turnLedger.plan(messageID: $0.id) }
+            let unseenHasHuman = displayMessages[min(seen, displayMessages.count)...].contains { $0.speakerBotID == nil && $0.isSystem != true }
+            if decision == .optional, goal?.isLive != true, !unseenHasHuman,
+               latestPlan?.addressing.isConversational == true || latestPlan?.isAcknowledgement == true || statusRoundActive {
+                debugLog(bot, "small talk already handled — staying quiet")
+                finishTurn(messageID: turnMessageID, bot: bot, .passed("small talk already handled"))
+                return
+            }
+            // "thanks" and friends: nobody has to answer, so no model is asked.
+            if decision == .optional, goal?.isLive != true, plan?.isAcknowledgement == true {
+                debugLog(bot, "acknowledgement — no reply needed")
+                finishTurn(messageID: turnMessageID, bot: bot, .passed("acknowledgement"))
+                return
+            }
 
             if let owner = intakeOwnerID, owner != botID {
                 var waited = 0.0
@@ -331,6 +457,16 @@ final class GroupChatSession: Identifiable {
                     waited += 0.3
                 }
             }
+            // Roll call: answer after the members before you, so replies build on each other.
+            if let turnMessageID, forcedMessageID == nil {
+                var waited = 0.0
+                while !turnLedger.canProceed(messageID: turnMessageID, botID: botID), waited < 180, !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    waited += 0.25
+                }
+                if members.first(where: { $0.id == botID }) == nil { return }
+            }
+            forcedMessageID = nil
 
             // Goal intake: with no live goal, the would-be owner checks whether
             // the newest user message is an actionable request worth a goal.
@@ -343,8 +479,9 @@ final class GroupChatSession: Identifiable {
             setActive(bot, true)
             defer { setActive(bot, false) }
 
+            let smallTalk = Reliability.isOn(.quickReports) && goal?.isLive != true && plan?.addressing.isConversational == true
             var isIntakeTurn = false
-            if goal?.isLive != true, let userText = newestUserText, pickOwner(forUserText: userText)?.id == botID {
+            if goal?.isLive != true, !smallTalk, !isStatusReport, let userText = newestUserText, pickOwner(forUserText: userText)?.id == botID {
                 if await bot.looksLikeActionableRequest(userText) {
                     isIntakeTurn = true
                     decision = .mustReply
@@ -363,7 +500,10 @@ final class GroupChatSession: Identifiable {
             if decision == .optional {
                 debugLog(bot, "new messages — checking whether to reply")
                 let goalContext = goal.flatMap { $0.isLive ? goalBlockText($0) : nil }
-                guard await bot.wantsToRespondInGroup(groupName: name, transcript: formatRecentTranscript(limit: 8, clipTo: 500), goalContext: goalContext) else { continue }
+                guard await bot.wantsToRespondInGroup(groupName: name, transcript: formatRecentTranscript(limit: 8, clipTo: 500), goalContext: goalContext) else {
+                    finishTurn(messageID: turnMessageID, bot: bot, .passed("reply gate: nothing to add"))
+                    continue
+                }
             }
             let untrusted = turnIsUntrusted()
             if relayGroupID != nil {
@@ -376,30 +516,111 @@ final class GroupChatSession: Identifiable {
                         ?? ["error": "group no longer available"]
                 }
             }
-            let reply = await bot.respondInGroup(
-                groupName: name,
-                otherMembers: others,
-                transcriptSoFar: formatRecentTranscript(),
-                wasMentioned: decision != .optional,
-                mentionedByBot: decision == .mentionedByBot,
-                extraSuffix: extraSuffix,
-                goalHandler: handler,
-                untrustedInput: untrusted
-            )
-            guard let reply, !Task.isCancelled else { continue }
+            let mustAnswer = decision == .mustReply
+            var reply: String?
+            var usedQuickPath = false
+            // Fast path: small talk is one direct model call, not a full agent run.
+            if isStatusReport, !isIntakeTurn, !untrusted, let trigger, !Task.isCancelled {
+                var context = bot.standupContext()
+                if let live = goal, live.isLive { context += "\n\n" + goalBlockText(live) }
+                let instruction = "\(trigger.speakerName) asked for a stand-up: \"\(String(trigger.text.prefix(400)))\". Give YOUR status in at most 6 short plain lines: "
+                    + "Done: what you actually did (only things visible in the chat above or in your records). Next: what you will do (from your records, "
+                    + "or say you are waiting for tasks). Blockers: real ones visible above, or \"none\". Do not claim results you cannot see, do not run "
+                    + "or ask to run commands, and do not @mention anyone."
+                reply = await bot.quickReplyInGroup(
+                    groupName: name, otherMembers: others, transcript: formatRecentTranscript(limit: 14, clipTo: 500),
+                    instruction: instruction, extraContext: context, style: "a concise stand-up report in plain lines"
+                )
+                if Reliability.isOn(.replyChecks), let draft = reply {
+                    let allowed = formatRecentTranscript(limit: 40, clipTo: 800) + "\n" + context + "\n" + trigger.text
+                    var unsupported = ClaimCheck.unsupported(in: draft, sources: allowed)
+                    if !unsupported.isEmpty {
+                        debugLog(bot, "stand-up had unverifiable specifics (\(unsupported.joined(separator: ", "))) — regenerating")
+                        let again = await bot.quickReplyInGroup(
+                            groupName: name, otherMembers: others, transcript: formatRecentTranscript(limit: 14, clipTo: 500),
+                            instruction: instruction + " Your last draft mentioned \(unsupported.joined(separator: ", ")), which is not in the chat or your records: leave it out.",
+                            extraContext: context, style: "a concise stand-up report in plain lines"
+                        )
+                        reply = again ?? draft
+                        unsupported = ClaimCheck.unsupported(in: reply ?? "", sources: allowed)
+                        if !unsupported.isEmpty, let r = reply { reply = ClaimCheck.removingLines(stating: unsupported, from: r) }
+                    }
+                }
+                usedQuickPath = reply != nil && reply?.isEmpty == false
+                if usedQuickPath { statusRoundActive = true; debugLog(bot, "stand-up report (quick, no commands)") }
+            }
+            if reply == nil, smallTalk, !isIntakeTurn, !untrusted, let humanMessage, !Task.isCancelled {
+                var instruction = "Reply now, as \(bot.name), to the latest message from \(humanMessage.speakerName): \"\(String(humanMessage.text.prefix(500)))\"."
+                if plan?.isSequential == true, displayMessages.contains(where: { $0.speakerBotID != nil && $0.id != humanMessage.id }) {
+                    instruction += " Others have already replied above: say hello in your own words and your role in a few words; do not repeat them."
+                } else if plan?.addressing.isGreeting == true {
+                    instruction += " It is a greeting: greet back briefly and say what you can help with."
+                }
+                reply = await bot.quickReplyInGroup(groupName: name, otherMembers: others, transcript: formatRecentTranscript(limit: 8, clipTo: 400), instruction: instruction)
+                usedQuickPath = reply != nil
+                if usedQuickPath { debugLog(bot, "quick reply (\(ModelTiers.cheapModel(main: bot.selectedModel)))") }
+                if !usedQuickPath { debugLog(bot, "quick reply failed — falling back to a full turn") }
+            }
+            if reply == nil {
+                reply = await bot.respondInGroup(
+                    groupName: name,
+                    otherMembers: others,
+                    transcriptSoFar: formatRecentTranscript(),
+                    wasMentioned: decision != .optional,
+                    mentionedByBot: decision == .mentionedByBot,
+                    extraSuffix: extraSuffix,
+                    goalHandler: handler,
+                    untrustedInput: untrusted,
+                    // No goal work this turn: a substantial plain-text answer is the answer.
+                    plainReplyEndsTurn: goal?.isLive != true && !isIntakeTurn
+                )
+            }
+            // Last resort for a required reply: a direct, tool-less answer beats silence.
+            if reply == nil, mustAnswer, owes == .mustReply, bot.lastTurnFailure == nil, !Task.isCancelled, let humanMessage {
+                reply = await bot.quickReplyInGroup(
+                    groupName: name, otherMembers: others, transcript: formatRecentTranscript(limit: 8, clipTo: 400),
+                    instruction: "The latest message from \(humanMessage.speakerName) is addressed to you: \"\(String(humanMessage.text.prefix(500)))\". Answer it directly and briefly."
+                )
+            }
+            guard let reply, !Task.isCancelled else {
+                if Task.isCancelled { return }
+                if owes == .mustReply {
+                    finishTurn(messageID: turnMessageID, bot: bot, .failed(bot.lastTurnFailure ?? "the model gave no answer"))
+                } else {
+                    finishTurn(messageID: turnMessageID, bot: bot, .passed("chose to stay silent"))
+                }
+                continue
+            }
 
             // An optional reply computed against a stale chat is more likely
             // to repeat what someone else just said: if others posted while
             // this was generating, drop it and re-evaluate with fresh context.
-            if decision == .optional,
+            if decision == .optional, !usedQuickPath,
                displayMessages[snapshot...].contains(where: { $0.speakerBotID != botID && $0.isSystem != true }) {
+                finishTurn(messageID: turnMessageID, bot: bot, .passed("others answered first"))
                 continue
             }
-            displayMessages.append(GroupMessage(speakerBotID: botID, speakerName: bot.name, text: reply))
+            // Never post a near-copy of something already in the chat (its own earlier message, or another's).
+            let recentTexts = displayMessages.suffix(8).filter { $0.isSystem != true }.map(\.text)
+            if Reliability.isOn(.replyChecks), ReplyQuality.isDuplicate(reply, of: recentTexts, threshold: owes == .mustReply ? 0.97 : 0.85) {
+                debugLog(bot, "reply dropped: it repeats an earlier message")
+                finishTurn(messageID: turnMessageID, bot: bot, owes == .mustReply ? .replied : .passed("would repeat an earlier message"))
+                continue
+            }
+            var message = GroupMessage(speakerBotID: botID, speakerName: bot.name, text: reply)
+            if Reliability.isOn(.evidenceSharing), !usedQuickPath, bot.lastTurnToolCalls > 0 { message.evidence = EvidenceDigest.digest(bot.lastTurnObservations) }
+            displayMessages.append(message)
             persist()
             noteBotMessagePosted()
+            finishTurn(messageID: turnMessageID, bot: bot, .replied)
             notifyNewMessage(authorID: botID)
         }
+    }
+
+    /// What a human typed in this group, shown in the debug console next to the bots' activity.
+    private func debugLogUser(speaker: String, text: String) {
+        guard DebugSettings.shared.isEnabled else { return }
+        DebugLog.shared.log(bot: speaker, colorHex: "#0A84FF", kind: .user, context: "group: \(name)", text: text)
     }
 
     private func debugLog(_ bot: Bot, _ text: String) {
@@ -425,6 +646,16 @@ final class GroupChatSession: Identifiable {
         let currentMembers = members
         guard currentMembers.contains(where: { $0.id == bot.id }) else { return }
         let others = currentMembers.filter { $0.id != bot.id }.map(\.name)
+        // A routine that just asks everyone for a stand-up is a message, not a job: post it as written.
+        // (Running a full agent on it made the poster go off investigating instead of asking.)
+        if AddressingAnalyzer.isStatusRequest(instruction) {
+            displayMessages.append(GroupMessage(speakerBotID: bot.id, speakerName: bot.name, text: instruction))
+            statusRoundActive = false
+            persist()
+            noteBotMessagePosted()
+            notifyNewMessage(authorID: bot.id)
+            return
+        }
         guard let reply = await bot.fireRoutineInGroup(
             instruction: instruction, groupName: name, otherMembers: others, transcriptSoFar: formatRecentTranscript()
         ) else { return }
@@ -439,7 +670,7 @@ final class GroupChatSession: Identifiable {
     static let intakeInstruction = """
         GOAL INTAKE: the user's latest message is an actionable request and this group has no goal yet. You are \
         the goal owner. Call propose_goal with a one-line title and 2-8 concrete, verifiable steps (each should be \
-        checkable with a command or observation). Then briefly tell the group the plan in your reply, and @mention \
+        checkable with a command or observation). Every member has its own separate Linux VM, so work that must happen on each machine needs one step per member; never refer to a shared sandbox. Then briefly tell the group the plan in your reply, and @mention \
         the member best placed to start. Do not do the work before proposing the goal.
         """
 
@@ -450,14 +681,24 @@ final class GroupChatSession: Identifiable {
 
     private func goalPrompt(for goal: GroupGoal, botID: String) -> String {
         var text = goalBlockText(goal) + "\n\n"
-        text += "Work toward this goal: take an open step (update_goal_step → inProgress), do it with tools, then mark it done "
-            + "with evidence from THIS turn's tool results — only verified completions count as progress; chatter does not. "
-            + "@mention the specific member who should act next, and don't reply just to acknowledge."
+        text += "Work toward this goal: take an open step (update_goal_step → inProgress), do it with tools, then report it "
+            + "with evidence from THIS turn's tool results — chatter does not count as progress. "
+            + "@mention the specific member who should act next, and don't reply just to acknowledge. "
+            + "Every member has its OWN Linux VM: a step that installs or changes something affects only the assignee's VM, "
+            + "so if every member needs it, there must be one step per member."
+        let ownerName = members.first(where: { $0.id == goal.ownerBotID })?.name ?? "the owner"
         if botID == goal.ownerBotID {
-            text += " You own this goal: add_goal_step to adjust the plan, and when every step is done or blocked, call "
-                + "propose_goal_complete with a summary (the user confirms). Use update_user at milestones."
+            text += " You own this goal and are the ONLY one who can mark steps done. Steps marked [?] were submitted by a member: "
+                + "VALIDATE each yourself with your own tools (re-run the check, read the output) before update_goal_step → done with what "
+                + "you saw; if it doesn't hold up, set it back to inProgress and say what's wrong. Never accept a submission on trust. "
+                + "add_goal_step adjusts the plan; when every step is done or blocked, call propose_goal_complete (the user confirms). "
+                + "Use update_user at milestones."
         } else {
-            text += " Only the owner (\(members.first(where: { $0.id == goal.ownerBotID })?.name ?? "the owner")) proposes completion."
+            text += " You can claim steps and submit them as done with evidence, but only the owner (\(ownerName)) validates them and "
+                + "marks them done — @mention \(ownerName) after submitting. Only the owner proposes completion. "
+                + "If no open step is assigned to you and nobody asked you something, stay silent: do not start side "
+                + "investigations or re-check what others already covered. If a command gives an empty or unchanged "
+                + "result, change approach or report that you are blocked instead of repeating it."
         }
         if goal.status == .awaitingConfirmation {
             text += " The goal is awaiting the user's confirmation — do not start new work unless you were asked."
@@ -569,12 +810,21 @@ final class GroupChatSession: Identifiable {
                   let status = GroupGoal.StepStatus(rawValue: statusText) else {
                 return ["error": "update_goal_step needs 'step_id' and 'status' (inProgress, done, blocked)."]
             }
+            // A "done" only counts when the evidence matches what this run's tools actually returned.
+            let pool = arguments["_observations"]?.asString ?? ""
+            let evidenceText = arguments["evidence"]?.asString ?? ""
+            let grounded = EvidenceGrounding.isGrounded(evidence: evidenceText, observations: pool)
+            let backedByTools = toolCalls > 0 && (grounded || !Reliability.isOn(.replyChecks))
+            let isOwner = g.ownerBotID == botID
+            // Members can only put themselves on a step; the owner may assign anyone.
+            let assignee = isOwner ? (arguments["assignee"]?.asString ?? (status == .inProgress ? bot.name : nil)) : bot.name
+            let ownerName = members.first(where: { $0.id == g.ownerBotID })?.name ?? "the goal owner"
             let result = g.updateStep(
                 id: stepID, status: status, evidence: arguments["evidence"]?.asString,
-                assigneeName: arguments["assignee"]?.asString ?? (status == .inProgress ? bot.name : nil),
-                turnHadToolCalls: toolCalls > 0
+                assigneeName: assignee, turnHadToolCalls: backedByTools, byOwner: isOwner
             )
             goal = g; persistGoal()
+            if case .rejected = result {} else { syncGoalTask(goal: g, stepID: stepID, actor: bot, evidence: arguments["evidence"]?.asString) }
             switch result {
             case .rejected(let reason):
                 return ["error": reason]
@@ -582,9 +832,17 @@ final class GroupChatSession: Identifiable {
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
                 postSystem("✅ Step \(index) done by \(bot.name) — \(g.doneCount)/\(g.steps.count).")
                 return ["ok": true, "counted_as_progress": true, "goal": goalBlockText(g)]
+            case .submitted:
+                let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
+                postSystem("🔎 Step \(index) submitted by \(bot.name) — waiting for \(ownerName) to validate.")
+                return ["ok": true, "counted_as_progress": false,
+                        "note": "Submitted for validation. Only \(ownerName) (the goal owner) can mark it done after re-checking it. @mention \(ownerName) with what to verify; do not mark it done again.",
+                        "goal": goalBlockText(g)]
             case .recorded:
                 let note = status == .done
-                    ? "Recorded, but NOT counted as progress: no tool was run in this turn to back it up. Run a check and update again."
+                    ? (toolCalls > 0
+                        ? "Recorded, but NOT counted as progress: your evidence does not match anything the tools returned this turn. Quote the real output (a version, a path, a line) from a command you ran, then update again."
+                        : "Recorded, but NOT counted as progress: no tool was run in this turn to back it up. Run a check and update again.")
                     : "Recorded."
                 return ["ok": true, "counted_as_progress": false, "note": note, "goal": goalBlockText(g)]
             }
@@ -607,6 +865,38 @@ final class GroupChatSession: Identifiable {
 
     // MARK: Goal actions from the UI
 
+    // MARK: Goal steps <-> bot tasks
+
+    private func goalTaskKey(_ goal: GroupGoal, _ stepID: String) -> String { "goal:\(goal.id)/step:\(stepID)" }
+
+    /// A step the bot is working on becomes one of its tasks (so its stand-up report and its prompt know
+    /// about it); a finished step stops being one. Driven by the goal's own state, not by the model.
+    private func syncGoalTask(goal g: GroupGoal, stepID: String, actor: Bot, evidence: String?) {
+        guard let index = g.steps.firstIndex(where: { $0.id == stepID }) else { return }
+        let step = g.steps[index]
+        let key = goalTaskKey(g, stepID)
+        let ownerName = members.first(where: { $0.id == g.ownerBotID })?.name ?? "the owner"
+        let label = "Goal “\(g.title)”, step \(index + 1): \(step.text)"
+        let holder = step.assigneeName.flatMap { name in members.first { $0.name == name } } ?? actor
+        switch step.status {
+        case .done:
+            for member in members { member.clearGoalTasks(key: key) }
+        case .inProgress:
+            holder.trackGoalTask(key: key, text: label)
+        case .blocked:
+            let why = (evidence ?? step.evidence).map { String($0.prefix(120)) } ?? "no reason given"
+            holder.trackGoalTask(key: key, text: label + " — BLOCKED: \(why)")
+        case .review:
+            holder.trackGoalTask(key: key, text: label + " — submitted, waiting for \(ownerName) to validate")
+        case .open:
+            for member in members { member.clearGoalTasks(key: key) }
+        }
+    }
+
+    private func clearGoalTasks(for goal: GroupGoal) {
+        for member in members { member.clearGoalTasks(prefix: "goal:\(goal.id)/") }
+    }
+
     func continueGoal() {
         guard var g = goal, g.status == .paused else { return }
         g.resume(); goal = g; persistGoal()
@@ -617,6 +907,7 @@ final class GroupChatSession: Identifiable {
     func stopGoal() {
         guard var g = goal, g.isLive else { return }
         g.cancel(); goal = g; persistGoal()
+        clearGoalTasks(for: g)
         confirmTimerTask?.cancel()
         postSystem("⏹ Goal stopped.")
     }
@@ -624,18 +915,23 @@ final class GroupChatSession: Identifiable {
     func confirmGoal() {
         guard var g = goal, g.status == .awaitingConfirmation else { return }
         g.confirmComplete(); goal = g; persistGoal()
+        clearGoalTasks(for: g)
         confirmTimerTask?.cancel()
         postSystem("🎉 Goal complete: “\(g.title)”.")
     }
 
     func clearFinishedGoal() {
         guard let g = goal, !g.isLive else { return }
+        clearGoalTasks(for: g)
         goal = nil; persistGoal()
     }
 
     func setGoalTitle(_ title: String) { goal?.setTitle(title); persistGoal() }
     func addGoalStep(_ text: String) { goal?.addStep(text); persistGoal() }
-    func removeGoalStep(_ stepID: String) { goal?.removeStep(id: stepID); persistGoal() }
+    func removeGoalStep(_ stepID: String) {
+        if let g = goal { for member in members { member.clearGoalTasks(key: goalTaskKey(g, stepID)) } }
+        goal?.removeStep(id: stepID); persistGoal()
+    }
 
     /// Auto-closes a completion proposal the user never answered.
     private func scheduleConfirmTimer() {
@@ -751,6 +1047,7 @@ final class GroupChatSession: Identifiable {
                 text: String(String.UnicodeScalarView(cleaned)),
                 externalUserID: author, relaySeq: message.seq
             ))
+            if let last = displayMessages.last { debugLogUser(speaker: "\(last.speakerName) (friend)", text: last.text) }
             appended = true
         }
         guard appended else { return }

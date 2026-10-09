@@ -33,13 +33,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.shellhouse.app
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         CODE_SIGN_STYLE: Automatic
-        # Pinned so `xcodegen generate` stops resetting the signing team to
-        # ad-hoc on every regenerate (it otherwise has no team of its own to
-        # remember) — this is the developer's personal team,
-        # found via `security find-identity -v -p codesigning`. Needed for
-        # entitlements (network.server, keychain-access-groups) to actually
-        # apply; an ad-hoc-signed build silently runs unsandboxed-in-the-
-        # wrong-way instead.
+        # Your Apple signing team (Xcode › Signing & Capabilities, or `security find-identity -v -p codesigning`).
+        # Needed so the sandbox entitlements (network.server, keychain-access-groups) apply; leave empty for ad-hoc.
         DEVELOPMENT_TEAM: ""
         CODE_SIGN_ENTITLEMENTS: Resources/AgentApp.entitlements
         GENERATE_INFOPLIST_FILE: true

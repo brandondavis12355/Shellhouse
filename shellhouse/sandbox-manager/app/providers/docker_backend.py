@@ -65,9 +65,29 @@ EPHEMERAL_MEM = os.environ.get("SANDBOX_MEM_LIMIT", "2g")
 EPHEMERAL_CPUS = float(os.environ.get("SANDBOX_CPU_LIMIT", "2"))
 EPHEMERAL_PIDS = int(os.environ.get("SANDBOX_PIDS_LIMIT", "512"))
 
+# Persistent (per-bot) sandboxes live indefinitely. OPT-IN
+# (SANDBOX_PERSISTENT_LIMITS=1): they then get their own ceilings below;
+# otherwise they keep using the ephemeral ones, exactly as before.
+# Applied to NEW containers only.
+PERSISTENT_LIMITS = os.environ.get("SANDBOX_PERSISTENT_LIMITS", "0").lower() in ("1", "true", "yes")
+PERSISTENT_MEM = os.environ.get("SANDBOX_PERSISTENT_MEM_LIMIT", "4g")
+PERSISTENT_CPUS = float(os.environ.get("SANDBOX_PERSISTENT_CPU_LIMIT", "4"))
+PERSISTENT_PIDS = int(os.environ.get("SANDBOX_PERSISTENT_PIDS_LIMIT", "1024"))
+# Optional rootfs size cap, e.g. "20G". Only works on storage drivers that
+# support it (overlay2 on xfs with pquota); unset = no cap (the default).
+PERSISTENT_STORAGE = os.environ.get("SANDBOX_PERSISTENT_STORAGE_LIMIT", "")
+
+# Egress control (opt-in; see docs/EGRESS.md). "open" = unchanged behaviour.
+EGRESS_PROXY_CONTAINER = os.environ.get("SANDBOX_EGRESS_PROXY_CONTAINER", "agent-egress-proxy")
+EGRESS_PROXY_ALIAS = "egress-proxy"
+EGRESS_PROXY_PORT = int(os.environ.get("SANDBOX_EGRESS_PROXY_PORT", "3128"))
+EGRESS_NET_PREFIX = "agent-egress-"
+
 LABEL_MANAGED = "agent.sandbox"
 LABEL_TASK = "agent.task_id"
 LABEL_EPHEMERAL = "agent.ephemeral"
+LABEL_EGRESS_NET = "agent.egress_net"
+LABEL_NOVNC_PORT = "agent.novnc_port"
 
 
 def _q(value: str) -> str:
@@ -85,6 +105,51 @@ def _safe_task(task_id: str) -> str:
         return cleaned
     digest = hashlib.sha256(task_id.encode()).hexdigest()[:8]
     return f"{cleaned[:23]}-{digest}"
+
+
+def egress_mode() -> str:
+    """"open" (default) or "allowlist". Read at call time. Anything else is an
+    error: a typo must not silently leave a sandbox with open internet."""
+    mode = os.environ.get("SANDBOX_EGRESS_MODE", "open").strip().lower() or "open"
+    if mode not in ("open", "allowlist"):
+        raise ValueError(f"SANDBOX_EGRESS_MODE must be 'open' or 'allowlist', got {mode!r}")
+    return mode
+
+
+def egress_env(proxy_url: str) -> dict:
+    """Proxy environment for a sandbox container in allowlist mode."""
+    # The proxy's own alias is exempt so the optional model relay (a raw TCP
+    # listener on that host, see docs/EGRESS.md) is reached directly rather
+    # than through the allowlist. No other privilege is granted.
+    no_proxy = f"localhost,127.0.0.1,::1,{EGRESS_PROXY_ALIAS}"
+    return {
+        "SANDBOX_EGRESS_MODE": "allowlist",
+        "HTTP_PROXY": proxy_url, "HTTPS_PROXY": proxy_url,
+        "http_proxy": proxy_url, "https_proxy": proxy_url,
+        "NO_PROXY": no_proxy, "no_proxy": no_proxy,
+        # Debian's /usr/bin/chromium wrapper appends $CHROMIUM_FLAGS to its
+        # command line. (UNVERIFIED on a real image; Chromium also honours
+        # the *_proxy variables above when no other proxy config exists.)
+        "CHROMIUM_FLAGS": f"--proxy-server={proxy_url} --proxy-bypass-list=<-loopback>",
+    }
+
+
+def resource_limits(persistent: bool) -> dict:
+    """mem/cpu/pids (and optional storage) kwargs for containers.run()."""
+    if persistent and PERSISTENT_LIMITS:
+        limits = {
+            "mem_limit": PERSISTENT_MEM,
+            "nano_cpus": int(PERSISTENT_CPUS * 1_000_000_000),
+            "pids_limit": PERSISTENT_PIDS,
+        }
+        if PERSISTENT_STORAGE:
+            limits["storage_opt"] = {"size": PERSISTENT_STORAGE}
+        return limits
+    return {
+        "mem_limit": EPHEMERAL_MEM,
+        "nano_cpus": int(EPHEMERAL_CPUS * 1_000_000_000),
+        "pids_limit": EPHEMERAL_PIDS,
+    }
 
 
 def _new_vnc_password() -> str:
@@ -155,6 +220,100 @@ class DockerBackend:
                 return None   # fall back to the default bridge rather than fail creation
         return SANDBOX_NETWORK
 
+    def _ensure_egress_network(self, safe_task: str) -> str:
+        """Per-sandbox INTERNAL network (no route to the internet) with the
+        egress proxy attached. Per-sandbox because enable_icc=false would also
+        block sandbox->proxy traffic on a shared bridge. Fails closed: any
+        error raises instead of falling back to an open network. Blocking."""
+        client = self._docker()
+        net_name = f"{EGRESS_NET_PREFIX}{safe_task}"
+        try:
+            existing = client.networks.get(net_name)
+        except docker.errors.NotFound:
+            existing = None
+            client.networks.create(
+                net_name, driver="bridge", internal=True,
+                labels={LABEL_MANAGED: "true", LABEL_TASK: safe_task},
+            )
+        if existing is not None:
+            self._assert_internal_network(existing, net_name)
+        self._attach_proxy(net_name)
+        return net_name
+
+    @staticmethod
+    def _assert_internal_network(net, net_name: str) -> None:
+        attrs = getattr(net, "attrs", None) or {}
+        labels = attrs.get("Labels") or {}
+        if not attrs.get("Internal") or labels.get(LABEL_MANAGED) != "true":
+            raise RuntimeError(
+                f"Network {net_name} exists but is not a managed internal egress "
+                "network; refusing to use it. Remove it and retry."
+            )
+
+    def _verify_contained(self, container) -> None:
+        """An existing sandbox may only be reused in allowlist mode if it is
+        attached solely to managed internal egress networks. Blocking."""
+        cfg_labels = container.attrs.get("Config", {}).get("Labels") or {}
+        nets = (container.attrs.get("NetworkSettings", {}) or {}).get("Networks") or {}
+        problem = None
+        if not cfg_labels.get(LABEL_EGRESS_NET):
+            problem = "no egress label"
+        elif not nets:
+            problem = "no networks"
+        else:
+            for n in nets:
+                if not n.startswith(EGRESS_NET_PREFIX):
+                    problem = f"attached to non-egress network {n}"
+                    break
+                try:
+                    self._assert_internal_network(self._docker().networks.get(n), n)
+                except Exception as exc:
+                    problem = str(exc)
+                    break
+        if problem:
+            raise RuntimeError(
+                f"Sandbox {container.name} is not contained ({problem}) but "
+                "SANDBOX_EGRESS_MODE=allowlist. Recreate it (Delete bot / remove the "
+                "container; the workspace volume survives) or set SANDBOX_EGRESS_MODE=open."
+            )
+
+    def _egress_state(self, name: str) -> str:
+        try:
+            labels = self._get(name).attrs.get("Config", {}).get("Labels") or {}
+        except Exception:
+            return "unknown"
+        return "allowlist" if labels.get(LABEL_EGRESS_NET) else "open"
+
+    def _attach_proxy(self, net_name: str) -> None:
+        """Idempotently connect the proxy container to `net_name`. Blocking."""
+        net = self._docker().networks.get(net_name)
+        try:
+            net.connect(EGRESS_PROXY_CONTAINER, aliases=[EGRESS_PROXY_ALIAS])
+        except docker.errors.APIError as exc:
+            if "already exists" not in str(exc).lower():
+                raise
+
+    def _remove_egress_network(self, name: str) -> None:
+        """Best-effort cleanup after a sandbox container is removed."""
+        net_name = name.replace("agent-sandbox-", EGRESS_NET_PREFIX, 1)
+        if net_name == name:
+            return
+        client = self._docker()
+        try:
+            net = client.networks.get(net_name)
+        except docker.errors.NotFound:
+            return
+        except Exception:
+            return
+        try:
+            try:
+                net.disconnect(EGRESS_PROXY_CONTAINER, force=True)
+            except Exception:
+                pass
+            net.remove()
+        except Exception:
+            pass
+
     def _vnc_password_of(self, name: str) -> Optional[str]:
         """The per-container noVNC password, from the container's own env."""
         try:
@@ -211,14 +370,27 @@ class DockerBackend:
         port = await self._alloc_port(name)
         self._persistent[name] = persistent
 
+        allowlist = egress_mode() == "allowlist"
+
         # Idempotent: reuse an existing container for this task if present.
         try:
             existing = self._get(name)
+        except docker.errors.NotFound:
+            existing = None
+        if existing is not None:
+            if allowlist:
+                # Never hand back an uncontained sandbox in allowlist mode.
+                try:
+                    await asyncio.to_thread(self._verify_contained, existing)
+                except Exception:
+                    async with self._lock:
+                        self._ports.pop(name, None)
+                        self._persistent.pop(name, None)
+                    raise
             if existing.status != "running":
                 existing.start()
-            return self._handle(name, port=port, persistent=persistent)
-        except docker.errors.NotFound:
-            pass
+            return self._handle(name, port=port, persistent=persistent,
+                                egress="allowlist" if allowlist else None)
 
         # Opt-in: lets `box` use passwordless sudo inside its own container.
         # Requires dropping no-new-privileges (setuid-root sudo can't elevate
@@ -236,21 +408,35 @@ class DockerBackend:
         else:
             workspace_volumes = {WORKSPACE_VOLUME: {"bind": "/workspaces", "mode": "rw"}}
 
-        network_name = await asyncio.to_thread(self._ensure_sandbox_network)
-        vnc_password = _new_vnc_password()
+        created = False
+        try:
+            if allowlist:
+                # Fails closed (raises) rather than starting an open sandbox.
+                network_name = await asyncio.to_thread(self._ensure_egress_network, safe_task)
+            else:
+                network_name = await asyncio.to_thread(self._ensure_sandbox_network)
+            vnc_password = _new_vnc_password()
 
-        def _run():
-            return self._docker().containers.run(
-                SANDBOX_IMAGE,
+            environment = {
+                "SCREEN_GEOM": os.environ.get("SCREEN_GEOM", "1280x800x24"),
+                "VNC_PASSWORD": vnc_password,
+            }
+            labels = {
+                LABEL_MANAGED: "true",
+                LABEL_TASK: task_id,
+                LABEL_EPHEMERAL: "false" if persistent else "true",
+            }
+            if allowlist:
+                environment.update(egress_env(f"http://{EGRESS_PROXY_ALIAS}:{EGRESS_PROXY_PORT}"))
+                labels[LABEL_EGRESS_NET] = network_name
+                labels[LABEL_NOVNC_PORT] = str(port)
+
+            kwargs = dict(
                 name=name,
                 detach=True,
                 hostname=f"shellhouse-vm-{safe_task}",
                 network=network_name,
-                environment={
-                    "SCREEN_GEOM": os.environ.get("SCREEN_GEOM", "1280x800x24"),
-                    "VNC_PASSWORD": vnc_password,
-                },
-                ports={"6080/tcp": ("127.0.0.1", port)},    # loopback only
+                environment=environment,
                 volumes=workspace_volumes,
                 shm_size="1g",
                 security_opt=security_opt,
@@ -262,31 +448,71 @@ class DockerBackend:
                 # managed SHARED_CONTAINER; per-task containers need the
                 # same caps since they run the identical image/entrypoint).
                 cap_add=cap_add,
-                mem_limit=EPHEMERAL_MEM,
-                nano_cpus=int(EPHEMERAL_CPUS * 1_000_000_000),
-                pids_limit=EPHEMERAL_PIDS,
-                labels={
-                    LABEL_MANAGED: "true",
-                    LABEL_TASK: task_id,
-                    LABEL_EPHEMERAL: "false" if persistent else "true",
-                },
+                labels=labels,
                 tty=True,
+                **resource_limits(persistent),
             )
+            if not allowlist:
+                # (Allowlist mode publishes nothing: Docker cannot publish ports
+                # from an internal network. The egress-proxy container forwards
+                # loopback:<port> -> this sandbox's alias `sbx-<port>` instead.)
+                kwargs["ports"] = {"6080/tcp": ("127.0.0.1", port)}    # loopback only
 
-        await asyncio.to_thread(_run)
+            def _run():
+                return self._docker().containers.run(SANDBOX_IMAGE, **kwargs)
 
-        # Give this task its own workspace subdirectory. Done after start
-        # because the symlink target must exist in the running container.
-        if not PER_BOT_VOLUMES:
-            await self.exec(
-                name,
-                f"mkdir -p /workspaces/{safe_task} && "
-                f"rm -rf {WORKSPACE} && ln -sfn /workspaces/{safe_task} {WORKSPACE}",
-                timeout=30,
-            )
-        return self._handle(name, port=port, persistent=persistent)
+            await asyncio.to_thread(_run)
+            created = True
+            if allowlist:
+                # Give the sandbox its VNC alias on its internal network.
+                await asyncio.to_thread(self._alias_vnc, network_name, name, port)
 
-    def _handle(self, name: str, port: Optional[int], persistent: bool) -> SandboxHandle:
+            # Give this task its own workspace subdirectory. Done after start
+            # because the symlink target must exist in the running container.
+            if not PER_BOT_VOLUMES:
+                await self.exec(
+                    name,
+                    f"mkdir -p /workspaces/{safe_task} && "
+                    f"rm -rf {WORKSPACE} && ln -sfn /workspaces/{safe_task} {WORKSPACE}",
+                    timeout=30,
+                )
+
+            # Canaries go in AFTER the /workspace symlink exists, so
+            # /workspace/.env.production lands in the right place.
+            if os.environ.get("SANDBOX_SEED_CANARIES", "0").lower() in ("1", "true", "yes"):
+                # Idempotent, best-effort; no-op if the image lacks the script.
+                await self.exec(name, "command -v seed-canaries.sh >/dev/null && seed-canaries.sh || true", timeout=30)
+        except BaseException:
+            await asyncio.to_thread(self._cleanup_failed, name, created, allowlist)
+            async with self._lock:
+                self._ports.pop(name, None)
+                self._persistent.pop(name, None)
+            raise
+        return self._handle(name, port=port, persistent=persistent,
+                            egress="allowlist" if allowlist else "open")
+
+    def _cleanup_failed(self, name: str, container_created: bool, allowlist: bool) -> None:
+        """Undo a half-finished create so nothing is left running or leaked.
+        Best-effort and blocking."""
+        try:
+            self._get(name).remove(force=True)
+        except Exception:
+            pass
+        if allowlist:
+            self._remove_egress_network(name)
+
+    def _alias_vnc(self, net_name: str, container_name: str, port: int) -> None:
+        """Re-attach the sandbox to its internal network with the alias the
+        proxy's VNC forwarder dials. Blocking."""
+        net = self._docker().networks.get(net_name)
+        try:
+            net.disconnect(container_name, force=True)
+        except Exception:
+            pass
+        net.connect(container_name, aliases=[f"sbx-{port}"])
+
+    def _handle(self, name: str, port: Optional[int], persistent: bool,
+                egress: Optional[str] = None) -> SandboxHandle:
         # NOVNC_URL is a fixed, compose-published address (port 6080) that
         # only ever means the ONE legacy SHARED_CONTAINER. Every other
         # container — persistent or not — has its own dynamically allocated
@@ -307,7 +533,8 @@ class DockerBackend:
             workspace_host_path=WORKSPACE,
             vnc_url=vnc,
             persistent=persistent,
-            metadata={"container": name, "novnc_port": port},
+            metadata={"container": name, "novnc_port": port,
+                      "egress": egress or (self._egress_state(name) if name != SHARED_CONTAINER else "open")},
         )
 
     async def start(self, sandbox_id: str) -> SandboxHandle:
@@ -325,7 +552,9 @@ class DockerBackend:
         real port binding) is still there."""
         bindings = (container.attrs.get("NetworkSettings", {}).get("Ports") or {}).get("6080/tcp")
         if not bindings:
-            return None
+            # Allowlist-mode sandboxes publish nothing; their port is a label.
+            label = (container.attrs.get("Config", {}).get("Labels") or {}).get(LABEL_NOVNC_PORT)
+            return int(label) if label and label.isdigit() else None
         return int(bindings[0]["HostPort"])
 
     async def exec(
@@ -424,7 +653,10 @@ class DockerBackend:
                 self._ports.pop(sandbox_id, None)
                 self._persistent.pop(sandbox_id, None)
             return
+        had_egress = bool((container.attrs.get("Config", {}).get("Labels") or {}).get(LABEL_EGRESS_NET))
         await asyncio.to_thread(lambda: container.remove(force=True))
+        if had_egress:      # no extra Docker API calls for ordinary sandboxes
+            await asyncio.to_thread(self._remove_egress_network, sandbox_id)
         async with self._lock:
             self._ports.pop(sandbox_id, None)
             self._persistent.pop(sandbox_id, None)
@@ -465,6 +697,12 @@ class DockerBackend:
                 container.start()
                 container.reload()
             self._persistent[container.name] = True
+            egress_net = (container.attrs.get("Config", {}).get("Labels") or {}).get(LABEL_EGRESS_NET)
+            if egress_net:
+                try:    # proxy container may have been recreated since
+                    self._attach_proxy(egress_net)
+                except Exception:
+                    pass
             if port := self._bound_port(container):
                 self._ports[container.name] = port
             adopted.append(self._handle(container.name, port=self._ports.get(container.name), persistent=True))

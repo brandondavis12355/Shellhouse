@@ -25,8 +25,8 @@ set -uo pipefail
 
 APP_SRC="${1:-$HOME/Downloads/Shellhouse.app}"
 APP_DEST="/Applications/Shellhouse.app"
-REMOTE_HOST="192.0.2.10"
-REMOTE_USER="alex-dev"
+REMOTE_HOST="${REMOTE_HOST:?set REMOTE_HOST to your Linux host address, e.g. REMOTE_HOST=192.0.2.10 $0}"
+REMOTE_USER="${REMOTE_USER:?set REMOTE_USER to your SSH user on that host}"
 
 if [ ! -d "$APP_SRC" ]; then
   echo "Couldn't find an app at: $APP_SRC" >&2

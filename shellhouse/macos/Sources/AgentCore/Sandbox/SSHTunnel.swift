@@ -15,6 +15,58 @@ import Foundation
 /// or locked key fail fast with a clear stderr message instead of hanging on
 /// a passphrase prompt nothing can answer.
 public final class SSHTunnel: @unchecked Sendable {
+    /// Optional `ssh -R`: makes a Mac-local service (the model proxy) reachable
+    /// from the Linux host, e.g. from containers on the docker bridge.
+    ///
+    /// Host requirements: sshd must allow a non-loopback remote bind
+    /// (`GatewayPorts clientspecified` in sshd_config; without it sshd forces
+    /// loopback and containers cannot reach the port). `remoteBindAddress`
+    /// must be the docker bridge gateway address ONLY (e.g. `172.17.0.1`),
+    /// never `0.0.0.0` or `*` (that would expose the proxy to the LAN).
+    /// `arguments(for:)` refuses wildcard/empty bind addresses.
+    public struct ReverseForward: Sendable, Equatable {
+        public let remoteBindAddress: String
+        public let remotePort: Int
+        public let localHost: String
+        public let localPort: Int
+
+        public init(remoteBindAddress: String, remotePort: Int, localHost: String = "127.0.0.1", localPort: Int) {
+            self.remoteBindAddress = remoteBindAddress
+            self.remotePort = remotePort
+            self.localHost = localHost
+            self.localPort = localPort
+        }
+
+        /// A bind address must name one specific host: a dotted-quad that is not
+        /// the wildcard (`0`, `0.0`, `00.0.0.0`...), or a hostname. Never empty/`*`.
+        static func isSpecificAddress(_ address: String) -> Bool {
+            let parts = address.split(separator: ".", omittingEmptySubsequences: false)
+            let numericLike = parts.allSatisfy { part in
+                !part.isEmpty && (part.allSatisfy(\.isNumber) || (part.lowercased().hasPrefix("0x") && part.dropFirst(2).allSatisfy(\.isHexDigit)))
+            }
+            if numericLike {
+                // Numeric forms are interpreted by the resolver in several ways
+                // (`0`, `127.1`, octal); accept only canonical dotted quads.
+                guard parts.count == 4 else { return false }
+                let numbers = parts.compactMap { Int($0) }
+                guard numbers.count == 4, numbers.allSatisfy({ (0...255).contains($0) }),
+                      parts.allSatisfy({ $0 == String(Int($0)!) }) else { return false }
+                return numbers != [0, 0, 0, 0]
+            }
+            return true
+        }
+
+        /// The `-R` spec, or nil if any part is unsafe (wildcard bind, bad port, odd characters).
+        var spec: String? {
+            let plain = #"\A[A-Za-z0-9][A-Za-z0-9.-]*\z"#
+            guard remoteBindAddress.range(of: plain, options: .regularExpression) != nil,
+                  localHost.range(of: plain, options: .regularExpression) != nil,
+                  Self.isSpecificAddress(remoteBindAddress),
+                  (1...65535).contains(remotePort), (1...65535).contains(localPort) else { return nil }
+            return "\(remoteBindAddress):\(remotePort):\(localHost):\(localPort)"
+        }
+    }
+
     public struct Config: Sendable {
         public let host: String
         public let user: String
@@ -32,6 +84,8 @@ public final class SSHTunnel: @unchecked Sendable {
         /// tunnel's `-L` flags every time a bot is created.
         public let ephemeralPortBase: Int
         public let ephemeralPortCount: Int
+        /// Default empty: the argument list is unchanged from before.
+        public let reverseForwards: [ReverseForward]
 
         public init(
             host: String,
@@ -41,7 +95,8 @@ public final class SSHTunnel: @unchecked Sendable {
             novncLocalPort: Int = 6080,
             novncRemotePort: Int = 6080,
             ephemeralPortBase: Int = 6100,
-            ephemeralPortCount: Int = 32
+            ephemeralPortCount: Int = 32,
+            reverseForwards: [ReverseForward] = []
         ) {
             self.host = host
             self.user = user
@@ -51,12 +106,21 @@ public final class SSHTunnel: @unchecked Sendable {
             self.novncRemotePort = novncRemotePort
             self.ephemeralPortBase = ephemeralPortBase
             self.ephemeralPortCount = ephemeralPortCount
+            self.reverseForwards = reverseForwards
         }
     }
 
     private var storedConfig: Config
     private var config: Config { lock.lock(); defer { lock.unlock() }; return storedConfig }
     private let onStderr: (String) -> Void
+    /// Explains known failures and rate-limits repeats (the tunnel retries every ~20 s).
+    private let diagnostics = DiagnosticsBox()
+
+    private final class DiagnosticsBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var state = TunnelDiagnostics()
+        func next(_ line: String) -> String? { lock.lock(); defer { lock.unlock() }; return state.lineToShow(line) }
+    }
     private let restartDelay: UInt64 = 5_000_000_000  // 5s, in nanoseconds
 
     private let lock = NSLock()
@@ -124,40 +188,36 @@ public final class SSHTunnel: @unchecked Sendable {
     private func spawn() {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        task.arguments = [
-            "-N",
-            "-o", "BatchMode=yes",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
-            "-o", "StrictHostKeyChecking=accept-new",
-            // Explicit loopback bind: never depend on the ssh client's
-            // GatewayPorts default to keep forwards off the network.
-            "-L", "127.0.0.1:\(config.localManagerPort):\(config.managerSocketPath)",
-            "-L", "127.0.0.1:\(config.novncLocalPort):localhost:\(config.novncRemotePort)",
-        ]
-        for offset in 0..<config.ephemeralPortCount {
-            let port = config.ephemeralPortBase + offset
-            task.arguments?.append(contentsOf: ["-L", "127.0.0.1:\(port):localhost:\(port)"])
-        }
         // A user/host starting with "-" would be parsed as an ssh option;
-        // refuse anything that isn't a plain hostname/IP and username, and
-        // end option parsing before the destination regardless.
+        // refuse anything that isn't a plain hostname/IP and username.
         let plainName = #"^[A-Za-z0-9._][A-Za-z0-9._@-]*$"#
         guard config.user.range(of: plainName, options: .regularExpression) != nil,
               config.host.range(of: plainName, options: .regularExpression) != nil else {
             print("[ssh tunnel] refusing to start: invalid host or user in tunnel config")
             return
         }
-        task.arguments?.append("--")
-        task.arguments?.append("\(config.user)@\(config.host)")
+        guard let arguments = Self.arguments(for: config) else {
+            print("[ssh tunnel] refusing to start: invalid reverse forward in tunnel config")
+            return
+        }
+        // The app authenticates with its own key (see AppSSHIdentity); it never reads ~/.ssh.
+        do { try AppSSHIdentity.shared.ensureKey() } catch {
+            onStderr("\(error.localizedDescription)")
+            scheduleRestart()
+            return
+        }
+        task.arguments = AppSSHIdentity.shared.clientOptions() + arguments
 
         let errPipe = Pipe()
         task.standardError = errPipe
-        errPipe.fileHandleForReading.readabilityHandler = { [onStderr] handle in
+        errPipe.fileHandleForReading.readabilityHandler = { [onStderr, diagnostics] handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            onStderr(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            for raw in text.split(separator: "\n") {
+                let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !line.isEmpty, let show = diagnostics.next(line) else { continue }
+                onStderr(show)
+            }
         }
 
         task.terminationHandler = { [weak self] _ in
@@ -173,6 +233,35 @@ public final class SSHTunnel: @unchecked Sendable {
             onStderr("Failed to launch ssh: \(error.localizedDescription)")
             scheduleRestart()
         }
+    }
+
+    /// The full `ssh` argument list. Pure, for tests. Returns nil if a reverse
+    /// forward is unsafe. With no reverse forwards the output is identical to
+    /// the pre-`-R` argument list.
+    static func arguments(for config: Config) -> [String]? {
+        var args = [
+            "-N",
+            "-o", "BatchMode=yes",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "StrictHostKeyChecking=accept-new",
+            // Explicit loopback bind: never depend on the ssh client's
+            // GatewayPorts default to keep forwards off the network.
+            "-L", "127.0.0.1:\(config.localManagerPort):\(config.managerSocketPath)",
+            "-L", "127.0.0.1:\(config.novncLocalPort):localhost:\(config.novncRemotePort)",
+        ]
+        for offset in 0..<config.ephemeralPortCount {
+            let port = config.ephemeralPortBase + offset
+            args.append(contentsOf: ["-L", "127.0.0.1:\(port):localhost:\(port)"])
+        }
+        for forward in config.reverseForwards {
+            guard let spec = forward.spec else { return nil }
+            args.append(contentsOf: ["-R", spec])
+        }
+        args.append("--")
+        args.append("\(config.user)@\(config.host)")
+        return args
     }
 
     private func handleExit() {

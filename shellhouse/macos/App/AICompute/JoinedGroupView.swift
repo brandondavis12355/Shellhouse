@@ -195,7 +195,7 @@ struct JoinedGroupView: View {
             }
         }
         .background(Theme.bg)
-        .frame(minWidth: 560, minHeight: 500)
+        .frame(minWidth: 400, minHeight: 500)
         .onAppear { session.markRead() }
         .onChange(of: session.messages.last?.seq) { _, _ in session.markRead() }
         .confirmationDialog("Leave “\(session.name)”?", isPresented: $confirmLeave, titleVisibility: .visible) {

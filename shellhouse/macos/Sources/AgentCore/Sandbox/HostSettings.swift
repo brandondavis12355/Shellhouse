@@ -5,8 +5,8 @@ import Foundation
 /// an IPv4 address or a hostname — `linux-host.local` (mDNS) keeps working
 /// across networks without retyping.
 public struct HostSettings: Codable, Equatable, Sendable {
-    public static let defaultHost = "192.0.2.10"
-    public static let defaultUser = "alex-dev"
+    public static let defaultHost = ""   // set on first launch in Settings › Linux host
+    public static let defaultUser = ""
     public static let maxRecents = 6
 
     public var host: String

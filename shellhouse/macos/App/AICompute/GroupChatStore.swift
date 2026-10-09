@@ -65,6 +65,8 @@ struct GroupMessage: Codable, Identifiable {
     var externalUserID: String?
     /// The relay's sequence number for a message that arrived from a friend.
     var relaySeq: Int?
+    /// What the author's own tools ran and returned for this message (bounded). Shared with the other members\n    /// so they judge a report by what was actually seen, not only by its conclusion. Not shown in the transcript UI.
+    var evidence: String?
 }
 
 enum GroupTranscriptStore {

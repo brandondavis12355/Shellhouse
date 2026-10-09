@@ -1,0 +1,37 @@
+# Resolved on macOS arm64 / CPython 3.11 with: uv pip install 'smolagents[openai]==1.26.0'. Runtime deps only.
+# Unhashed. Regenerate on the target platform when the image is first built.
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+charset-normalizer==3.5.2
+click==8.5.0
+filelock==4.0.12
+fsspec==2026.9.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore2==2.13.1
+httpx2==2.13.1
+huggingface-hub==2.1.1
+idna==3.20
+jinja2==3.1.6
+jiter==0.17.0
+markdown-it-py==4.2.0
+markupsafe==3.0.4
+mdurl==0.1.2
+openai==3.24.0
+packaging==26.3
+pillow==12.3.0
+pydantic==2.13.5
+pydantic-core==2.46.5
+pygments==2.21.0
+python-dotenv==1.2.4
+pyyaml==6.0.3
+requests==2.34.2
+rich==15.0.0
+smolagents==1.26.0
+sniffio==1.3.1
+tqdm==4.70.1
+truststore==0.10.4
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+urllib3==2.8.0

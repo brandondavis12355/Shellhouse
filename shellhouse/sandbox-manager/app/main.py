@@ -45,8 +45,9 @@ import logging
 import os
 import re
 import time
-from typing import Optional
+from typing import Literal, Optional
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
@@ -201,6 +202,18 @@ class SandboxIdRequest(BaseModel):
     sandbox_id: str = Field(max_length=128)
 
 
+class EgressPendingRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+
+class EgressDecideRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    # `example.com` or `*.example.com`. The proxy re-validates strictly
+    # (rejects IP literals, userinfo, `*.com`, ...); this is a first gate.
+    host: str = Field(min_length=1, max_length=253, pattern=r"^[^\s/@:\\%\[\]]+$")
+    decision: Literal["allow", "deny"]
+
+
 class DestroyRequest(BaseModel):
     model_config = {"extra": "forbid"}
     sandbox_id: str = Field(max_length=128)
@@ -341,6 +354,65 @@ async def destroy(req: DestroyRequest, x_manager_token: str = Header(default="")
     _registry.pop(req.sandbox_id, None)
     audit("destroy", "ok", sandbox_id=req.sandbox_id, force=req.force)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Egress approvals (opt-in; proxies to the egress-proxy admin interface)
+# ---------------------------------------------------------------------------
+
+EGRESS_ADMIN_URL = os.environ.get("EGRESS_ADMIN_URL", "http://egress-proxy:3129")
+EGRESS_ADMIN_TOKEN = os.environ.get("EGRESS_ADMIN_TOKEN", "")
+# Tests inject an httpx transport here; None = real network.
+_egress_transport: Optional[httpx.AsyncBaseTransport] = None
+
+
+async def _egress_call(method: str, path: str, payload: Optional[dict] = None) -> dict:
+    if not EGRESS_ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="Egress control is not configured")
+    try:
+        async with httpx.AsyncClient(transport=_egress_transport, timeout=5.0) as client:
+            resp = await client.request(
+                method, EGRESS_ADMIN_URL.rstrip("/") + path, json=payload,
+                headers={"Authorization": f"Bearer {EGRESS_ADMIN_TOKEN}"},
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Egress proxy unreachable")
+    if resp.status_code == 400:
+        # The proxy rejected the host as invalid: that is the caller's error.
+        raise HTTPException(status_code=400, detail="Egress proxy rejected the host as invalid")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Egress proxy refused ({resp.status_code})")
+    try:
+        data = resp.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Egress proxy returned invalid data")
+    return data if isinstance(data, dict) else {}
+
+
+@app.post("/v1/egress/pending")
+async def egress_pending(req: EgressPendingRequest, x_manager_token: str = Header(default="")):
+    """Hosts the proxy denied for not being allowlisted, awaiting a decision."""
+    require_auth(x_manager_token)
+    try:
+        data = await _egress_call("GET", "/v1/pending")
+    except HTTPException as exc:
+        audit("egress_pending", "error", status=exc.status_code)
+        raise
+    audit("egress_pending", "ok", count=len(data.get("pending", {})))
+    return data
+
+
+@app.post("/v1/egress/decide")
+async def egress_decide(req: EgressDecideRequest, x_manager_token: str = Header(default="")):
+    """Approve (adds to the allowlist) or deny (mutes) a pending host."""
+    require_auth(x_manager_token)
+    try:
+        data = await _egress_call("POST", f"/v1/{req.decision}", {"host": req.host})
+    except HTTPException as exc:
+        audit("egress_decide", "error", host=req.host, decision=req.decision, status=exc.status_code)
+        raise
+    audit("egress_decide", "ok", host=req.host, decision=req.decision)
+    return data
 
 
 @app.post("/v1/list")

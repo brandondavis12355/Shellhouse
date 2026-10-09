@@ -140,12 +140,16 @@ public actor OllamaBackend: ModelBackend {
         "vl", "vision", "llava", "bakllava", "moondream", "minicpm-v", "gemma3",
     ]
 
+    private let thinking: Bool
+
     public init(
         baseURL: URL = URL(string: "http://127.0.0.1:11434")!,
         defaultModel: String = "qwen2.5:7b-instruct",
         timeout: TimeInterval = 600,
-        visionOverrides: Set<String> = []
+        visionOverrides: Set<String> = [],
+        thinking: Bool = false
     ) {
+        self.thinking = thinking
         self.baseURL = baseURL
         self.defaultModel = defaultModel
         self.visionOverrides = Set(visionOverrides.map { $0.lowercased() })
@@ -190,7 +194,8 @@ public actor OllamaBackend: ModelBackend {
             messages: messages.map(OllamaMessage.init),
             tools: tools.isEmpty ? nil : tools.map(OllamaTool.init),
             stream: false,
-            options: Self.requestOptions(temperature: temperature)
+            options: Self.requestOptions(temperature: temperature),
+            think: thinking
         )
         request.httpBody = try JSONEncoder().encode(body)
 
@@ -222,6 +227,33 @@ public actor OllamaBackend: ModelBackend {
         )
     }
 
+    /// One non-streaming call whose output is constrained to `schema` (Ollama structured outputs). The reply
+    /// text is guaranteed to parse as that JSON shape, which removes the free-text "YES, because…" failure
+    /// class for small models. Returns the raw JSON string.
+    public func chatStructured(
+        messages: [ChatMessage], model: String?, schema: [String: Any], temperature: Double = 0
+    ) async throws -> String {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = OllamaChatRequest(
+            model: model ?? defaultModel,
+            messages: messages.map(OllamaMessage.init),
+            tools: nil,
+            stream: false,
+            options: Self.requestOptions(temperature: temperature),
+            think: false,
+            format: AnyCodable(schema)
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw ModelError.requestFailed(status: (response as? HTTPURLResponse)?.statusCode ?? -1, detail: String(data: data, encoding: .utf8) ?? "")
+        }
+        let decoded = try JSONDecoder().decode(OllamaChatResponse.self, from: data)
+        return decoded.message?.content ?? ""
+    }
+
     public func chatStream(
         messages: [ChatMessage],
         tools: [ToolSchema],
@@ -238,7 +270,8 @@ public actor OllamaBackend: ModelBackend {
             messages: messages.map(OllamaMessage.init),
             tools: tools.isEmpty ? nil : tools.map(OllamaTool.init),
             stream: true,
-            options: Self.requestOptions(temperature: temperature)
+            options: Self.requestOptions(temperature: temperature),
+            think: thinking
         )
         request.httpBody = try JSONEncoder().encode(body)
 
@@ -306,6 +339,11 @@ public actor OllamaBackend: ModelBackend {
         /// `OllamaManager.unloadAllModels()`, called from
         /// `AppDelegate.applicationShouldTerminate`.
         let keep_alive: Int = -1
+        /// Reasoning models (qwen3.x, deepseek-r1…) think for minutes by default, even for "hello".
+        /// Off unless the backend is told otherwise.
+        let think: Bool
+        /// A JSON schema: the server constrains decoding so the reply can only be valid JSON of that shape.
+        var format: AnyCodable? = nil
     }
 
     private struct OllamaMessage: Codable {

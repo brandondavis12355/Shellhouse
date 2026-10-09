@@ -48,6 +48,8 @@ struct DebugLogEntry: Identifiable {
 
     enum Kind: String, Hashable {
         case status, tool, message, error
+        /// What the user (or a friend) typed.
+        case user
     }
 }
 
@@ -251,7 +253,7 @@ struct DebugConsoleView: View {
                 .labelsHidden()
                 Picker("Kind", selection: $kindFilter) {
                     Text("All kinds").tag(DebugLogEntry.Kind?.none)
-                    ForEach([DebugLogEntry.Kind.status, .tool, .message, .error], id: \.self) { kind in
+                    ForEach([DebugLogEntry.Kind.user, .status, .tool, .message, .error], id: \.self) { kind in
                         Text(kind.rawValue.capitalized).tag(DebugLogEntry.Kind?.some(kind))
                     }
                 }
@@ -323,6 +325,7 @@ private struct DebugLogRow: View {
         case .tool: return "tool"
         case .message: return "model"
         case .error: return "error"
+        case .user: return "message"
         }
     }
 

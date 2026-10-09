@@ -1,4 +1,5 @@
 import AgentCore
+import AppKit
 import SwiftUI
 
 /// "Linux host" address settings: the sandbox host's IP or hostname changes
@@ -12,6 +13,7 @@ struct HostSettingsSection: View {
     @State private var userInput = ""
     @State private var result: (text: String, ok: Bool)?
     @State private var isWorking = false
+    @State private var keyNote: String?
 
     private var enteredHost: String? { HostSettings.normalizedHost(from: hostInput) }
     private var enteredUser: String? { HostSettings.normalizedUser(from: userInput) }
@@ -56,6 +58,16 @@ struct HostSettingsSection: View {
                     Text(result.text).font(.system(size: 13))
                 }
             }
+            Divider().padding(.vertical, 2)
+            Text("The app connects with its own SSH key, kept inside the app, so it never needs to read your personal ~/.ssh keys. "
+                + "If the connection says \"Permission denied\", authorize that key on the host once: copy the command below and paste "
+                + "it into Terminal (it uses your normal SSH access).")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+            HStack {
+                Button("Copy authorize command") { copyAuthorizeCommand() }
+                    .disabled(enteredHost == nil || enteredUser == nil)
+                if let keyNote { Text(keyNote).font(.system(size: 12)).foregroundStyle(.secondary) }
+            }
         }
         .padding(16)
             }
@@ -67,6 +79,22 @@ struct HostSettingsSection: View {
     }
 
     // MARK: Actions
+
+    private func copyAuthorizeCommand() {
+        guard let host = enteredHost, let user = enteredUser else { return }
+        do {
+            let key = try AppSSHIdentity.shared.ensureKey()
+            guard let command = AppSSHIdentity.authorizeCommand(publicKey: key, user: user, host: host) else {
+                keyNote = "Couldn't build the command for that host or user."
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(command, forType: .string)
+            keyNote = "Copied. Paste it into Terminal, then press Test."
+        } catch {
+            keyNote = error.localizedDescription
+        }
+    }
 
     private func test() async {
         guard let host = enteredHost, let user = enteredUser else { return }
@@ -90,7 +118,8 @@ struct HostSettingsSection: View {
         hostInput = settings.host
         HostSettingsStore.save(settings)
         AppDelegate.shared?.tunnel.reconfigure(.init(
-            host: settings.host, user: settings.user, managerSocketPath: settings.managerSocketPath
+            host: settings.host, user: settings.user, managerSocketPath: settings.managerSocketPath,
+            reverseForwards: SmolAgentsService.reverseForwards()
         ))
         onChanged()
     }
@@ -119,7 +148,8 @@ struct HostSettingsSection: View {
         await Task.detached {
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            task.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=accept-new",
+            _ = try? AppSSHIdentity.shared.ensureKey()
+            task.arguments = AppSSHIdentity.shared.clientOptions() + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=accept-new",
                               "--", "\(user)@\(host)", "hostname"]
             let out = Pipe(), err = Pipe()
             task.standardOutput = out

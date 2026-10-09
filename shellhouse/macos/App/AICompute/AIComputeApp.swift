@@ -26,7 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         config: .init(
             host: RemoteHost.host,
             user: RemoteHost.user,
-            managerSocketPath: RemoteHost.settings.managerSocketPath
+            managerSocketPath: RemoteHost.settings.managerSocketPath,
+            reverseForwards: SmolAgentsService.reverseForwards()
         ),
         onStderr: { line in
             // ssh's own diagnostics (auth failure, host unreachable, ...) —
@@ -140,5 +141,7 @@ struct AIComputeApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)
+        // The window can't be dragged smaller than its panes' minimum widths (sidebar + chat + debug).
+        .windowResizability(.contentMinSize)
     }
 }

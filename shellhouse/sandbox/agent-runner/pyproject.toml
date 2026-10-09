@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shellhouse-agent"
+version = "0.1.0"
+description = "In-sandbox smolagents runner for Shellhouse (protocol v1)"
+requires-python = ">=3.10"
+# smolagents is Apache-2.0. The [openai] extra pulls the `openai` client (also
+# Apache-2.0) so we can talk to any OpenAI-compatible base_url WITHOUT LiteLLM.
+dependencies = ["smolagents[openai]==1.26.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

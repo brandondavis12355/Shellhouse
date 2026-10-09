@@ -53,6 +53,9 @@ final class HostSettingsTests: XCTestCase {
         let settings = HostSettings(host: "h.lan", user: "u", recentHosts: ["h.lan"], knownHostName: "h")
         let decoded = try JSONDecoder().decode(HostSettings.self, from: JSONEncoder().encode(settings))
         XCTAssertEqual(decoded, settings)
-        XCTAssertTrue(HostSettings().isValid)
+        // No host or user is built in: a fresh install asks for them in Settings › Linux host.
+        XCTAssertEqual(HostSettings().host, "")
+        XCTAssertEqual(HostSettings().user, "")
+        XCTAssertFalse(HostSettings().isValid)
     }
 }

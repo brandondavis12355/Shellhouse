@@ -192,7 +192,7 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .frame(minWidth: 560, minHeight: 500)
+            .frame(minWidth: 400, minHeight: 500)
         }
     }
 
@@ -216,7 +216,8 @@ struct ContentView: View {
                 .frame(minWidth: 270, idealWidth: 320, maxWidth: 380)
             }
             detailView
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The chat column never gets narrower than its header and composer need.
+                .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.bg)
         }
         .background(Theme.bg)
@@ -224,6 +225,7 @@ struct ContentView: View {
         .tint(Theme.accent)
         .buttonStyle(.pill)
         .preferredColorScheme(preferredColorScheme)
+        .task { await ModelTiers.autoConfigure() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             // Debounced saves would otherwise lose the last few hundred ms of messages.
             bots.forEach { $0.flushTranscriptNow() }
@@ -534,7 +536,7 @@ struct ContentView: View {
         // A from-scratch draft has none of these; one seeded from a
         // template (import or "Duplicate…") does, and they've only ever
         // existed in memory up to this point — see `Bot.init(id:template:)`.
-        if !bot.memories.isEmpty { BotMemoryStore.save(id: bot.id, bot.memories) }
+        if !bot.memoryBook.entries.isEmpty { BotMemoryStore.saveBook(id: bot.id, bot.memoryBook) }
         if !bot.routines.isEmpty { RoutineStore.save(id: bot.id, bot.routines) }
         bot.activateRoutines()
         Task {
@@ -820,6 +822,14 @@ struct AppSettingsView: View {
                     )
                 }
 
+                GuardrailSettingsSection()
+
+                AccuracySettingsSection()
+
+                ModelTiersSettingsSection()
+
+                AgentEngineSettingsSection()
+
                 HostSettingsSection(onChanged: onHostChanged)
 
                 SectionLabel("Sandbox manager token")
@@ -1103,6 +1113,9 @@ struct BotSettingsView: View {
             }
         }
         .frame(width: 560, height: 700)
+        // The system color panel is its own floating window; it would otherwise
+        // stay on screen after this sheet is closed (Done, Cancel or Save).
+        .onDisappear { NSColorPanel.shared.close() }
         .alert("Delete this conversation?", isPresented: $showingDeleteConversationConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) { bot.clearConversation() }
@@ -1153,6 +1166,7 @@ private struct BotSettingsTab: View {
     /// membership guard), so it's not offered as an option at all.
     var groupChats: [GroupChatSession] = []
     @State private var newMemoryText = ""
+    @State private var tidyNote: String?
     @State private var newTaskText = ""
 
     @State private var newRoutineInstruction = ""
@@ -1275,21 +1289,47 @@ private struct BotSettingsTab: View {
 
                 ExpandableCard("Memory", summary: "\(bot.memories.count)") {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Instructions this bot has picked up — from its own `remember` tool during a "
-                            + "conversation, or added here by hand. Resent at the start of every future "
-                            + "conversation with it.")
+                        Text("Notes this bot keeps — from its own `remember` tool during a "
+                            + "conversation, or added here by hand. Pinned and high-importance notes go in every prompt; "
+                            + "the rest appear when relevant to a message.")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
 
+                        if !bot.memories.isEmpty {
+                            let model = ModelTiers.embeddingModel
+                            Text(model.isEmpty
+                                 ? "Search is by keywords. Pick an embedding model in Settings › Fast model to also search by meaning."
+                                 : "\(bot.memoriesIndexed) of \(bot.memories.count) notes indexed for meaning (\(model)).")
+                                .font(.system(size: 12)).foregroundStyle(.tertiary)
+                        }
                         if bot.memories.isEmpty {
                             Text("Nothing remembered yet.")
                                 .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
-                        ForEach(Array(bot.memories.enumerated()), id: \.offset) { index, memory in
-                            HStack(alignment: .top) {
-                                Text(memory).font(.system(size: 14)).textSelection(.enabled)
+                        ForEach(Array(bot.memoryBook.entries.enumerated()), id: \.element.id) { index, entry in
+                            HStack(alignment: .top, spacing: 8) {
+                                Button {
+                                    bot.setMemoryPinned(index, !entry.pinned)
+                                } label: {
+                                    Image(systemName: entry.pinned ? "pin.fill" : "pin")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(entry.pinned ? Theme.accent : .secondary)
+                                .help(entry.pinned ? "Pinned: always in this bot's core notes" : "Pin: always include in this bot's core notes")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.text).font(.system(size: 14)).textSelection(.enabled)
+                                    Text("importance \(String(repeating: "●", count: entry.importance))\(String(repeating: "○", count: 5 - entry.importance))"
+                                        + (entry.useCount > 0 ? " · used \(entry.useCount)×" : "") + " · \(entry.source)")
+                                        .font(.system(size: 11)).foregroundStyle(.tertiary)
+                                }
                                 Spacer()
+                                Menu {
+                                    ForEach((1...5).reversed(), id: \.self) { level in
+                                        Button("Importance \(level)") { bot.setMemoryImportance(index, level) }
+                                    }
+                                } label: { Image(systemName: "slider.horizontal.3") }
+                                    .menuStyle(.borderlessButton).fixedSize().help("Set how important this note is")
                                 Button {
                                     bot.removeMemory(at: IndexSet(integer: index))
                                 } label: {
@@ -1306,6 +1346,15 @@ private struct BotSettingsTab: View {
                                 .onSubmit { addMemory() }
                             Button("Add") { addMemory() }
                                 .disabled(newMemoryText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                        HStack {
+                            Button("Tidy up") {
+                                let report = bot.consolidateMemories(force: true)
+                                tidyNote = report.isEmpty ? "Nothing to tidy."
+                                    : "Merged \(report.merged.count) near-duplicate\(report.merged.count == 1 ? "" : "s"), archived \(report.archived.count) stale note\(report.archived.count == 1 ? "" : "s")."
+                            }
+                            .help("Merge near-duplicate notes and archive old, never-used, low-importance ones. Nothing is deleted outright.")
+                            if let tidyNote { Text(tidyNote).font(.system(size: 12)).foregroundStyle(.secondary) }
                         }
                     }
                 }
@@ -1469,6 +1518,16 @@ private struct BotSettingsTab: View {
                 }
                 .padding(.top, 12)
 
+                SectionLabel("Linux VM")
+                Card {
+                    SettingRow(
+                        bot.handle.map { "shellhouse-vm-\($0.id)" } ?? "Not running",
+                        subtitle: "This bot's own private Linux VM. Its files and installed packages are not visible to any other bot."
+                    ) {
+                        Image(systemName: "desktopcomputer").foregroundStyle(bot.sandbox == nil ? Color.secondary : Theme.positive)
+                    }
+                }
+
                 SectionLabel("Model")
                 Card {
                     PickerRow(
@@ -1478,6 +1537,18 @@ private struct BotSettingsTab: View {
                     )
                     .disabled(bot.isBusy)
                     .help(bot.isBusy ? "Locked while this bot is working — change it once it's idle. The conversation carries over." : "")
+
+                    CardDivider()
+
+                    PickerRow(
+                        title: "Engine",
+                        subtitle: bot.engine == .smolagents
+                            ? "Experimental. Runs this bot's own chat with smolagents inside its sandbox (local Ollama models only). Set up under Settings › Agent engine."
+                            : nil,
+                        selection: $bot.engine,
+                        options: AgentEngineKind.allCases.map { ($0, $0.label) }
+                    )
+                    .disabled(bot.isBusy)
 
                     CardDivider()
 
@@ -1629,7 +1700,7 @@ private struct BotSettingsTab: View {
     }
 
     private func addMemory() {
-        bot.addMemory(newMemoryText)
+        bot.addMemory(newMemoryText, source: "user")
         newMemoryText = ""
     }
 
@@ -1724,5 +1795,247 @@ private struct BotSettingsTab: View {
             return
         }
         cancelEditingRoutine()
+    }
+}
+
+/// Guardrail options and a look at the tamper-evident audit log
+/// (docs/GUARDRAILS.md). Destructive and credential actions are always gated;
+/// the only loosening offered here is the opt-in read-only shell fast path.
+struct GuardrailSettingsSection: View {
+    @AppStorage("guardrails.autoAllowReadOnlyShell") private var autoAllowReadOnlyShell = false
+    @AppStorage("guardrails.yolo") private var yolo = false
+    @State private var confirmingYolo = false
+    @State private var entries: [AuditLog.Entry] = []
+    @State private var verification: AuditLog.Verification?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionLabel("Guardrails")
+            Card {
+                ToggleRow(
+                    title: "YOLO mode — don't ask for approval",
+                    subtitle: "Bots run ordinary actions without a prompt: shell commands, file changes, installs. Still blocked or still asking: "
+                        + "credential theft and exfiltration (hard blocks), anything that changes something after a bot has read untrusted "
+                        + "content (web pages, downloads; read-only commands like `gh --version` still run), friends' messages, and other high-risk actions. Everything is still written to the audit log. Off by default.",
+                    isOn: Binding(
+                        get: { yolo },
+                        set: { on in if on { confirmingYolo = true } else { yolo = false } }
+                    )
+                )
+                CardDivider()
+                ToggleRow(
+                    title: "Run provably read-only shell commands without asking",
+                    subtitle: "Things like `ls | grep x` or `git status`, only when nothing untrusted has been read. Anything that writes, deletes, "
+                        + "uses the network, touches credentials or can't be fully analyzed still asks. Off by default.",
+                    isOn: $autoAllowReadOnlyShell
+                )
+                CardDivider()
+                SettingRow(
+                    "Audit log",
+                    subtitle: verification.map { $0.ok ? "Chain intact · \($0.entries) entries" : "TAMPERING DETECTED — \($0.detail)" }
+                        ?? "Every allow, ask, denial and freeze is recorded here (secrets redacted)."
+                ) {
+                    Button("Verify") { Task { verification = await AuditLog.shared.verify() } }
+                        .buttonStyle(.compactPill)
+                }
+                if !entries.isEmpty {
+                    CardDivider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(entries.suffix(8).reversed(), id: \.seq) { entry in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(entry.outcome)
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(color(for: entry.outcome))
+                                    .frame(width: 92, alignment: .leading)
+                                Text("\(entry.tool): \(entry.preview)")
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+        }
+        .task { entries = await AuditLog.shared.entries(limit: 8) }
+        .alert("Turn on YOLO mode?", isPresented: $confirmingYolo) {
+            Button("Turn on", role: .destructive) { yolo = true }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Bots will run commands and change files in their VMs without asking you first. Hard blocks stay in place, and a bot "
+                + "that has read untrusted content will still ask. You can turn this off at any time.")
+        }
+    }
+
+    private func color(for outcome: String) -> Color {
+        switch outcome {
+        case "denied", "tripwire", "run_frozen", "denied_by_user", "approval_expired": return Theme.destructive
+        case "quarantined": return Theme.warning
+        case "approved", "auto", "granted_binary", "granted_blanket", "yolo_auto": return Theme.positive
+        default: return .secondary
+        }
+    }
+}
+
+/// Setup for the experimental smolagents engine (docs/SMOLAGENTS.md): where
+/// sandboxes can reach the Mac's token-gated model proxy.
+struct AgentEngineSettingsSection: View {
+    @State private var config = SmolAgentsService.shared.config
+    @State private var status: String?
+
+    private var addressValid: Bool { SmolAgentsService.Config.isPrivateIPv4(config.sandboxAddress) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionLabel("Agent engine (experimental)")
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Lets a bot run on smolagents inside its own sandbox. The sandbox reaches your Mac's local models only through a "
+                        + "loopback proxy exposed over the existing SSH connection, with a one-run token; no model credentials enter the sandbox. "
+                        + "Needs `GatewayPorts clientspecified` on the Linux host's sshd, and a sandbox image built with the runner.")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                    TextField("Docker bridge address on the Linux host (e.g. 172.18.0.1)", text: $config.sandboxAddress)
+                        .themedField()
+                    if !config.sandboxAddress.isEmpty && !addressValid {
+                        Text("Must be a private IPv4 address (10.x, 172.16–31.x or 192.168.x). Wildcards and public addresses are refused.")
+                            .font(.system(size: 12)).foregroundStyle(Theme.warning)
+                    }
+                    TextField("Address sandboxes use, if different (e.g. egress-proxy in allowlist mode)", text: $config.sandboxVisibleHost)
+                        .themedField()
+                    HStack {
+                        Text("Proxy port").font(.system(size: 14))
+                        TextField("18434", value: $config.proxyPort, format: .number.grouping(.never))
+                            .themedField().frame(width: 100)
+                        Spacer()
+                        Button("Save & reconnect") { save() }.disabled(!config.isConfigured)
+                    }
+                    if let status { Text(status).font(.system(size: 12)).foregroundStyle(.secondary) }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    private func save() {
+        SmolAgentsService.shared.config = config
+        let host = HostSettingsStore.load()
+        AppDelegate.shared?.tunnel.reconfigure(.init(
+            host: host.host, user: host.user, managerSocketPath: host.managerSocketPath,
+            reverseForwards: SmolAgentsService.reverseForwards()
+        ))
+        status = "Saved. The tunnel is reconnecting with the model proxy forward (\(config.sandboxAddress):\(config.proxyPort))."
+    }
+}
+
+
+/// Settings › Fast model: the cheap tier for reply checks, small talk and parallel helpers.
+struct ModelTiersSettingsSection: View {
+    @State private var fastModel = ModelTiers.fastModel
+    @State private var embeddingModel = ModelTiers.embeddingModel
+    @State private var installed: [String] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionLabel("Fast model")
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("A small model for the quick decisions around each reply (does this need an answer, is it small talk) "
+                        + "and for the `ask_helpers` tool that lets a bot run sub-tasks in parallel. Each bot's own model still does "
+                        + "the real work. For parallel helpers, Ollama needs OLLAMA_NUM_PARALLEL of 2 or more and room for a second "
+                        + "model (OLLAMA_MAX_LOADED_MODELS) — see docs/MODEL_TIERS.md.")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                    HStack {
+                        Picker("Fast model", selection: $fastModel) {
+                            Text("None (use each bot's model)").tag("")
+                            ForEach(installed, id: \.self) { Text($0).tag($0) }
+                            if !fastModel.isEmpty && !installed.contains(fastModel) { Text(fastModel).tag(fastModel) }
+                        }
+                        .labelsHidden()
+                        .onChange(of: fastModel) { _, new in ModelTiers.fastModel = new }
+                        if let suggestion = ModelTiers.suggestedFastModel(from: installed), fastModel.isEmpty {
+                            Button("Use \(suggestion)") { fastModel = suggestion }
+                        }
+                    }
+                    HStack {
+                        Text("Memory embeddings").font(.system(size: 13)).foregroundStyle(.secondary)
+                        Picker("Memory embedding model", selection: $embeddingModel) {
+                            Text("None (keywords only)").tag("")
+                            ForEach(ModelTiers.embeddingModels(from: installed), id: \.self) { Text($0).tag($0) }
+                            if !embeddingModel.isEmpty && !installed.contains(embeddingModel) { Text(embeddingModel).tag(embeddingModel) }
+                        }
+                        .labelsHidden()
+                        .onChange(of: embeddingModel) { _, new in ModelTiers.embeddingModel = new }
+                    }
+                    Text("Lets bots find notes by meaning (\"the github tool\" finds the note about gh). Notes are indexed in the background; "
+                        + "the model stays loaded only for a few minutes after use.")
+                        .font(.system(size: 12)).foregroundStyle(.tertiary)
+                }
+                .padding(16)
+            }
+        }
+        .task {
+            installed = ((try? await OllamaBackend().availableModels()) ?? []).sorted()
+            await ModelTiers.autoConfigure()
+            fastModel = ModelTiers.fastModel
+            embeddingModel = ModelTiers.embeddingModel
+            if embeddingModel.isEmpty, let pick = await ModelTiers.resolveEmbeddingModel() { embeddingModel = pick }
+        }
+    }
+}
+
+
+/// Settings › Accuracy: one switch per group of accuracy features. All on by default; the card collapses to a
+/// one-line summary and remembers whether you left it open.
+struct AccuracySettingsSection: View {
+    @AppStorage("settings.accuracyExpanded") private var isExpanded = false
+    @State private var tick = 0   // forces a refresh after a switch changes
+
+    private func binding(_ feature: Reliability.Feature) -> Binding<Bool> {
+        Binding(get: { _ = tick; return Reliability.isOn(feature) }, set: { Reliability.set(feature, $0); tick += 1 })
+    }
+
+    private var summary: String {
+        _ = tick
+        let on = Reliability.Feature.allCases.filter { Reliability.isOn($0) }.count
+        let total = Reliability.Feature.allCases.count
+        return on == total ? "All \(total) on" : "\(on) of \(total) on"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Card {
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) { isExpanded.toggle() }
+                } label: {
+                    SettingRow("Accuracy", subtitle: isExpanded ? nil : "Checks that keep bot answers and actions correct") {
+                        HStack(spacing: 8) {
+                            Text(summary).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(1)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.tertiary)
+                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                if isExpanded {
+                    ForEach(Reliability.Feature.allCases, id: \.self) { feature in
+                        CardDivider()
+                        ToggleRow(title: feature.title, subtitle: feature.detail, isOn: binding(feature))
+                    }
+                    CardDivider()
+                    SettingRow("Recommended settings", subtitle: "Turn every accuracy feature back on.") {
+                        Button("Turn all on") { Reliability.resetAll(); tick += 1 }
+                            .buttonStyle(.compactPill)
+                            .disabled(Reliability.Feature.allCases.allSatisfy { Reliability.isOn($0) })
+                    }
+                }
+            }
+            if isExpanded {
+                SectionFooter("Safety rules, approvals and loop-breaking bug fixes are not affected by these switches.")
+            }
+        }
+        .padding(.top, 12)
     }
 }

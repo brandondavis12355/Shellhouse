@@ -441,10 +441,13 @@ struct ComposerPill<Field: View, Actions: View>: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            // 48pt minimum: a 36pt action button with 6pt above and below is
+            // exactly centered on a single line, and stays pinned to the bottom
+            // edge (still 6pt in) as the field grows to several lines.
             field
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                 .padding(.leading, 18)
-                .padding(.vertical, 12)
             HStack(spacing: 6) { actions }
                 .padding(.trailing, 6)
                 .padding(.bottom, 6)
@@ -512,13 +515,11 @@ struct ChatTopBar<Leading: View, Center: View, Trailing: View>: View {
     }
 
     var body: some View {
-        ZStack {
-            center
-            HStack(spacing: 10) {
-                leading
-                Spacer(minLength: 0)
-                trailing
-            }
+        // Each slot is wrapped so it is exactly ONE child for the layout, however many views the caller passes.
+        TopBarLayout(gap: 12) {
+            HStack(spacing: 10) { leading }.fixedSize()
+            HStack(spacing: 0) { center }
+            HStack(spacing: 10) { trailing }.fixedSize()
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
@@ -526,6 +527,55 @@ struct ChatTopBar<Leading: View, Center: View, Trailing: View>: View {
         // The window's traffic lights float over the top-left corner when the
         // sidebar (which normally sits there) is hidden.
         .padding(.leading, sidebar.isVisible ? 0 : 70)
+    }
+}
+
+/// Leading controls at the left edge, trailing controls at the right edge, and the centered title
+/// in the space between. The title stays truly centered while there is room; when there isn't it
+/// slides and shrinks (its text truncates) so it can never overlap a button.
+struct TopBarLayout: Layout {
+    var gap: CGFloat = 12
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard subviews.count == 3 else { return .zero }
+        let lead = subviews[0].sizeThatFits(.unspecified)
+        let trail = subviews[2].sizeThatFits(.unspecified)
+        let center = subviews[1].sizeThatFits(.unspecified)
+        let width = proposal.width ?? (lead.width + trail.width + center.width + gap * 2)
+        return CGSize(width: width, height: max(lead.height, center.height, trail.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 3 else {
+            // Never pile everything at the origin: lay unexpected children out left to right.
+            var x = bounds.minX
+            for view in subviews {
+                let size = view.sizeThatFits(.unspecified)
+                view.place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(size))
+                x += size.width + gap
+            }
+            return
+        }
+        let lead = subviews[0].sizeThatFits(.unspecified)
+        let trail = subviews[2].sizeThatFits(.unspecified)
+        let leadGap = lead.width > 0 ? gap : 0
+        let trailGap = trail.width > 0 ? gap : 0
+        let available = max(0, bounds.width - lead.width - trail.width - leadGap - trailGap)
+
+        let ideal = subviews[1].sizeThatFits(.unspecified)
+        let centerWidth = min(ideal.width, available)
+        let centerSize = subviews[1].sizeThatFits(ProposedViewSize(width: centerWidth, height: bounds.height))
+
+        // Ideal spot: centered in the whole bar. Clamp it into the free span between the buttons.
+        let freeMin = bounds.minX + lead.width + leadGap
+        let freeMax = bounds.maxX - trail.width - trailGap - centerSize.width
+        let centered = bounds.midX - centerSize.width / 2
+        let x = min(max(centered, freeMin), max(freeMin, freeMax))
+
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: .unspecified)
+        subviews[1].place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading,
+                          proposal: ProposedViewSize(width: centerSize.width, height: bounds.height))
+        subviews[2].place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing, proposal: .unspecified)
     }
 }
 
@@ -545,23 +595,34 @@ struct HeaderPill<Leading: View>: View {
 
     var body: some View {
         Button { action?() } label: {
-            HStack(spacing: 8) {
-                leading
-                Text(title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .lineLimit(1)
+            // Widest form that fits wins: avatars + name, then name alone, then a truncated name.
+            ViewThatFits(in: .horizontal) {
+                capsule(showLeading: true, truncate: false)
+                capsule(showLeading: false, truncate: false)
+                capsule(showLeading: false, truncate: true)
             }
-            .padding(.leading, 8)
-            .padding(.trailing, 18)
-            .padding(.vertical, 6)
-            .frame(minHeight: 40)
-            .background(Capsule().fill(Theme.glass))
-            .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
-            .contentShape(Capsule())
         }
         .buttonStyle(PressableButtonStyle())
         .disabled(action == nil)
         .help(help)
+    }
+
+    private func capsule(showLeading: Bool, truncate: Bool) -> some View {
+        HStack(spacing: 8) {
+            if showLeading { leading }
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: !truncate, vertical: false)
+        }
+        .padding(.leading, showLeading ? 8 : 18)
+        .padding(.trailing, 18)
+        .padding(.vertical, 6)
+        .frame(minHeight: 40)
+        .background(Capsule().fill(Theme.glass))
+        .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+        .contentShape(Capsule())
     }
 }
 
@@ -627,20 +688,20 @@ struct TranscriptNote<Icon: View, Detail: View>: View {
 
 // MARK: - Group avatar cluster
 
-/// The group-chat emblem: members' avatars in a loose 2×2 cluster, with the
-/// overflow as a gray "+N" in the last cell. (Up to 4 shown outright; beyond
-/// that, 3 avatars and "+N" for the rest.)
+/// The group-chat emblem: members' avatars in a loose 2×2 cluster. Up to four are drawn;
+/// with more, a small "+1" / "+2" badge sits on the bottom-right corner. It rebuilds
+/// itself whenever the member list (or a member's look) changes.
 struct AvatarCluster: View {
     let members: [Bot]
     var size: CGFloat = 96
 
-    private var shown: [Bot] { members.count > 4 ? Array(members.prefix(3)) : members }
-    private var overflow: Int { members.count > 4 ? members.count - 3 : 0 }
+    static let maxShown = 4
+    private var shown: [Bot] { Array(members.prefix(Self.maxShown)) }
+    private var overflow: Int { max(0, members.count - Self.maxShown) }
 
-    /// Cell centers as fractions of `size`, per how many things are drawn.
+    /// Cell centers as fractions of `size`, for how many avatars are drawn.
     private var slots: [CGPoint] {
-        let count = shown.count + (overflow > 0 ? 1 : 0)
-        switch count {
+        switch shown.count {
         case 0: return []
         case 1: return [CGPoint(x: 0.5, y: 0.5)]
         case 2: return [CGPoint(x: 0.28, y: 0.5), CGPoint(x: 0.72, y: 0.5)]
@@ -650,11 +711,16 @@ struct AvatarCluster: View {
     }
 
     private var cell: CGFloat {
-        switch shown.count + (overflow > 0 ? 1 : 0) {
+        switch shown.count {
         case 1: return size * 0.8
         case 2: return size * 0.58
         default: return size * 0.56
         }
+    }
+
+    /// Changes whenever someone joins/leaves, the order changes, or a member's avatar/color is edited.
+    private var signature: String {
+        shown.map { "\($0.id):\($0.avatarStyle):\($0.colorHex)" }.joined(separator: ",") + "+\(overflow)"
     }
 
     var body: some View {
@@ -665,16 +731,22 @@ struct AvatarCluster: View {
                         .position(x: slots[index].x * size, y: slots[index].y * size)
                 }
             }
-            if overflow > 0, shown.count < slots.count {
+            if overflow > 0 {
                 Text("+\(overflow)")
-                    .font(.system(size: cell * 0.55, weight: .bold))
-                    .foregroundStyle(.tertiary)
-                    .position(x: slots[shown.count].x * size, y: slots[shown.count].y * size)
+                    .font(.system(size: max(11, size * 0.14), weight: .bold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, size * 0.07)
+                    .padding(.vertical, size * 0.03)
+                    .background(Capsule().fill(Theme.chip))
+                    .overlay(Capsule().strokeBorder(Theme.bg, lineWidth: 2))
+                    .position(x: size * 0.86, y: size * 0.9)
             }
         }
         .frame(width: size, height: size)
+        .id(signature)
     }
 }
+
 
 // MARK: - Sheets
 

@@ -28,6 +28,8 @@ struct GroupChatDetailView: View {
     /// shown, is index 0) — Up/Down move it, Return commits it, reset
     /// to 0 on every keystroke. See `BotDetailView.highlightedSuggestionIndex`.
     @State private var highlightedSuggestionIndex = 0
+    /// The goal lives behind a top-bar button instead of a banner over the chat.
+    @State private var showGoal = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,7 +37,7 @@ struct GroupChatDetailView: View {
                 SidebarToggleButton()
             } center: {
                 HeaderPill(title: group.name, help: "Group settings — rename, members, delete.", action: onOpenSettings) {
-                    MemberAvatarStack(members: resolvedMembers, size: 28, maxShown: 3)
+                    MemberAvatarStack(members: resolvedMembers, size: 28)
                 }
             } trailing: {
                 if group.isShared {
@@ -43,16 +45,24 @@ struct GroupChatDetailView: View {
                         .foregroundStyle(.teal)
                         .help("Shared with friends")
                 }
+                if let goal = group.goal {
+                    GlassCircleButton(systemName: "target", help: "Goal · \(goal.doneCount)/\(goal.steps.count) steps") { showGoal.toggle() }
+                        .overlay(alignment: .topTrailing) {
+                            if goal.isLive {
+                                Circle().fill(Theme.accent).frame(width: 9, height: 9).offset(x: 2, y: -2)
+                            }
+                        }
+                        .popover(isPresented: $showGoal, arrowEdge: .bottom) {
+                            GroupGoalCard(
+                                group: group,
+                                ownerName: resolvedMembers.first(where: { $0.id == goal.ownerBotID })?.name ?? "owner",
+                                inPopover: true
+                            )
+                            .padding(14)
+                            .frame(width: 400)
+                        }
+                }
                 GlassCircleButton(systemName: "info", help: "Group settings — rename, members, delete.", action: onOpenSettings)
-            }
-
-            if group.goal != nil {
-                GroupGoalCard(
-                    group: group,
-                    ownerName: resolvedMembers.first(where: { $0.id == group.goal?.ownerBotID })?.name ?? "owner"
-                )
-                .padding(.horizontal, 20)
-                .padding(.bottom, 8)
             }
 
             GroupChatTranscriptView(
@@ -192,7 +202,7 @@ struct GroupChatDetailView: View {
         // matching comment: this fought the debug console's own
         // `HSplitView` divider, which can't shrink this side below
         // whatever it demands here.
-        .frame(minWidth: 480, minHeight: 450)
+        .frame(minWidth: 400, minHeight: 450)
     }
 
     /// Members matching whatever's typed after the most recent unfinished
@@ -311,6 +321,7 @@ struct GroupChatSettingsView: View {
     @State private var stallLimit = GroupGoal.defaultStallLimit
     @State private var confirmTimeoutMinutes = 60
     @State private var showingDeleteConfirm = false
+    @State private var showingClearConfirm = false
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -347,7 +358,11 @@ struct GroupChatSettingsView: View {
                         let isMember = memberIDs.contains(bot.id)
                         HStack(spacing: 12) {
                             BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 30)
-                            Text(bot.name).font(.system(size: 17))
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(bot.name).font(.system(size: 17))
+                                Text(bot.handle.map { "Own Linux VM · \($0.id)" } ?? "Own Linux VM · not running")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
                             Spacer()
                             Toggle("", isOn: Binding(
                                 get: { isMember },
@@ -396,6 +411,16 @@ struct GroupChatSettingsView: View {
                 SectionFooter("Sharing takes effect immediately, without Save.")
 
                 Card {
+                    Button { showingClearConfirm = true } label: {
+                        SettingRow(
+                            "Clear conversation…", subtitle: group.isBusy ? "Wait for the members to finish first." : nil,
+                            titleColor: Theme.destructive
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(group.isBusy || group.displayMessages.isEmpty)
+                    .opacity(group.isBusy || group.displayMessages.isEmpty ? 0.45 : 1)
+                    CardDivider()
                     Button { showingDeleteConfirm = true } label: {
                         SettingRow("Delete group…", titleColor: Theme.destructive)
                     }
@@ -415,6 +440,13 @@ struct GroupChatSettingsView: View {
         })
         .frame(width: 520, height: 700)
         .onAppear(perform: loadDraft)
+        .alert("Clear this conversation?", isPresented: $showingClearConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) { group.clearConversation() }
+        } message: {
+            Text("Permanently deletes this group's messages on this Mac. Members, settings and any goal are kept."
+                + (group.isShared ? " Friends keep the copy they already have: messages already shared stay on the relay." : ""))
+        }
         .alert("Delete \(group.name)?", isPresented: $showingDeleteConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {

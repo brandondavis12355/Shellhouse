@@ -47,7 +47,10 @@ public actor RunShellPermissions {
 
     /// `botID` is the bot's sandbox/handle id (what `AgentRuntime` calls `sandboxID`).
     public func isBlanketAllowed(botID: String) -> Bool {
-        blanketEveryBot || blanketSessionBots.contains(botID) || blanketPersistentBots.contains(botID)
+        // The "every bot, always" grant is retired (docs/GUARDRAILS.md, L3): a
+        // single click must not switch off the approval for the one tool that
+        // can do anything. The stored flag is ignored; per-bot grants remain.
+        blanketSessionBots.contains(botID) || blanketPersistentBots.contains(botID)
     }
 
     public func allowAll(botID: String, scope: BlanketScope) {

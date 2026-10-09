@@ -1,0 +1,6 @@
+{
+  "_comment": "Top-level keys of the runner's config.json (protocol v1). The runner's validator and the Swift app's SmolAgentsEngine.makeConfig are both tested against this file so they cannot drift apart.",
+  "required": ["protocol", "run_id", "model", "system_prompt", "history", "task", "max_steps", "planning_interval", "tainted", "workspace", "policy_free", "bridge_tools", "in_sandbox_tools", "env"],
+  "optional": ["rpc_timeout_s", "vision"],
+  "model_keys": ["base_url", "api_key", "model_id", "temperature"]
+}

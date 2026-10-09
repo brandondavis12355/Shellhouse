@@ -7,6 +7,8 @@ import AgentCore
 struct GroupGoalCard: View {
     @Bindable var group: GroupChatSession
     let ownerName: String
+    /// Shown inside the top-bar popover: always expanded, no collapse chevron, no extra card chrome.
+    var inPopover = false
     @State private var expanded = true
     @State private var newStepText = ""
     @State private var feedback = ""
@@ -22,9 +24,13 @@ struct GroupGoalCard: View {
                     footer(goal)
                 }
             }
-            .padding(14)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(statusColor(goal.status).opacity(0.35), lineWidth: 1))
+            .padding(inPopover ? 0 : 14)
+            .background(inPopover ? Color.clear : Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+            .overlay {
+                if !inPopover {
+                    RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(statusColor(goal.status).opacity(0.35), lineWidth: 1)
+                }
+            }
         }
     }
 
@@ -37,8 +43,10 @@ struct GroupGoalCard: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
-            Button { expanded.toggle() } label: { Image(systemName: expanded ? "chevron.up" : "chevron.down") }
-                .buttonStyle(.plain)
+            if !inPopover {
+                Button { expanded.toggle() } label: { Image(systemName: expanded ? "chevron.up" : "chevron.down") }
+                    .buttonStyle(.plain)
+            }
         }
     }
 
@@ -53,8 +61,12 @@ struct GroupGoalCard: View {
                         Text("\(index + 1). \(step.text)")
                             .font(.caption)
                             .strikethrough(step.status == .done)
-                        if let assignee = step.assigneeName, step.status != .done {
+                        if let assignee = step.assigneeName, step.status != .done, step.status != .review {
                             Text(assignee).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if step.status == .review {
+                            Text("submitted by \(step.assigneeName ?? "a member") — waiting for \(ownerName) to validate")
+                                .font(.caption2).foregroundStyle(Theme.warning)
                         }
                         if step.status == .done, !step.verified {
                             Text("done, but unverified (no tool run)").font(.caption2).foregroundStyle(.orange)
@@ -170,6 +182,7 @@ struct GroupGoalCard: View {
         case .inProgress: return "circle.dotted"
         case .blocked: return "exclamationmark.triangle.fill"
         case .open: return "circle"
+        case .review: return "questionmark.circle"
         }
     }
 }

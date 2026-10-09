@@ -82,6 +82,22 @@ RUN rm -rf /home/box/.config/gh \
 COPY workspace/ /opt/seed-workspace/
 RUN chmod -R a+rX /opt/seed-workspace
 
+# --- Shellhouse agent runner (smolagents) ----------------------------------------
+# UNBUILT / UNTESTED in an image: written on a macOS dev box without Docker.
+# New third-party dependency: smolagents (Apache-2.0) + the `openai` client and
+# transitive packages, pinned in sandbox/agent-runner/requirements.lock.
+# Runs in its own venv so it cannot disturb the system pip packages above.
+# `python3 -m shellhouse_agent ...` works from system python3 via PYTHONPATH; the `run`
+# subcommand re-execs into /opt/shellhouse-agent/bin/python (where smolagents lives).
+COPY sandbox/agent-runner/requirements.lock /opt/shellhouse-agent/requirements.lock
+COPY sandbox/agent-runner/src/shellhouse_agent/ /opt/shellhouse-agent/src/shellhouse_agent/
+RUN python3 -m venv /opt/shellhouse-agent \
+    && /opt/shellhouse-agent/bin/pip install --no-cache-dir -r /opt/shellhouse-agent/requirements.lock \
+    && chmod -R a+rX /opt/shellhouse-agent \
+    && printf '#!/bin/sh\nexec /opt/shellhouse-agent/bin/python -m shellhouse_agent "$@"\n' > /usr/local/bin/shellhouse-agent \
+    && chmod 0755 /usr/local/bin/shellhouse-agent
+ENV PYTHONPATH=/opt/shellhouse-agent/src
+
 # 5900 = raw VNC, 6080 = noVNC over HTTP/WebSocket (what the UI embeds)
 EXPOSE 5900 6080
 

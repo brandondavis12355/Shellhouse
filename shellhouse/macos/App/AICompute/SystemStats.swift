@@ -144,7 +144,7 @@ enum RemoteMachineStats {
         echo ---
         df -BG /
         """
-        let output = await runProcess("/usr/bin/ssh", [
+        let output = await runProcess("/usr/bin/ssh", AppSSHIdentity.shared.clientOptions() + [
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=accept-new",

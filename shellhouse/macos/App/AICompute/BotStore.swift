@@ -38,6 +38,8 @@ struct BotConfig: Codable {
     /// `bots.json` with neither key must still load.
     var modelProvider: ModelProvider?
     var remoteBaseURLText: String?
+    /// `nil` decodes as `.builtin` — added after configs were already saved.
+    var engine: AgentEngineKind?
 }
 
 /// A bot's settings plus memory and routines, portable across export/
@@ -261,9 +263,39 @@ enum BotMemoryStore {
         dir("memories").appendingPathComponent("\(id).json")
     }
 
-    static func load(id: String) -> [String] {
-        guard let data = try? Data(contentsOf: fileURL(for: id)) else { return [] }
-        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    /// Plain texts (either file format).
+    static func load(id: String) -> [String] { loadBook(id: id).texts }
+
+    /// The bot's memory book. Reads the managed format, or migrates the old plain list of strings.
+    static func loadBook(id: String) -> MemoryBook {
+        guard let data = try? Data(contentsOf: fileURL(for: id)) else { return MemoryBook() }
+        if let book = try? JSONDecoder().decode(MemoryBook.self, from: data) { return book }
+        if let legacy = try? JSONDecoder().decode([String].self, from: data) { return MemoryBook(legacy: legacy) }
+        return MemoryBook()
+    }
+
+    @discardableResult
+    static func saveBook(id: String, _ book: MemoryBook) -> Bool {
+        guard let data = try? JSONEncoder().encode(book) else {
+            print("[BotMemoryStore] failed to encode memory book for bot \(id)")
+            return false
+        }
+        do {
+            try data.write(to: fileURL(for: id), options: .atomic)
+            return true
+        } catch {
+            print("[BotMemoryStore] failed to write memory book for bot \(id): \(error)")
+            return false
+        }
+    }
+
+    /// Notes consolidation or capacity moved out of the active book. Kept, never silently deleted.
+    static func archive(id: String, _ entries: [MemoryEntry]) {
+        guard !entries.isEmpty else { return }
+        let url = dir("memories-archive").appendingPathComponent("\(id).json")
+        var all = ((try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([MemoryEntry].self, from: $0) }) ?? []
+        all.append(contentsOf: entries)
+        if let data = try? JSONEncoder().encode(all.suffix(1_000)) { try? data.write(to: url, options: .atomic) }
     }
 
     /// Returns whether the write actually landed — same reasoning as
@@ -274,6 +306,11 @@ enum BotMemoryStore {
     /// time this bot's memories are loaded from disk.
     @discardableResult
     static func save(id: String, _ memories: [String]) -> Bool {
+        saveBook(id: id, MemoryBook(legacy: memories))
+    }
+
+    @discardableResult
+    private static func saveLegacy(id: String, _ memories: [String]) -> Bool {
         guard let data = try? JSONEncoder().encode(memories) else {
             print("[BotMemoryStore] failed to encode memories for bot \(id)")
             return false
@@ -305,6 +342,9 @@ struct BotTask: Codable, Identifiable, Equatable {
     var id: String = UUID().uuidString
     var text: String
     var createdAt: Date = Date()
+    /// Set for tasks the app keeps in step with a group goal ("goal:<id>/step:<id>"), so they are
+    /// updated and cleared automatically as the step moves, never by the model having to remember.
+    var key: String?
 }
 
 /// Persists one bot's active one-shot tasks — its own file, same

@@ -33,7 +33,31 @@ struct SidebarView: View {
     let friendRequestCount: Int
     let actions: SidebarActions
 
-    @State private var collapsed: Set<String> = []
+    /// Section collapse state survives relaunch (stored as JSON in user defaults).
+    @AppStorage("sidebarCollapsedSections") private var collapsedRaw = "[]"
+    @State private var pins = SidebarPins.load()
+    private static let pinnedKey = "§pinned"
+    private static let groupsKey = "§groups"
+
+    private var collapsed: Set<String> {
+        get { Set((try? JSONDecoder().decode([String].self, from: Data(collapsedRaw.utf8))) ?? []) }
+        nonmutating set {
+            if let data = try? JSONEncoder().encode(newValue.sorted()), let text = String(data: data, encoding: .utf8) { collapsedRaw = text }
+        }
+    }
+
+    private func toggleCollapsed(_ key: String) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            var current = collapsed
+            if current.contains(key) { current.remove(key) } else { current.insert(key) }
+            collapsed = current
+        }
+    }
+
+    private func togglePin(_ itemID: String) {
+        pins.toggle(itemID)
+        pins.save()
+    }
     @State private var isSearching = false
     @State private var query = ""
     @FocusState private var searchFocused: Bool
@@ -57,7 +81,8 @@ struct SidebarView: View {
             if isSearching { searchField }
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 4) {
-                    groupTiles
+                    pinnedSection
+                    groupsSection
                     ForEach(groupedBots, id: \.group) { section in
                         botSection(section.group, section.bots)
                     }
@@ -119,39 +144,127 @@ struct SidebarView: View {
         .padding(.bottom, 8)
     }
 
-    // MARK: Group chats
+    // MARK: Section header (shared)
+
+    private func sectionHeader(_ title: String, key: String, count: Int? = nil, isCollapsed: Bool) -> some View {
+        Button { toggleCollapsed(key) } label: {
+            HStack(spacing: 6) {
+                Text(title).font(.system(size: 17)).foregroundStyle(.secondary)
+                if let count {
+                    Text("\(count)").font(.system(size: 12, weight: .medium)).foregroundStyle(.tertiary)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Pinned
+
+    private var pinnedBots: [Bot] {
+        let byID = Dictionary(uniqueKeysWithValues: allBots.map { ("bot:\($0.id)", $0) })
+        return pins.ids.compactMap { byID[$0] }.filter(matches)
+    }
 
     @ViewBuilder
-    private var groupTiles: some View {
-        let visible = groupChats.filter(matches)
-        if !visible.isEmpty {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 6) {
-                    tiles(visible)
-                }
-                .frame(maxWidth: .infinity)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 6) {
-                        tiles(visible)
+    private var pinnedSection: some View {
+        let byBot = Dictionary(uniqueKeysWithValues: allBots.map { (SidebarPins.botID($0.id), $0) })
+        let byGroup = Dictionary(uniqueKeysWithValues: groupChats.map { (SidebarPins.groupID($0.id), $0) })
+        let items: [String] = pins.ids.filter { id in
+            if let bot = byBot[id] { return matches(bot) }
+            if let group = byGroup[id] { return matches(group) }
+            return false
+        }
+        if !items.isEmpty {
+            let isCollapsed = collapsed.contains(Self.pinnedKey) && trimmedQuery.isEmpty
+            sectionHeader("Pinned", key: Self.pinnedKey, count: items.count, isCollapsed: isCollapsed)
+            if !isCollapsed {
+                ForEach(items, id: \.self) { id in
+                    Group {
+                        if let bot = byBot[id] {
+                            BotSidebarRow(bot: bot, isSelected: selectedItemID == id, isPinned: true)
+                                .onTapGesture { selectedItemID = id }
+                                .contextMenu { botMenu(bot) }
+                        } else if let group = byGroup[id] {
+                            GroupSidebarRow(group: group, allBots: allBots, isSelected: selectedItemID == id)
+                                .onTapGesture { selectedItemID = id }
+                                .contextMenu { groupMenu(group) }
+                        }
+                    }
+                    .draggable(id)
+                    .dropDestination(for: String.self) { dropped, _ in
+                        guard let dragged = dropped.first, pins.contains(dragged), dragged != id else { return false }
+                        pins.move(dragged, before: id)
+                        pins.save()
+                        return true
                     }
                 }
             }
-            .padding(.vertical, 4)
-            .padding(.bottom, 8)
         }
     }
 
+    @ViewBuilder
+    private func botMenu(_ bot: Bot) -> some View {
+        Button(pins.contains(SidebarPins.botID(bot.id)) ? "Unpin from top" : "Pin to top") { togglePin(SidebarPins.botID(bot.id)) }
+        Divider()
+        Button("Rename…") { actions.rename(bot) }
+        Button("Bot settings…") { actions.botSettings(bot) }
+        Divider()
+        Button("Duplicate…") { actions.duplicate(bot) }
+        Button("Export as template…") { actions.exportTemplate(bot) }
+        Divider()
+        Button("Delete…", role: .destructive) { actions.delete(bot) }
+    }
+
+    @ViewBuilder
+    private func groupMenu(_ group: GroupChatSession) -> some View {
+        Button(pins.contains(SidebarPins.groupID(group.id)) ? "Unpin from top" : "Pin to top") { togglePin(SidebarPins.groupID(group.id)) }
+        Divider()
+        Button("Group settings…") { actions.groupSettings(group) }
+        Divider()
+        Button("Delete…", role: .destructive) { actions.deleteGroup(group) }
+    }
+
+    // MARK: Group chats
+
+    @ViewBuilder
+    private var groupsSection: some View {
+        let visible = groupChats.filter(matches)
+        if !visible.isEmpty {
+            let isCollapsed = collapsed.contains(Self.groupsKey) && trimmedQuery.isEmpty
+            sectionHeader("Group Chats", key: Self.groupsKey, count: visible.count, isCollapsed: isCollapsed)
+            if !isCollapsed {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 6) {
+                        tiles(visible)
+                    }
+                    .frame(maxWidth: .infinity)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 6) {
+                            tiles(visible)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+                .padding(.bottom, 8)
+            }
+        }
+    }
 
     @ViewBuilder
     private func tiles(_ visible: [GroupChatSession]) -> some View {
         ForEach(visible) { group in
             GroupTile(group: group, allBots: allBots, isSelected: selectedItemID == "group:\(group.id)")
                 .onTapGesture { selectedItemID = "group:\(group.id)" }
-                .contextMenu {
-                    Button("Group settings…") { actions.groupSettings(group) }
-                    Divider()
-                    Button("Delete…", role: .destructive) { actions.deleteGroup(group) }
-                }
+                .contextMenu { groupMenu(group) }
                 .draggable(group.id)
                 .dropDestination(for: String.self) { items, _ in
                     guard let dragged = items.first, dragged != group.id else { return false }
@@ -168,39 +281,13 @@ struct SidebarView: View {
         let visible = bots.filter(matches)
         if !visible.isEmpty {
             let isCollapsed = collapsed.contains(title) && trimmedQuery.isEmpty
-            Button {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    if collapsed.contains(title) { collapsed.remove(title) } else { collapsed.insert(title) }
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(title).font(.system(size: 17)).foregroundStyle(.secondary)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(isCollapsed ? -90 : 0))
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 8)
-                .padding(.top, 14)
-                .padding(.bottom, 6)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            sectionHeader(title, key: title, isCollapsed: isCollapsed)
 
             if !isCollapsed {
                 ForEach(visible) { bot in
-                    BotSidebarRow(bot: bot, isSelected: selectedItemID == "bot:\(bot.id)")
+                    BotSidebarRow(bot: bot, isSelected: selectedItemID == "bot:\(bot.id)", isPinned: pins.contains(SidebarPins.botID(bot.id)))
                         .onTapGesture { selectedItemID = "bot:\(bot.id)" }
-                        .contextMenu {
-                            Button("Rename…") { actions.rename(bot) }
-                            Button("Bot settings…") { actions.botSettings(bot) }
-                            Divider()
-                            Button("Duplicate…") { actions.duplicate(bot) }
-                            Button("Export as template…") { actions.exportTemplate(bot) }
-                            Divider()
-                            Button("Delete…", role: .destructive) { actions.delete(bot) }
-                        }
+                        .contextMenu { botMenu(bot) }
                         .draggable(bot.id)
                         .dropDestination(for: String.self) { items, _ in
                             guard let dragged = items.first, dragged != bot.id else { return false }
@@ -259,9 +346,52 @@ private struct GroupTile: View {
     }
 }
 
+/// A group chat as a list row (used in the Pinned section): emblem, name, last message.
+private struct GroupSidebarRow: View {
+    let group: GroupChatSession
+    let allBots: [Bot]
+    let isSelected: Bool
+    @State private var isHovering = false
+
+    private var members: [Bot] {
+        let byID = Dictionary(uniqueKeysWithValues: allBots.map { ($0.id, $0) })
+        return group.memberBotIDs.compactMap { byID[$0] }
+    }
+
+    private var preview: String? {
+        group.displayMessages.last { $0.isSystem != true && !$0.text.isEmpty }
+            .map { "\($0.speakerName): \($0.text)".replacingOccurrences(of: "\n", with: " ") }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AvatarCluster(members: members, size: 48)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(group.name).font(.system(size: 17, weight: .medium)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
+                if let preview {
+                    Text(preview).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(
+            isSelected ? Theme.selection : (isHovering ? Theme.selection.opacity(0.5) : .clear),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+    }
+}
+
 private struct BotSidebarRow: View {
     let bot: Bot
     let isSelected: Bool
+    var isPinned = false
     @State private var isHovering = false
 
     private var preview: String? {
@@ -284,6 +414,7 @@ private struct BotSidebarRow: View {
                         .lineLimit(1)
                     if !bot.tagline.isEmpty { RolePill(text: bot.tagline) }
                     Spacer(minLength: 4)
+                    if isPinned { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(.tertiary) }
                     if let stamp {
                         Text(stamp).font(.system(size: 14)).foregroundStyle(.secondary).lineLimit(1)
                     }

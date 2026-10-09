@@ -1,0 +1,10 @@
+# One host per line. `*.suffix` matches subdomains at any depth but NOT the apex.
+# Hot-reloaded when the file changes. Missing file = deny everything.
+pypi.org
+files.pythonhosted.org
+*.pythonhosted.org
+registry.npmjs.org
+github.com
+*.githubusercontent.com
+deb.debian.org
+security.debian.org

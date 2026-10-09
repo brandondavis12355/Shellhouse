@@ -103,6 +103,9 @@ public enum Policy: Sendable {
         // Adds a line to this bot's own 1:1 chat — no effect on anyone else.
         "update_user": .allow,
 
+        // Tool-less parallel sub-prompts to the local fast model — no side effects.
+        "ask_helpers": .allow,
+
         // Group goal checklist — state inside this app only.
         "get_goal": .allow,
         "propose_goal": .allow,
@@ -174,6 +177,16 @@ public struct Approval: Sendable, Codable, Identifiable {
     /// this call needs an explicit yes every time, and no standing grant
     /// ("always allow", "allow all shell") applies or can be created from it.
     public let untrusted: Bool
+    /// Guardrail context shown to the human: what kind of action this is and
+    /// why it needs a decision (docs/GUARDRAILS.md).
+    public let effect: String?
+    public let reasons: [String]
+    /// A strict approval is never covered by a standing grant and expires.
+    public let strict: Bool
+    /// Short digest of the exact arguments the human is deciding on.
+    public let argsDigest: String?
+    public let sources: [String]
+    public let expiresAt: Date?
 
     public init(
         id: String = "apr_\(UUID().uuidString.prefix(12))",
@@ -184,7 +197,13 @@ public struct Approval: Sendable, Codable, Identifiable {
         createdAt: Date = Date(),
         decidedAt: Date? = nil,
         alwaysAllowCandidate: String? = nil,
-        untrusted: Bool = false
+        untrusted: Bool = false,
+        effect: String? = nil,
+        reasons: [String] = [],
+        strict: Bool = false,
+        argsDigest: String? = nil,
+        sources: [String] = [],
+        expiresAt: Date? = nil
     ) {
         self.id = id
         self.taskID = taskID
@@ -195,5 +214,11 @@ public struct Approval: Sendable, Codable, Identifiable {
         self.decidedAt = decidedAt
         self.alwaysAllowCandidate = alwaysAllowCandidate
         self.untrusted = untrusted
+        self.effect = effect
+        self.reasons = reasons
+        self.strict = strict
+        self.argsDigest = argsDigest
+        self.sources = sources
+        self.expiresAt = expiresAt
     }
 }

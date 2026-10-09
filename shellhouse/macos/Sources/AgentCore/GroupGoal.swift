@@ -11,6 +11,8 @@ public struct GroupGoal: Codable, Sendable, Equatable {
 
     public enum StepStatus: String, Codable, Sendable {
         case open, inProgress, done, blocked
+        /// A non-owner says it's finished; only the goal owner can validate it into `done`.
+        case review
     }
 
     public struct Step: Codable, Sendable, Equatable, Identifiable {
@@ -39,6 +41,8 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         case progress
         /// Recorded, but not counted as progress (no evidence-producing tool call this turn, or not a completion).
         case recorded
+        /// A non-owner's "done": held for the owner to validate. Never counts as progress.
+        case submitted
         case rejected(String)
     }
 
@@ -72,7 +76,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
 
     public var isLive: Bool { status == .active || status == .awaitingConfirmation || status == .paused }
     public var doneCount: Int { steps.filter { $0.status == .done }.count }
-    public var openSteps: [Step] { steps.filter { $0.status == .open || $0.status == .inProgress || $0.status == .blocked } }
+    public var openSteps: [Step] { steps.filter { $0.status == .open || $0.status == .inProgress || $0.status == .blocked || $0.status == .review } }
 
     @discardableResult
     public mutating func addStep(_ text: String) -> Step? {
@@ -94,11 +98,21 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     }
 
     public mutating func updateStep(
-        id stepID: String, status newStatus: StepStatus, evidence: String?, assigneeName: String?, turnHadToolCalls: Bool
+        id stepID: String, status newStatus: StepStatus, evidence: String?, assigneeName: String?, turnHadToolCalls: Bool,
+        byOwner: Bool = true
     ) -> StepUpdateResult {
         guard status == .active else { return .rejected("The goal is \(status.rawValue); steps can't change now.") }
         guard let index = steps.firstIndex(where: { $0.id == stepID }) else {
             return .rejected("No step with id '\(stepID)'. Call get_goal for the current ids.")
+        }
+        let current = steps[index].status
+        if newStatus == .review {
+            return .rejected("'review' is set by the app when a member submits a step; use 'done' with evidence.")
+        }
+        if !byOwner {
+            // Members work steps; only the owner decides they're finished.
+            if current == .done { return .rejected("This step is already validated as done by the goal owner.") }
+            if current == .review { return .rejected("This step is waiting for the goal owner's validation; only the owner can change it now.") }
         }
         if let assigneeName, !assigneeName.isEmpty { steps[index].assigneeName = assigneeName }
         if newStatus != .done {
@@ -109,6 +123,15 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         let trimmed = (evidence ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= Self.minEvidenceLength else {
             return .rejected("Marking a step done needs evidence (at least \(Self.minEvidenceLength) characters): what you ran or checked and what it showed.")
+        }
+        if !byOwner {
+            steps[index].status = .review
+            steps[index].evidence = trimmed
+            steps[index].verified = false
+            return .submitted
+        }
+        if current == .review, !turnHadToolCalls {
+            return .rejected("Validate before accepting: run your own check this turn (re-run the command, read the file, test the result) and then mark it done with what YOU saw.")
         }
         let alreadyDone = steps[index].status == .done
         steps[index].status = .done
@@ -193,6 +216,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             case .inProgress: mark = "[~]"
             case .blocked: mark = "[!]"
             case .open: mark = "[ ]"
+            case .review: mark = "[?]"
             }
             let assignee = step.assigneeName.map { " (\($0))" } ?? ""
             lines.append("  \(index + 1). \(mark) \(step.text)\(assignee)  id=\(step.id)")

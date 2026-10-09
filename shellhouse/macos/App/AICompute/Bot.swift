@@ -161,7 +161,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     private var currentRuntimeSettingsKey: String {
         [
             modelProvider.rawValue, selectedModel, String(modelHasVision), remoteBaseURLText,
-            maxTokensText, maxIterationsText, String(remoteAPIKeyInput.hashValue),
+            maxTokensText, maxIterationsText, String(remoteAPIKeyInput.hashValue), engine.rawValue,
         ].joined(separator: "|")
     }
     /// Whether THIS chat specifically (not a delegation/group turn — see
@@ -179,6 +179,13 @@ final class Bot: Identifiable, @unchecked Sendable {
     var messageQueue: [QueuedMessage] = []
     var hasStarted = false
     var pendingApproval: PendingApproval?
+    /// Durable changes (memories, routines) the agent tried to make after
+    /// reading untrusted content, held until the user approves them — see
+    /// `GuardrailPolicy` / `PendingInboxStore`.
+    var pendingReview: [PendingItem] = []
+    /// Which engine runs this bot's own-chat turns. Group turns, delegations
+    /// and routines always use the built-in engine.
+    var engine: AgentEngineKind = .builtin
     /// Set whenever an assistant/tool message arrives (see `handleEvent`),
     /// cleared by `markRead()` — which `BotDetailView` calls whenever this
     /// bot is the one actually on screen. Session-scoped, not persisted:
@@ -195,7 +202,7 @@ final class Bot: Identifiable, @unchecked Sendable {
 
     var sandbox: RemoteSandboxManager?
     var handle: SandboxHandle?
-    var runtime: AgentRuntime?
+    var runtime: (any AgentEngine)?
 
     /// Populated from `OllamaBackend.availableModels()` once `ollama serve`
     /// answers. Locked in the moment the first message starts the agent —
@@ -227,6 +234,13 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// (`BuiltInSystemPrompt.text`) is always applied separately and is not
     /// editable. See `fullSystemPrompt`.
     var systemPromptText = ""
+    /// Why the last `respondInGroup` returned nil because of a failure (nil when it was a genuine silence).
+    var lastTurnFailure: String?
+    /// What the last isolated run's tools ran and returned (bounded), and how many real tool calls it made.
+    var lastTurnObservations = ""
+    var lastTurnToolCalls = 0
+    /// Last assistant text logged per debug context, to flag a model repeating itself.
+    private var lastLoggedAssistantText: [String: String] = [:]
 
     /// Loaded once from the bundled `skills/` folder (see `SkillLibrary`).
     /// Defaults to everything selected — the index alone is cheap (see
@@ -249,6 +263,13 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// `drainQueue`) or by hand in the settings sheet's Memory section.
     /// Persisted separately from `BotConfig` — see `BotMemoryStore`.
     var memories: [String] = []
+    /// The managed long-term notes behind `memories` (same order): importance, recency, usage, pinning.
+    var memoryBook = MemoryBook()
+    private var lastConsolidation = Date.distantPast
+    private var embeddingInFlight = false
+    private var embeddingBackoffUntil = Date.distantPast
+    /// How many notes have a meaning vector, for the settings screen.
+    var memoriesIndexed: Int { memoryBook.embeddedCount }
 
     /// One-shot tasks this bot has been assigned and is carrying —
     /// unlike `memories` (durable, kept forever) these are meant to be
@@ -325,6 +346,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         maxTokensText = config.maxTokensText
         maxIterationsText = config.maxIterationsText
         modelProvider = config.modelProvider ?? .ollama
+        engine = config.engine ?? .builtin
         remoteBaseURLText = config.remoteBaseURLText ?? ""
     }
 
@@ -350,7 +372,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         maxIterationsText = template.maxIterationsText
         modelProvider = template.modelProvider ?? .ollama
         remoteBaseURLText = template.remoteBaseURLText ?? ""
-        memories = template.memories
+        memoryBook = MemoryBook(legacy: template.memories)
+        memories = memoryBook.texts
         routines = template.routines
         // Deliberately NOT scheduled here: this bot is only a draft until
         // the user commits it (a cancelled import/duplicate would otherwise
@@ -392,7 +415,8 @@ final class Bot: Identifiable, @unchecked Sendable {
             id: id, name: name, colorHex: colorHex, avatarStyle: avatarStyle, tagline: tagline, group: group,
             systemPromptText: systemPromptText, selectedSkillIDs: selectedSkillIDs, selectedModel: selectedModel,
             modelHasVision: modelHasVision, maxTokensText: maxTokensText, maxIterationsText: maxIterationsText,
-            modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText
+            modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText,
+            engine: engine
         )
     }
 
@@ -451,16 +475,11 @@ final class Bot: Identifiable, @unchecked Sendable {
             }
             hasStarted = true
         }
-        // Dedupes anything already on disk from before `addMemory` started
-        // guarding against it — otherwise a fix that only stops FUTURE
-        // duplicates leaves the one that already happened sitting there.
-        let raw = BotMemoryStore.load(id: id)
-        var seen = Set<String>()
-        let deduped = raw.filter { seen.insert($0.lowercased()).inserted }
-        memories = deduped
-        if deduped.count != raw.count {
-            BotMemoryStore.save(id: id, deduped)
-        }
+        // Reads the managed memory book (or migrates the old plain list), then tidies it once.
+        memoryBook = BotMemoryStore.loadBook(id: id)
+        memories = memoryBook.texts
+        consolidateMemories(force: false)
+        Task { @MainActor [weak self] in await self?.embedPendingMemories() }
         routines = RoutineStore.load(id: id)
         for routine in routines { scheduleTimer(for: routine) }
         contextSummary = ContextSummaryStore.load(id: id)
@@ -612,112 +631,126 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// faster, so this now actually matters rather than being
     /// theoretical. Oldest entries drop first — a FIFO cap, not an
     /// attempt to judge which memory matters more than another.
-    private static let maxMemories = 60
-
     @discardableResult
-    func addMemory(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        guard !memories.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) else { return true }
-        // Restoring the whole snapshot on failure, not just `removeLast()`
-        // — that alone would only undo the append below, leaving the
-        // FIFO eviction's `removeFirst` applied in memory with nothing
-        // to undo it, so a failed save would silently drop an old memory
-        // that's actually still sitting untouched in the file on disk.
-        let previous = memories
-        memories.append(trimmed)
-        if memories.count > Self.maxMemories {
-            memories.removeFirst(memories.count - Self.maxMemories)
+    func addMemory(_ text: String, source: String = "self", importance: Int? = nil, pinned: Bool = false) -> Bool {
+        let previousBook = memoryBook
+        let outcome = memoryBook.add(text, importance: importance, source: source, pinned: pinned)
+        if outcome == .rejected { return false }
+        let evicted = memoryBook.evictOverCapacity()
+        // Persist before archiving: a failed save restores the book, and nothing is archived twice.
+        guard BotMemoryStore.saveBook(id: id, memoryBook) else {
+            memoryBook = previousBook
+            return false
         }
-        let persisted = BotMemoryStore.save(id: id, memories)
-        if !persisted {
-            memories = previous
-        }
-        return persisted
+        BotMemoryStore.archive(id: id, evicted)
+        memories = memoryBook.texts
+        consolidateMemories(force: false)
+        Task { @MainActor [weak self] in await self?.embedPendingMemories() }
+        return true
     }
 
-    /// The `recall_memory` tool's read side — same substring search either
-    /// way, kept simple (no embeddings) since this is a short, per-bot list
-    /// rather than the kind of corpus `search_memory`'s vector search
-    /// exists for.
-    func recallMemory(matching query: String) -> [String] {
+    /// Merges near-duplicate notes and archives stale, low-value, never-used ones (see `MemoryBook.consolidate`).
+    /// At most once a day unless forced. Returns what changed.
+    @discardableResult
+    func consolidateMemories(force: Bool) -> MemoryBook.Consolidation {
+        guard force || Date().timeIntervalSince(lastConsolidation) > 86_400, memoryBook.entries.count >= (force ? 1 : 8) else { return .init() }
+        lastConsolidation = Date()
+        let previous = memoryBook
+        let report = memoryBook.consolidate()
+        guard !report.isEmpty else { return report }
+        guard BotMemoryStore.saveBook(id: id, memoryBook) else { memoryBook = previous; return .init() }
+        BotMemoryStore.archive(id: id, report.archived)
+        memories = memoryBook.texts
+        return report
+    }
+
+    func setMemoryPinned(_ index: Int, _ pinned: Bool) {
+        guard memoryBook.entries.indices.contains(index) else { return }
+        memoryBook.setPinned(memoryBook.entries[index].id, pinned)
+        BotMemoryStore.saveBook(id: id, memoryBook)
+    }
+
+    func setMemoryImportance(_ index: Int, _ value: Int) {
+        guard memoryBook.entries.indices.contains(index) else { return }
+        memoryBook.setImportance(memoryBook.entries[index].id, value)
+        BotMemoryStore.saveBook(id: id, memoryBook)
+    }
+
+    /// The notes surfaced to the model just now count as used: that keeps what is actually useful fresh and
+    /// lets what never helps age out. Saved only when something changed.
+    private func noteMemoriesUsed(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        memoryBook.markUsed(ids)
+        BotMemoryStore.saveBook(id: id, memoryBook)
+    }
+
+    // MARK: semantic indexing
+
+    /// Gives every note a meaning vector from the selected embedding model, in the background. Safe to call often:
+    /// one pass at a time, a failure (Ollama busy or the model missing) pauses retries for five minutes, and the
+    /// bot keeps working on keyword search meanwhile.
+    func embedPendingMemories() async {
+        guard !embeddingInFlight, Date() >= embeddingBackoffUntil, !memoryBook.entries.isEmpty,
+              let model = await ModelTiers.resolveEmbeddingModel() else { return }
+        embeddingInFlight = true
+        defer { embeddingInFlight = false }
+        let embedder = OllamaEmbedder(model: model)
+        while true {
+            let pending = Array(memoryBook.entriesNeedingEmbedding(model: model).prefix(16))
+            guard !pending.isEmpty else { return }
+            do {
+                let vectors = try await embedder.embed(pending.map(\.text), isQuery: false)
+                for (entry, vector) in zip(pending, vectors) {
+                    memoryBook.setEmbedding(id: entry.id, forText: entry.text, vector: vector, model: model)
+                }
+                BotMemoryStore.saveBook(id: id, memoryBook)
+            } catch {
+                embeddingBackoffUntil = Date().addingTimeInterval(300)
+                if DebugSettings.shared.isEnabled {
+                    DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "memory", text: "embedding paused for 5 min: \(error.localizedDescription)")
+                }
+                return
+            }
+        }
+    }
+
+    /// The vector for a search, or nil when nothing is indexed yet / the embedder is unavailable (keyword search then).
+    private func memoryQueryVector(_ text: String) async -> (vector: [Float], model: String)? {
+        guard memoryBook.embeddedCount > 0, Date() >= embeddingBackoffUntil, let model = await ModelTiers.resolveEmbeddingModel() else { return nil }
+        let embedder = OllamaEmbedder(model: model, timeout: 3)
+        guard let vector = try? await embedder.embed([String(text.suffix(1_500))], isQuery: true).first else { return nil }
+        return (vector, model)
+    }
+
+    /// The `recall_memory` tool's read side: exact substring matches first, then notes ranked by meaning + keywords
+    /// + recency + importance, best first. An empty query lists the whole book.
+    func recallMemory(matching query: String) async -> [String] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return memories }
-        return memories.filter { $0.lowercased().contains(needle) }
-    }
-
-    /// Common short words that would otherwise dominate the overlap
-    /// check below without actually meaning the memory is relevant.
-    private static let memoryRelevanceStopWords: Set<String> = [
-        "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "for", "is", "are", "was",
-        "were", "be", "been", "this", "that", "with", "it", "as", "at", "by", "from", "i", "you",
-        "we", "they", "he", "she", "do", "does", "did", "can", "could", "would", "should", "will",
-        "what", "when", "where", "why", "how", "about", "your", "my", "me", "us",
-    ]
-
-    /// A best-effort relevance search, distinct from `recallMemory`
-    /// (an exact substring match, meant for a short, deliberate query
-    /// the MODEL itself picks via the `recall_memory` tool): this takes
-    /// a whole incoming message and finds memories sharing meaningful
-    /// words with it, so `withRelevantMemoryContext` can run this
-    /// automatically before every response, without needing the model
-    /// to already suspect something in its memory list is relevant.
-    /// Capped and ranked by overlap strength, not "every memory sharing
-    /// even one word" — `text` can be a whole group turn's recent
-    /// transcript (`respondInGroup`/`fireRoutineInGroup` route THEIR
-    /// `goal` through this too), which has enough significant words
-    /// that an uncapped any-overlap filter would match nearly the ENTIRE
-    /// memory list on most turns — defeating the actual point (surface
-    /// what's specifically relevant) and re-duplicating almost the whole
-    /// list already sent once in the system prompt, on every single
-    /// group turn, for every member. That's wasted tokens AND slower
-    /// local-model inference (more prompt to process) for no benefit.
-    /// Keyed by the memory's own text, so an edited/removed memory just
-    /// stops being looked up — no invalidation needed. Saves re-tokenizing
-    /// the whole list on every message and every group turn.
-    private var memoryWordCache: [String: Set<String>] = [:]
-
-    private func significantWords(in text: String) -> Set<String> {
-        Set(
-            text.lowercased()
-                .split { !$0.isLetter && !$0.isNumber }
-                .map(String.init)
-                .filter { $0.count > 3 && !Self.memoryRelevanceStopWords.contains($0) }
-        )
-    }
-
-    private func memoriesRelevant(to text: String, limit: Int = 5) -> [String] {
-        let queryWords = significantWords(in: text)
-        guard !queryWords.isEmpty else { return [] }
-        if memoryWordCache.count > memories.count + 50 {
-            memoryWordCache = memoryWordCache.filter { memories.contains($0.key) }
+        var results: [MemoryEntry] = memoryBook.entries.filter { $0.text.lowercased().contains(needle) }
+        let q = await memoryQueryVector(query)
+        for scored in memoryBook.rank(query: query, queryEmbedding: q?.vector, queryModel: q?.model, limit: 12)
+        where !results.contains(where: { $0.id == scored.entry.id }) {
+            results.append(scored.entry)
         }
-        let scored = memories.compactMap { memory -> (memory: String, overlap: Int)? in
-            let words: Set<String>
-            if let cached = memoryWordCache[memory] {
-                words = cached
-            } else {
-                words = significantWords(in: memory)
-                memoryWordCache[memory] = words
-            }
-            let overlap = words.intersection(queryWords).count
-            return overlap > 0 ? (memory, overlap) : nil
-        }
-        return scored.sorted { $0.overlap > $1.overlap }.prefix(limit).map(\.memory)
+        let top = Array(results.prefix(12))
+        noteMemoriesUsed(top.map(\.id))
+        return top.map(\.text)
     }
 
-    /// Prepended to whatever's actually sent to the model — never to
-    /// what's shown in the transcript (`displayMessages` always keeps
-    /// the user's/routine's exact original text; only the copy handed
-    /// to `AgentRuntime.send`/`.start` gets decorated). The full memory
-    /// list is already in every system prompt via `fullSystemPrompt`,
-    /// but a model doesn't reliably notice one relevant fact sitting in
-    /// a list it only skimmed once at the start of a run — this puts
-    /// whatever looks relevant to THIS message right in front of it,
-    /// every time. A no-op (returns `text` unchanged) when nothing
-    /// memorized overlaps with it.
-    private func withRelevantMemoryContext(_ text: String) -> String {
-        let matches = memoriesRelevant(to: text)
+    /// Notes relevant to an incoming message; `withRelevantMemoryContext` puts them in front of the model so it does
+    /// not have to notice them in a long list.
+    private func memoriesRelevant(to text: String, limit: Int = 5) async -> [String] {
+        let q = await memoryQueryVector(text)
+        let ranked = memoryBook.rank(query: String(text.suffix(3_000)), queryEmbedding: q?.vector, queryModel: q?.model, limit: limit)
+        noteMemoriesUsed(ranked.map(\.entry.id))
+        return ranked.map(\.entry.text)
+    }
+
+    /// Prepended to whatever's actually sent to the model — never to what's shown in the transcript. A no-op when
+    /// nothing relevant is stored.
+    private func withRelevantMemoryContext(_ text: String) async -> String {
+        let matches = await memoriesRelevant(to: text)
         guard !matches.isEmpty else { return text }
         let context = "(From your own memory, possibly relevant here:\n"
             + matches.map { "- \($0)" }.joined(separator: "\n") + ")\n\n"
@@ -725,14 +758,14 @@ final class Bot: Identifiable, @unchecked Sendable {
     }
 
     func removeMemory(at offsets: IndexSet) {
-        let previous = memories
-        memories.remove(atOffsets: offsets)
-        // Same reasoning as `addMemory`'s rollback — a failed write here
-        // would otherwise leave the Settings sheet showing something as
-        // gone that's actually still sitting in the file on disk,
-        // reappearing confusingly on the next reload.
-        if !BotMemoryStore.save(id: id, memories) {
-            memories = previous
+        let previous = memoryBook
+        let ids = Set(offsets.compactMap { memoryBook.entries.indices.contains($0) ? memoryBook.entries[$0].id : nil })
+        memoryBook.remove(ids: ids)
+        // A failed write must not leave the Settings sheet showing something as gone that is still on disk.
+        if BotMemoryStore.saveBook(id: id, memoryBook) {
+            memories = memoryBook.texts
+        } else {
+            memoryBook = previous
         }
     }
 
@@ -768,6 +801,35 @@ final class Bot: Identifiable, @unchecked Sendable {
             tasks = previous
         }
         return persisted
+    }
+
+    /// Keeps a goal-step task in sync: adds it, or updates its wording if the step moved on.
+    @discardableResult
+    func trackGoalTask(key: String, text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let previous = tasks
+        if let index = tasks.firstIndex(where: { $0.key == key }) {
+            guard tasks[index].text != trimmed else { return true }
+            tasks[index].text = trimmed
+        } else {
+            tasks.append(BotTask(text: trimmed, key: key))
+            if tasks.count > Self.maxTasks { tasks.removeFirst(tasks.count - Self.maxTasks) }
+        }
+        guard BotTaskStore.save(id: id, tasks) else { tasks = previous; return false }
+        return true
+    }
+
+    /// Removes goal-step tasks: one exact key, or everything for a goal (`prefix: "goal:<id>/"`).
+    func clearGoalTasks(key: String? = nil, prefix: String? = nil) {
+        let previous = tasks
+        tasks.removeAll { task in
+            guard let k = task.key else { return false }
+            if let key { return k == key }
+            if let prefix { return k.hasPrefix(prefix) }
+            return false
+        }
+        if tasks != previous, !BotTaskStore.save(id: id, tasks) { tasks = previous }
     }
 
     /// The settings sheet's manual remove — unlike `completeTaskFromTool`,
@@ -1331,7 +1393,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         ))
         persistTranscript()
 
-        let reply = await recipient.handleDelegatedTask(fromBotName: self.name, message: message)
+        let (reply, replyTainted) = await recipient.handleDelegatedTask(fromBotName: self.name, message: message)
         InterBotStore.append(InterBotMessage(fromBotID: recipient.id, fromBotName: recipient.name, toBotID: id, toBotName: self.name, text: reply))
 
         // Written to BOTH sides' own durable memory (`remember`'s same
@@ -1348,12 +1410,15 @@ final class Bot: Identifiable, @unchecked Sendable {
         // this check it'd get written verbatim, e.g. "they answered:
         // (stopped early: repeated the same 'X' call too many times)",
         // as if that error text were a real answer.
-        if Self.isSubstantiveDelegationReply(reply) {
-            addMemory("Asked \(recipient.name): \"\(Self.truncatedForMemory(message))\" — they answered: \"\(Self.truncatedForMemory(reply))\"")
-            recipient.addMemory("\(self.name) asked me: \"\(Self.truncatedForMemory(message))\" — I answered: \"\(Self.truncatedForMemory(reply))\"")
+        // A reply produced by a run that read untrusted content could carry
+        // injected instructions; don't write it into either bot's durable
+        // memory (docs/GUARDRAILS.md, L2).
+        if !replyTainted, Self.isSubstantiveDelegationReply(reply) {
+            addMemory("Asked \(recipient.name): \"\(Self.truncatedForMemory(message))\" — they answered: \"\(Self.truncatedForMemory(reply))\"", source: "delegation")
+            recipient.addMemory("\(self.name) asked me: \"\(Self.truncatedForMemory(message))\" — I answered: \"\(Self.truncatedForMemory(reply))\"", source: "delegation")
         }
 
-        return ["from": recipient.name, "reply": reply]
+        return ["from": recipient.name, "reply": reply, "_tainted": replyTainted]
     }
 
     private static func truncatedForMemory(_ text: String, limit: Int = 160) -> String {
@@ -1468,11 +1533,12 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// Waits behind whatever else this bot is currently doing (own chat,
     /// another delegation, a group turn) — see `runIsolatedTask`'s run
     /// lock — before it actually starts.
-    func handleDelegatedTask(fromBotName senderName: String, message: String) async -> String {
+    func handleDelegatedTask(fromBotName senderName: String, message: String) async -> (text: String, tainted: Bool) {
         let suffix = "You're handling this as a delegated request from another bot (\(senderName)), not a "
             + "direct message from your own user. Answer it directly and completely — \(senderName) will "
             + "relay your answer back to their user."
-        return await runIsolatedTask(systemPromptSuffix: suffix, goal: message, debugContext: "delegated from \(senderName)")
+        let result = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: message, debugContext: "delegated from \(senderName)")
+        return (result.text, result.tainted)
     }
 
     /// Cheap pre-check for an un-@mentioned group turn: one tiny tool-less
@@ -1493,21 +1559,129 @@ final class Bot: Identifiable, @unchecked Sendable {
                 \(transcript)
 
                 \(goalContext.map { $0 + "\n\n" } ?? "")Should you reply to the latest message? Answer YES if it asks or invites anything of you or \
-                your role, or if you have something necessary to add that nobody has already said\(goalContext == nil ? "" : ", or if an open goal step is yours or you can unblock or advance the goal"). Answer \
+                your role, or if you have something necessary to add that nobody has already said\(goalContext == nil ? "" : ", or if an open goal step is assigned to you or someone @mentioned you. Do NOT answer YES just because you could help, and never to start your own side investigation"). Answer \
                 NO only if it clearly has nothing to do with you or has already been fully handled. If \
                 unsure, answer YES. Reply with exactly one word: YES or NO.
                 """),
         ]
-        let backend = await makeModelBackend()
-        guard let reply = try? await backend.chat(messages: messages, tools: [], model: selectedModel, temperature: 0),
+        if Reliability.isOn(.structuredGates), let decided = await structuredYesNo(system: messages[0].content, user: messages[1].content) {
+            if DebugSettings.shared.isEnabled {
+                DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "group: \(groupName)",
+                                    text: "reply gate (structured): \(decided ? "YES — running full turn" : "NO — skipped full turn")")
+            }
+            return decided
+        }
+        let (backend, fastModel) = await makeFastBackend()
+        guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0),
               !reply.message.content.isEmpty else { return true }
-        let answer = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let wants = !answer.hasPrefix("NO")
+        let wants = ReplyGate.shouldReply(from: reply.message.content)
         if DebugSettings.shared.isEnabled {
             DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "group: \(groupName)",
                                 text: "reply gate: \(wants ? "YES — running full turn" : "NO — skipped full turn")")
         }
         return wants
+    }
+
+    /// The cheap tier: a small fast model for gates, intake checks, small talk and helpers.
+    /// Falls back to this bot's own backend/model when no fast model is set (or on a remote provider).
+    private func debugLogReliability(_ text: String, groupName: String) {
+        guard DebugSettings.shared.isEnabled else { return }
+        DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "group: \(groupName)", text: text)
+    }
+
+    private func makeFastBackend() async -> (backend: any ModelBackend, model: String) {
+        guard modelProvider == .ollama else { return (await makeModelBackend(), selectedModel) }
+        let model = ModelTiers.cheapModel(main: selectedModel)
+        return (OllamaBackend(defaultModel: model, timeout: 120), model)
+    }
+
+    /// `ask_helpers`: independent, tool-less sub-prompts answered in parallel by the fast tier.
+    /// With Ollama's OLLAMA_NUM_PARALLEL > 1 they genuinely run at the same time.
+    func runHelpers(_ tasks: [String]) async -> [String: Any] {
+        let (backend, model) = await makeFastBackend()
+        let system = "You are a focused helper for another AI agent. Answer ONLY the task given, concisely and "
+            + "factually, using only the text provided. If something is missing, say what is missing."
+        let answers = await withTaskGroup(of: (Int, String).self) { group -> [(Int, String)] in
+            for (index, task) in tasks.enumerated() {
+                group.addTask {
+                    let messages = [ChatMessage(role: .system, content: system), ChatMessage(role: .user, content: String(task.prefix(12_000)))]
+                    do {
+                        let reply = try await backend.chat(messages: messages, tools: [], model: model, temperature: 0.2)
+                        var text = reply.message.content
+                        if let end = text.range(of: "</think>") { text = String(text[end.upperBound...]) }
+                        return (index, text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    } catch {
+                        return (index, "(helper failed: \(error.localizedDescription))")
+                    }
+                }
+            }
+            var out: [(Int, String)] = []
+            for await item in group { out.append(item) }
+            return out
+        }
+        let ordered = answers.sorted { $0.0 < $1.0 }.map { ["task": tasks[$0.0].prefix(80) + (tasks[$0.0].count > 80 ? "…" : ""), "answer": $0.1] }
+        return ["results": ordered, "note": "Helper answers are unverified model output; check anything important."]
+    }
+
+    /// A yes/no decision from the fast tier with the output constrained to {"answer":"YES"|"NO"} (Ollama
+    /// structured outputs): no free text to misparse. nil when the backend can't do it, so callers fall back.
+    private func structuredYesNo(system: String, user: String) async -> Bool? {
+        let (backend, model) = await makeFastBackend()
+        guard let ollama = backend as? OllamaBackend else { return nil }
+        let schema: [String: Any] = [
+            "type": "object",
+            "properties": ["answer": ["type": "string", "enum": ["YES", "NO"]]],
+            "required": ["answer"],
+        ]
+        let messages = [ChatMessage(role: .system, content: system), ChatMessage(role: .user, content: user)]
+        guard let raw = try? await ollama.chatStructured(messages: messages, model: model, schema: schema),
+              let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let answer = (object["answer"] as? String)?.uppercased() else { return nil }
+        return answer == "YES"
+    }
+
+    /// Fast path for small talk and short questions in a group: ONE tool-less model call with a
+    /// compact prompt (no sandbox, no skills, no agent loop). Returns nil on any failure so the
+    /// caller falls back to the full agent turn.
+    func quickReplyInGroup(
+        groupName: String, otherMembers: [String], transcript: String, instruction: String,
+        extraContext: String = "", style: String = "warm, natural, 1-3 short sentences"
+    ) async -> String? {
+        let span = BotActivity.shared.begin(bot: self, kind: .running, detail: "quick reply · \(groupName)")
+        defer { BotActivity.shared.end(span) }
+        let persona = String(systemPromptText.prefix(700))
+        var system = "You are \(name)" + (tagline.isEmpty ? "" : ", \(tagline)")
+        system += ", in the group chat \"\(groupName)\" with \(otherMembers.joined(separator: ", ")). "
+        if !persona.isEmpty { system += "Your persona:\n\(persona)\n\n" }
+        system += "Reply in character as a chat message: \(style). Messages are labeled by sender. "
+        system += "Never prefix your reply with your own name. Do not repeat what others already said."
+        let messages = [
+            ChatMessage(role: .system, content: system),
+            ChatMessage(role: .user, content: "Group chat so far:\n\(transcript)\n\n" + (extraContext.isEmpty ? "" : extraContext + "\n\n") + instruction),
+        ]
+        let (backend, fastModel) = await makeFastBackend()
+        guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0.6) else { return nil }
+        var text = reply.message.content
+        if let end = text.range(of: "</think>") { text = String(text[end.upperBound...]) }
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip a self-label the model sometimes adds ("Bugbot: hi").
+        if text.lowercased().hasPrefix(name.lowercased() + ":") {
+            text = String(text.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces)
+        }
+        return (text.isEmpty || text.contains("[[silent]]")) ? nil : text
+    }
+
+    /// What this bot knows about its own work, for a stand-up: its open tasks, scheduled routines and
+    /// anything it was told to remember. Nothing is invented here; an empty section says so.
+    func standupContext() -> String {
+        var lines = ["YOUR OWN RECORDS (the only things you may report as yours beyond what is in the chat):"]
+        lines.append(tasks.isEmpty ? "- Open tasks: none recorded."
+                     : "- Open tasks: " + tasks.prefix(8).map(\.text).joined(separator: " | "))
+        lines.append(routines.isEmpty ? "- Routines: none."
+                     : "- Routines: " + routines.prefix(5).map { "\($0.schedule.summary): \($0.instruction.prefix(80))" }.joined(separator: " | "))
+        if !memoryBook.entries.isEmpty { lines.append("- Remembered: " + memoryBook.core(limit: 4).map(\.text).joined(separator: " | ")) }
+        return lines.joined(separator: "\n")
     }
 
     /// Cheap classifier for goal intake: is this user message an actionable
@@ -1527,8 +1701,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                 checks, or casual chat. Reply with exactly one word: YES or NO.
                 """),
         ]
-        let backend = await makeModelBackend()
-        guard let reply = try? await backend.chat(messages: messages, tools: [], model: selectedModel, temperature: 0) else { return false }
+        if Reliability.isOn(.structuredGates), let decided = await structuredYesNo(system: messages[0].content, user: messages[1].content) { return decided }
+        let (backend, fastModel) = await makeFastBackend()
+        guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0) else { return false }
         return reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("YES")
     }
 
@@ -1557,9 +1732,11 @@ final class Bot: Identifiable, @unchecked Sendable {
         wasMentioned: Bool, mentionedByBot: Bool = false,
         extraSuffix: String = "",
         goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
-        untrustedInput: Bool = false
+        untrustedInput: Bool = false,
+        plainReplyEndsTurn: Bool = false
     ) async -> String? {
         let mustReply = wasMentioned && !mentionedByBot
+        lastTurnFailure = nil
         let rule: String
         if mustReply {
             rule = "You were just @mentioned (by name, or via @everyone) by the user in this group chat — you MUST "
@@ -1583,8 +1760,14 @@ final class Bot: Identifiable, @unchecked Sendable {
             + "do your part and @mention the specific member who should act next; when the goal is met, say so "
             + "plainly and stop @mentioning people."
         let suffix = "You're one of up to 6 bots in the group chat \"\(groupName)\", alongside: "
-            + "\(otherMembers.joined(separator: ", ")). Messages below are labeled by who sent them. \(rule)\(goalRule)\(extraSuffix.isEmpty ? "" : "\n\n" + extraSuffix)"
-        var outcome = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler, untrustedInput: untrustedInput)
+            + "\(otherMembers.joined(separator: ", ")). Every member works on its OWN separate Linux VM — nothing is shared "
+            + "between them, so never call it a shared sandbox; to share a result, post it in the chat. "
+            + "When you commit to doing something, record it with remember_task (one line) and call complete_task when it is done: "
+            + "your stand-up report is built from that list. "
+            + "Match your effort to the question: a simple question gets a direct answer with at most one or two tool calls; only a multi-part task justifies investigating. "
+            + "Do not re-verify what the chat already establishes, and never state a version, path or number you did not see in a tool result or in the chat. "
+            + "Messages below are labeled by who sent them. \(rule)\(goalRule)\(extraSuffix.isEmpty ? "" : "\n\n" + extraSuffix)"
+        var outcome = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler, untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn)
         if mustReply, !outcome.failed, outcome.text.trimmingCharacters(in: .whitespacesAndNewlines) == "[[silent]]" {
             // Being called on (especially via @everyone) means every member
             // answers. A model that opted out anyway gets exactly one
@@ -1592,12 +1775,64 @@ final class Bot: Identifiable, @unchecked Sendable {
             outcome = await runIsolatedTaskResult(
                 systemPromptSuffix: suffix + " Staying silent is NOT allowed for this turn — you were explicitly "
                     + "called on. Post a short reply; if you truly have nothing to add, say that in one sentence.",
-                goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: mentioned)", goalHandler: goalHandler, untrustedInput: untrustedInput
+                goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: mentioned)", goalHandler: goalHandler, untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn
             )
+        }
+        // A "reply" that only announces what the bot is about to do ("I'll check that now") is not an answer.
+        // One retry that asks for the content itself, grounded in what its tools returned.
+        if Reliability.isOn(.replyChecks), !outcome.failed, outcome.text != "[[silent]]", ReplyQuality.looksLikeNarration(outcome.text) {
+            let retry = await runIsolatedTaskResult(
+                systemPromptSuffix: suffix + " Your previous reply was only an announcement (\"" + String(outcome.text.prefix(80))
+                    + "…\"). Do the work now with your tools if needed, then put the actual result in finish_task's summary: facts, "
+                    + "numbers and outputs, not intentions.",
+                goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: narration)", goalHandler: goalHandler,
+                untrustedInput: untrustedInput, plainReplyEndsTurn: false
+            )
+            if !retry.failed, !ReplyQuality.looksLikeNarration(retry.text) { outcome = retry }
+        }
+        // CRITIC-style check: a version, path or address the reply states must appear in what the tools returned
+        // (or in the chat / the bot's own records). Otherwise one retry that must verify or drop it; if it
+        // still can't, those lines are removed rather than posted as fact.
+        if Reliability.isOn(.replyChecks), !outcome.failed, outcome.text != "[[silent]]", !outcome.text.hasPrefix("(stopped early") {
+            let allowed = lastTurnObservations + "\n" + transcriptSoFar + "\n" + extraSuffix + "\n" + standupContext()
+            let unsupported = ClaimCheck.unsupported(in: outcome.text, sources: allowed)
+            if !unsupported.isEmpty {
+                debugLogReliability("unverified specifics in reply: \(unsupported.joined(separator: ", ")) — retrying", groupName: groupName)
+                let retry = await runIsolatedTaskResult(
+                    systemPromptSuffix: suffix + " Your draft stated specifics that appear in NONE of your tool output or the chat: "
+                        + unsupported.joined(separator: ", ") + ". Verify each with a tool now, or leave it out. Never state "
+                        + "unverified versions, paths, addresses or numbers.",
+                    goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: unverified claims)", goalHandler: goalHandler,
+                    untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn
+                )
+                var candidate = retry.failed ? outcome.text : retry.text
+                let allowedAfter = lastTurnObservations + "\n" + transcriptSoFar + "\n" + extraSuffix + "\n" + standupContext()
+                let still = ClaimCheck.unsupported(in: candidate, sources: allowedAfter)
+                if !still.isEmpty { candidate = ClaimCheck.removingLines(stating: still, from: candidate) }
+                if !candidate.isEmpty { outcome = IsolatedResult(text: candidate, failed: false, tainted: outcome.tainted) }
+            }
+        }
+        // Stopped early (budget, loop, guardrail freeze): say honestly what was verified instead of a bare error.
+        if Reliability.isOn(.taskFocus), !outcome.failed, outcome.text.hasPrefix("(stopped early"), lastTurnToolCalls > 0 {
+            let reason = outcome.text.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            if let salvage = await quickReplyInGroup(
+                groupName: groupName, otherMembers: otherMembers, transcript: String(transcriptSoFar.suffix(2_500)),
+                instruction: "Your work was stopped early (\(reason)). In at most 5 short lines: what you VERIFIED (only from the tool output "
+                    + "below), what is still open, and what you need. Do not invent results.",
+                extraContext: "WHAT YOUR TOOLS RETURNED SO FAR:\n" + EvidenceDigest.digest(lastTurnObservations, limit: 1_500),
+                style: "an honest, concise status report"
+            ) {
+                outcome = IsolatedResult(text: "⚠ \(reason.prefix(1).uppercased() + reason.dropFirst()). " + salvage, failed: false, tainted: outcome.tainted)
+            }
+        }
+        // The model server being down is an infrastructure problem, never something to post as the bot's reply.
+        if !outcome.failed, outcome.text.hasPrefix(ModelConnection.unreachablePrefix) {
+            outcome = IsolatedResult(text: "the model server (Ollama) isn't reachable", failed: true, tainted: outcome.tainted)
         }
         // Infrastructure failures ("no sandbox", "cancelled", "no response")
         // are never posted as if the bot had said them.
         if outcome.failed {
+            lastTurnFailure = outcome.text
             if DebugSettings.shared.isEnabled {
                 DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .error, context: "group: \(groupName)", text: "turn failed: \(outcome.text)")
             }
@@ -1736,7 +1971,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         message — it is what everyone reads. Put the complete, final message there (for a stand-up, \
         announcement, or answer: the full text itself, not a description of it). Do NOT write plain text \
         first announcing what you're about to post or confirming you did; just do any needed work with \
-        tools, then call finish_task with the finished message.
+        tools, then call finish_task with the finished message. When you call a tool, call it FIRST — do not \
+        write a paragraph and then repeat the same paragraph alongside the call.
 
         Your user mostly reads your private 1:1 chat, not this one. When something meaningful happens \
         here (a task done, a result, a blocker, a decision needed), also call update_user with a short \
@@ -1762,12 +1998,15 @@ final class Bot: Identifiable, @unchecked Sendable {
     struct IsolatedResult {
         let text: String
         let failed: Bool
+        /// The run read untrusted content, so the asker must not memorize or trust the reply.
+        var tainted = false
     }
 
     private func runIsolatedTaskResult(
         systemPromptSuffix: String, goal: String, debugContext: String,
         goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
-        untrustedInput: Bool = false
+        untrustedInput: Bool = false,
+        plainReplyEndsTurn: Bool = false
     ) async -> IsolatedResult {
         guard let sandbox, let handle else {
             return IsolatedResult(text: "\(name) has no running sandbox to work with right now.", failed: true)
@@ -1830,7 +2069,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                         await MainActor.run { self?.addMemory(text) ?? false }
                     },
                     onRecallMemory: { [weak self] query in
-                        await MainActor.run { self?.recallMemory(matching: query) ?? [] }
+                        await self?.recallMemory(matching: query) ?? []
                     },
                     // Self-scoped, same as the memory tools right above
                     // — and this is exactly where "carry a task across
@@ -1891,8 +2130,15 @@ final class Bot: Identifiable, @unchecked Sendable {
                             self?.postUpdateToUser(message, source: debugContext) ?? ["error": "bot no longer available"]
                         }
                     },
+                    onAskHelpers: { [weak self] tasks in
+                        await self?.runHelpers(tasks) ?? ["error": "bot no longer available"]
+                    },
                     onGoalTool: goalHandler.map { handler in
-                        { name, arguments in await handler(name, arguments, toolCallCounter.value) }
+                        { name, arguments in
+                            var arguments = arguments
+                            arguments["_observations"] = AnyCodable(toolCallCounter.observations)
+                            return await handler(name, arguments, toolCallCounter.value)
+                        }
                     }
                 ),
                 permissions: permissions,
@@ -1903,8 +2149,11 @@ final class Bot: Identifiable, @unchecked Sendable {
                     case .message(let msg):
                         replyPicker.observe(msg)
                         phaseTracker.set(responding: false, botID: botIDForPhase)
-                    case .toolStarted(let toolName, _):
+                    case .toolCompleted(let toolName, let resultJSON):
+                        toolCallCounter.noteOutput(toolName, resultJSON)
+                    case .toolStarted(let toolName, let argumentsJSON):
                         toolCallCounter.note(toolName)
+                        toolCallCounter.noteOutput(toolName, argumentsJSON)
                         phaseTracker.set(responding: false, botID: botIDForPhase)
                     case .messageDelta:
                         phaseTracker.set(responding: true, botID: botIDForPhase)
@@ -1944,13 +2193,19 @@ final class Bot: Identifiable, @unchecked Sendable {
                 // instruction (memory, tasks, routines).
                 excludedTools: untrustedInput
                     ? ["remember", "remember_task", "create_routine", "edit_routine", "remove_routine"]
-                    : []
+                    : [],
+                audit: AuditLog.shared,
+                inbox: PendingInboxStore.standard,
+                plainReplyEndsTurn: plainReplyEndsTurn
             )
 
-            await runtime.start(systemPrompt: fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract, goal: withRelevantMemoryContext(goal))
+            await runtime.start(systemPrompt: fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract, goal: await withRelevantMemoryContext(goal))
+            let runTainted = await runtime.isTainted
+            lastTurnObservations = toolCallCounter.observations
+            lastTurnToolCalls = toolCallCounter.value
             let picked = replyPicker.result
             let resultText = picked ?? "(\(name) didn't produce a response.)"
-            return IsolatedResult(text: isSilent ? "[[silent]]" : resultText, failed: picked == nil && !isSilent)
+            return IsolatedResult(text: isSilent ? "[[silent]]" : resultText, failed: picked == nil && !isSilent, tainted: runTainted)
         }
         return await withTaskCancellationHandler { await inner.value } onCancel: { inner.cancel() }
     }
@@ -2086,6 +2341,11 @@ final class Bot: Identifiable, @unchecked Sendable {
             result += " Your role: \(tagline)."
         }
         result += "\n\n" + BuiltInSystemPrompt.text
+        result += "\n\n" + TemporalContext.promptLine()
+        result += "\n\nYour machine: you work in your own private Linux VM" + (handle.map { " (hostname shellhouse-vm-\($0.id))" } ?? "")
+            + ". Every other bot has its own separate VM — nothing you install, download or save here appears on theirs, "
+            + "and you cannot see theirs. Never describe it as a shared sandbox. If something is needed on every member's "
+            + "machine, each member does it on their own VM; to share a result or file contents, post it in the chat."
         let custom = systemPromptText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !custom.isEmpty {
             result += "\n\n---\n\nAdditional instructions from the user for this bot (in addition to everything above):\n\n" + custom
@@ -2098,8 +2358,10 @@ final class Bot: Identifiable, @unchecked Sendable {
                 // turn — and with several bots sharing one local model, that
                 // prompt processing (not generation) is what makes them take
                 // turns instead of running side by side.
+                let alreadyInThisPrompt: Set<String> = ["group-chat-turns", "goal-driven-work"]
+                let loadable = selected.map(\.id).filter { !alreadyInThisPrompt.contains($0) }
                 result += "\n\n---\n\nPlaybooks you can load with use_skill(name) when one clearly fits what you're doing: "
-                    + selected.map(\.id).joined(separator: ", ") + "."
+                    + loadable.joined(separator: ", ") + ". The rules for group chats and shared goals are already in this prompt; do not load those playbooks."
             } else {
                 result += "\n\n---\n\nSkills available via the use_skill tool. Each is a playbook for a specific "
                     + "task — call use_skill(name: \"<name>\") to load one's full instructions ONLY when its "
@@ -2109,11 +2371,17 @@ final class Bot: Identifiable, @unchecked Sendable {
                 }
             }
         }
-        if !memories.isEmpty {
-            result += "\n\n---\n\nRemembered instructions from earlier conversations with this bot — follow "
+        if !memoryBook.entries.isEmpty {
+            let core = memoryBook.core(limit: 12)
+            result += "\n\n---\n\nYour most important notes from earlier conversations — follow "
                 + "these unless the current conversation says otherwise:\n\n"
-            for memory in memories {
-                result += "- \(memory)\n"
+            for memory in core {
+                result += "- \(memory.text)\n"
+            }
+            let more = memoryBook.entries.count - core.count
+            if more > 0 {
+                result += "\n(\(more) more notes are stored. The ones relevant to each message are shown with it; "
+                    + "search the rest with recall_memory.)\n"
             }
         }
         if !tasks.isEmpty {
@@ -2219,6 +2487,10 @@ final class Bot: Identifiable, @unchecked Sendable {
     private func sendWithAttachments(text: String, attachments: [PendingAttachment]) async {
         guard let sandbox, let handle else { return }
         let text = expandSlashCommand(text)
+        if DebugSettings.shared.isEnabled {
+            let files = attachments.isEmpty ? "" : "  [+\(attachments.count) attachment\(attachments.count == 1 ? "" : "s")]"
+            DebugLog.shared.log(bot: "You", colorHex: "#0A84FF", kind: .user, context: "chat: \(name)", text: text + files)
+        }
         var images: [String] = []
         var notes: [String] = []
         var names: [String] = []
@@ -2338,7 +2610,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 runtime = nil
             }
             if let runtime {
-                await runtime.send(withRelevantMemoryContext(queued.text), images: queued.images)
+                await runtime.send(await withRelevantMemoryContext(queued.text), images: queued.images)
             } else {
                 let model = selectedModel
                 let budgets = AgentRuntime.Budgets(
@@ -2346,17 +2618,13 @@ final class Bot: Identifiable, @unchecked Sendable {
                     maxTokens: Int(maxTokensText) ?? 200_000
                 )
                 let selectedSkills = availableSkills.filter { selectedSkillIDs.contains($0.id) }
-                let newRuntime = AgentRuntime(
-                    model: await makeModelBackend(),
-                    sandbox: sandbox,
-                    sandboxID: handle.id,
-                    tools: ToolRegistry(
+                let toolRegistry = ToolRegistry(
                         skills: selectedSkills,
                         onRemember: { [weak self] text in
                             await MainActor.run { self?.addMemory(text) ?? false }
                         },
                         onRecallMemory: { [weak self] query in
-                            await MainActor.run { self?.recallMemory(matching: query) ?? [] }
+                            await self?.recallMemory(matching: query) ?? []
                         },
                         onRememberTask: { [weak self] arguments in
                             await MainActor.run { self?.addTaskFromTool(arguments) ?? ["error": "bot no longer available"] }
@@ -2407,26 +2675,58 @@ final class Bot: Identifiable, @unchecked Sendable {
                             await MainActor.run {
                                 self?.postToGroup(groupName: groupName, message: message) ?? ["error": "bot no longer available"]
                             }
+                        },
+                        onAskHelpers: { [weak self] tasks in
+                            await self?.runHelpers(tasks) ?? ["error": "bot no longer available"]
                         }
-                    ),
-                    permissions: permissions,
-                    budgets: budgets,
-                    modelName: model,
-                    onEvent: { [weak self] event in
-                        Task { @MainActor in self?.handleEvent(event) }
-                    },
-                    requestApproval: { [weak self] approval in
-                        await withCheckedContinuation { continuation in
-                            Task { @MainActor in
-                                guard let self else { continuation.resume(returning: .deny); return }
-                                self.pendingApproval = PendingApproval(
-                                    approval: approval, continuation: continuation,
-                                    owner: self.currentRunLockOwner ?? .ownChat
-                                )
-                            }
+                    )
+                let eventHandler: @Sendable (AgentRuntime.Event) -> Void = { [weak self] event in
+                    Task { @MainActor in self?.handleEvent(event) }
+                }
+                let approvalHandler: @Sendable (Approval) async -> AgentRuntime.ApprovalDecision = { [weak self] approval in
+                    await withCheckedContinuation { continuation in
+                        Task { @MainActor in
+                            guard let self else { continuation.resume(returning: .deny); return }
+                            self.pendingApproval = PendingApproval(
+                                approval: approval, continuation: continuation,
+                                owner: self.currentRunLockOwner ?? .ownChat
+                            )
                         }
                     }
-                )
+                }
+                var chosen: (any AgentEngine)?
+                if engine == .smolagents {
+                    do {
+                        chosen = try await makeSmolAgentsEngine(
+                            tools: toolRegistry, sandbox: sandbox, sandboxID: handle.id, budgets: budgets, model: model,
+                            onEvent: eventHandler, requestApproval: approvalHandler
+                        )
+                    } catch {
+                        // Fail visibly, then carry on with the built-in engine (same guardrails).
+                        displayMessages.append(DisplayMessage(
+                            role: .assistant,
+                            text: "(smolagents engine unavailable: \(error.localizedDescription) — using the built-in engine for this chat.)"
+                        ))
+                    }
+                }
+                let newRuntime: any AgentEngine
+                if let chosen {
+                    newRuntime = chosen
+                } else {
+                    newRuntime = AgentRuntime(
+                        model: await makeModelBackend(),
+                        sandbox: sandbox,
+                        sandboxID: handle.id,
+                        tools: toolRegistry,
+                        permissions: permissions,
+                        budgets: budgets,
+                        modelName: model,
+                        onEvent: eventHandler,
+                        requestApproval: approvalHandler,
+                        audit: AuditLog.shared,
+                        inbox: PendingInboxStore.standard
+                    )
+                }
                 runtime = newRuntime
                 runtimeSettingsKey = currentRuntimeSettingsKey
                 hasStarted = true
@@ -2462,7 +2762,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                     history = displayMessages.dropLast().map { ChatMessage(role: $0.role, content: $0.text) }
                 }
                 await newRuntime.seed(systemPrompt: fullSystemPrompt(), history: Array(history))
-                await newRuntime.send(withRelevantMemoryContext(queued.text), images: queued.images)
+                await newRuntime.send(await withRelevantMemoryContext(queued.text), images: queued.images)
             }
             BotActivity.shared.end(chatSpan)
             currentRunLockOwner = nil
@@ -2640,16 +2940,25 @@ final class Bot: Identifiable, @unchecked Sendable {
         case .messageDelta(let delta):
             DebugLog.shared.logDelta(bot: name, colorHex: colorHex, context: context, delta: delta)
         case .message(let message):
+            var text = message.content
+            if message.role == .assistant, !message.isTaskSummary, !text.isEmpty {
+                let key = context ?? ""
+                if lastLoggedAssistantText[key] == text {
+                    text = "(same text again — the model skipped the tool call and was nudged) " + text
+                }
+                lastLoggedAssistantText[key] = message.content
+            }
             DebugLog.shared.log(
                 bot: name, colorHex: colorHex,
                 kind: message.role == .tool ? .tool : .message,
                 context: context,
-                text: message.content
+                text: text
             )
         case .toolStarted(let toolName, let argumentsJSON):
             let args = argumentsJSON == "{}" ? "" : " \(argumentsJSON)"
             DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .tool, context: context, text: "→ \(toolName)\(args)")
         case .toolCompleted(let toolName, let resultJSON):
+            if resultJSON.contains("held_for_review") { refreshPendingReview() }
             DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .tool, context: context, text: "← \(toolName): \(resultJSON)")
         case .approvalNeeded(let approval):
             DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: context, text: "waiting for approval: \(approval.toolName)")
@@ -2694,10 +3003,21 @@ final class ToolCallCounter: @unchecked Sendable {
         "finish_task", "update_user", "get_goal", "propose_goal", "add_goal_step",
         "update_goal_step", "propose_goal_complete", "use_skill", "get_profile", "list_routines",
     ]
+    private var pool = ""
     func note(_ toolName: String) {
         guard !Self.bookkeeping.contains(toolName) else { return }
         lock.lock(); count += 1; lock.unlock()
     }
+    /// What this run's tools actually returned (most recent ~12k characters): the world's output, the only
+    /// thing a "done" claim can be checked against.
+    func noteOutput(_ toolName: String, _ text: String) {
+        guard !Self.bookkeeping.contains(toolName) else { return }
+        lock.lock()
+        pool += "\n" + text
+        if pool.count > 12_000 { pool = String(pool.suffix(12_000)) }
+        lock.unlock()
+    }
+    var observations: String { lock.lock(); defer { lock.unlock() }; return pool }
     var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
 
@@ -2716,5 +3036,68 @@ final class PhaseTracker: @unchecked Sendable {
         Task { @MainActor in
             BotActivity.shared.setPhase(botID: botID, newValue ? .responding : .working)
         }
+    }
+}
+
+// MARK: - Pending review (guardrail quarantine)
+
+extension Bot {
+    func refreshPendingReview() {
+        pendingReview = PendingInboxStore.standard.load(botID: handle?.id ?? id)
+    }
+
+    /// Applies a held change the user has now approved, through the same code
+    /// path the agent's own tool call would have used.
+    func approvePending(_ item: PendingItem) {
+        switch item.tool {
+        case "remember":
+            if let text = item.arguments["text"]?.asString { _ = addMemory(text) }
+        case "create_routine":
+            _ = createRoutineFromTool(item.arguments)
+        case "edit_routine":
+            _ = editRoutineFromTool(item.arguments)
+        default:
+            break   // nothing else is ever held
+        }
+        PendingInboxStore.standard.remove(botID: item.botID, id: item.id)
+        refreshPendingReview()
+    }
+
+    func dismissPending(_ item: PendingItem) {
+        PendingInboxStore.standard.remove(botID: item.botID, id: item.id)
+        refreshPendingReview()
+    }
+
+    /// "Treat this chat as trusted again" — clears web/MCP/skill taint on the
+    /// live runtime (friend-message taint stays).
+    func clearUntrustedFlag() {
+        guard let runtime else { return }
+        Task { await runtime.clearTaint() }
+    }
+}
+
+// MARK: - smolagents engine
+
+extension Bot {
+    enum SmolAgentsError: LocalizedError {
+        case remoteProviderUnsupported
+        var errorDescription: String? {
+            "the pilot supports local Ollama models only (this bot uses a remote provider)"
+        }
+    }
+
+    func makeSmolAgentsEngine(
+        tools: ToolRegistry, sandbox: RemoteSandboxManager, sandboxID: String, budgets: AgentRuntime.Budgets, model: String,
+        onEvent: @escaping @Sendable (AgentRuntime.Event) -> Void,
+        requestApproval: @escaping @Sendable (Approval) async -> AgentRuntime.ApprovalDecision
+    ) async throws -> any AgentEngine {
+        guard modelProvider == .ollama else { throw SmolAgentsError.remoteProviderUnsupported }
+        let service = SmolAgentsService.shared
+        let settings = try await service.engineSettings()
+        return SmolAgentsEngine(
+            proxy: service.proxy, settings: settings, sandbox: sandbox, sandboxID: sandboxID, tools: tools,
+            permissions: permissions, budgets: budgets, modelName: model, onEvent: onEvent,
+            requestApproval: requestApproval, audit: AuditLog.shared, inbox: PendingInboxStore.standard
+        )
     }
 }

@@ -64,6 +64,17 @@ struct BotAvatar: View {
     }
 }
 
+/// The web view behind an avatar is purely decoration. It takes no mouse input at all, so
+/// clicks, drags and right-clicks go straight to whatever SwiftUI view is underneath (the
+/// row's own context menu, selection...) and WebKit's built-in menu (Reload, Back...) can
+/// never appear — reloading would restart the animation.
+final class PassiveWebView: WKWebView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override var acceptsFirstResponder: Bool { false }
+    override func menu(for event: NSEvent) -> NSMenu? { nil }
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) { menu.removeAllItems() }
+}
+
 /// Loads one bundled avatar SVG (picked by shape + nearest asset color to
 /// `colorHex`) into an inline HTML wrapper that forces it to fill the view
 /// and keeps the background transparent, then plays it in a `WKWebView`.
@@ -112,7 +123,7 @@ private struct AnimatedAvatarView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> WKWebView {
-        let webView = WKWebView(frame: .zero)
+        let webView = PassiveWebView(frame: .zero)
         // `underPageBackgroundColor` (tried as a replacement for the
         // private `drawsBackground` KVC key — see `ComputerView`) only
         // colors what's under the PAGE's own content; it doesn't make

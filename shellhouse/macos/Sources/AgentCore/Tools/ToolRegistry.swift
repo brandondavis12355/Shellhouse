@@ -88,6 +88,7 @@ public struct ToolRegistry: Sendable {
         onAddBotToGroup: (@Sendable (String, String) async -> [String: Any])? = nil,
         onPostToGroup: (@Sendable (String, String) async -> [String: Any])? = nil,
         onUpdateUser: (@Sendable (String) async -> [String: Any])? = nil,
+        onAskHelpers: (@Sendable ([String]) async -> [String: Any])? = nil,
         onGoalTool: (@Sendable (String, [String: AnyCodable]) async -> [String: Any])? = nil
     ) {
         var schemas = Self.buildSchemas()
@@ -220,6 +221,17 @@ public struct ToolRegistry: Sendable {
                     return ["error": "update_user requires a non-empty 'message'"]
                 }
                 return await onUpdateUser(message)
+            }
+        }
+        if let onAskHelpers {
+            schemas.append(Self.askHelpersSchema)
+            executors["ask_helpers"] = { _, _, arguments, _ in
+                guard let raw = arguments["tasks"]?.value as? [Any] else {
+                    return ["error": "ask_helpers requires 'tasks': a list of 1-\(ModelTiers.helperLimit) self-contained prompts"]
+                }
+                let tasks = raw.compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                guard !tasks.isEmpty else { return ["error": "ask_helpers got no usable tasks"] }
+                return await onAskHelpers(Array(tasks.prefix(ModelTiers.helperLimit)))
             }
         }
         if let onPostToGroup {
@@ -526,7 +538,7 @@ public struct ToolRegistry: Sendable {
                    required: ["title", "steps"]),
             schema("add_goal_step", "Goal owner only: append a step to the checklist.", ["text": str("The new step.")], required: ["text"]),
             schema("update_goal_step",
-                   "Update a checklist step. Set 'inProgress' when you take it on, 'blocked' (with the reason as evidence) if you can't proceed, or 'done' — done REQUIRES evidence: what you ran or checked in THIS turn and what it showed. Only verified completions count as progress.",
+                   "Update a checklist step. Set 'inProgress' when you take it on, 'blocked' (with the reason as evidence) if you can't proceed, or 'done' — done REQUIRES evidence: what you ran or checked in THIS turn and what it showed. If you are NOT the goal owner, 'done' only SUBMITS the step for validation (shown as [?]); the goal owner re-checks it with their own tools and is the only one who can mark it truly done. Only the owner's validated completions count as progress.",
                    ["step_id": str("Step id from get_goal / the goal block."),
                     "status": ["type": "string", "enum": ["inProgress", "done", "blocked"]],
                     "evidence": str("Required for done: what you did/checked and the result."),
@@ -536,6 +548,25 @@ public struct ToolRegistry: Sendable {
                    "Goal owner only: when every step is done (or blocked with a reason), propose the goal as complete. The user must confirm. Give a short summary of the outcome.",
                    ["summary": str("What was accomplished, and any blocked items.")], required: ["summary"]),
         ]
+    }
+
+    private static var askHelpersSchema: ToolSchema {
+        ToolSchema(
+            name: "ask_helpers",
+            description: "Run up to \(ModelTiers.helperLimit) small, independent sub-tasks IN PARALLEL on a fast helper model and get "
+                + "all the answers back at once. Good for: summarizing or extracting from text you already have, drafting "
+                + "variants, classifying, quick lookups from your own knowledge. Helpers have NO tools, no files and no memory "
+                + "of this conversation, so each task must contain everything needed (paste the text in). Don't use it for "
+                + "work that needs the sandbox, or for anything you can answer in one step yourself.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "tasks": ["type": "array", "items": ["type": "string"],
+                              "description": "Self-contained prompts, one per sub-task."],
+                ],
+                "required": ["tasks"],
+            ]
+        )
     }
 
     private static var updateUserSchema: ToolSchema {
@@ -671,7 +702,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "read_file",
-                description: "Read a text file from the sandbox's /workspace (up to 200,000 bytes).",
+                description: "Returns the text of one file in the sandbox (up to 200,000 bytes). Use it to read a file you know the path of; to find files, use list_files or run_shell with find/grep. Paths are relative to /workspace unless absolute. An error means the path is wrong or unreadable: list the parent directory before retrying.",
                 parameters: [
                     "type": "object",
                     "properties": ["path": ["type": "string"]],
@@ -680,7 +711,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "write_file",
-                description: "Overwrite a file in the sandbox's /workspace with the given text content.",
+                description: "Replaces the ENTIRE contents of one file in /workspace with `content` (creates it if missing). Read the file first if you only mean to change part of it, and write the full corrected text. Returns ok or an error naming the problem.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -692,7 +723,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "run_shell",
-                description: "Run a shell command inside the sandbox as the unprivileged desktop user.",
+                description: "Runs one bash command in YOUR OWN Linux VM (user `box`, passwordless sudo, Debian) and returns {exit_code, stdout, stderr}. Check the OUTPUT, not just exit_code: a chained command (`a; echo exit=$?`) can exit 0 around a failure. Prefer one simple command per call, `command -v <tool>` to test for a program, absolute paths, and `| head`/`| tail` for big output (long output is cut in the middle). Do not repeat a command whose result you already have; if it printed nothing or failed, change the approach. Package installs: `sudo apt-get update` first if lookups come back empty.",
                 parameters: [
                     "type": "object",
                     "properties": [

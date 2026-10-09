@@ -24,8 +24,22 @@ struct ApprovalCard: View {
             Text(approval.toolName)
                 .font(.system(size: 15, design: .monospaced))
                 .bold()
+            if approval.strict {
+                Label("Needs your explicit OK every time — no \"always allow\"", systemImage: "hand.raised.fill")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.destructive)
+            }
+            if !approval.reasons.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(approval.reasons.prefix(4).enumerated()), id: \.offset) { _, reason in
+                        Text("• \(reason)").font(.system(size: 13)).foregroundStyle(.secondary)
+                    }
+                }
+            }
             if approval.untrusted {
-                Text("A friend's message is part of this conversation, so this needs your approval every time.")
+                Text(approval.sources.isEmpty
+                    ? "Untrusted content is part of this conversation, so this needs your approval every time."
+                    : "This chat has read untrusted content (\(approval.sources.joined(separator: ", "))), so this needs your approval every time.")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.warning)
             }
@@ -34,6 +48,10 @@ struct ApprovalCard: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .lineLimit(6)
+            if let digest = approval.argsDigest {
+                Text("ref \(digest) · this approval covers exactly this action")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
             HStack(spacing: 8) {
                 if let binary = approval.alwaysAllowCandidate {
                     Menu("Always allow \"\(binary)\"…") {
@@ -43,11 +61,10 @@ struct ApprovalCard: View {
                     .fixedSize()
                     .font(.system(size: 14))
                 }
-                if approval.toolName == "run_shell", !approval.untrusted {
+                if approval.toolName == "run_shell", !approval.untrusted, !approval.strict {
                     Menu("Allow all shell commands…") {
                         Button("This bot, this session") { onDecide(.approveAllShellThisBotSession) }
                         Button("This bot, always") { onDecide(.approveAllShellThisBotAlways) }
-                        Button("Every bot, always (global)") { onDecide(.approveAllShellEveryBot) }
                     }
                     .fixedSize()
                     .font(.system(size: 14))
@@ -173,6 +190,10 @@ struct BotDetailView: View {
                                     Task { await bot.refreshPermissions() }
                                 }
                             }
+                        }
+
+                        if !bot.pendingReview.isEmpty {
+                            PendingReviewCard(bot: bot)
                         }
 
                         OwnBotStatusView(bot: bot)
@@ -378,11 +399,13 @@ struct BotDetailView: View {
         // (`NSGenericException`: "already had more Update Constraints in
         // Window passes than there are views in the window"). Lower than
         // the ORIGINAL 1000 is still fine — it just has to stay >= 840.
-        .frame(minWidth: 840, minHeight: 500)
+        // Tracks exactly what the inner split needs: chat alone is 360 + padding; with the
+        // computer panel open beside it, chat 360 + panel 480 (see above). Never lower than the inner minimum.
+        .frame(minWidth: (showComputer && !computerExpanded) ? 840 : 400, minHeight: 500)
         // "Read" just means "this bot's conversation is the one on screen
         // right now" — covers both switching to it and it getting a new
         // message while it's already the one open.
-        .onAppear { bot.markRead() }
+        .onAppear { bot.markRead(); bot.refreshPendingReview() }
         .onChange(of: bot.displayMessages.count) { _, _ in bot.markRead() }
         .sheet(item: $activeInterBotThread) { thread in
             InterBotThreadView(
@@ -521,5 +544,37 @@ struct AttachmentChip: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Theme.chip, in: Capsule())
+    }
+}
+
+/// Memories / routines the agent tried to save after reading untrusted content.
+/// Nothing here has taken effect; the user decides.
+struct PendingReviewCard: View {
+    let bot: Bot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "tray.full.fill").foregroundStyle(Theme.warning)
+                Text("Held for your review (\(bot.pendingReview.count))").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Button("Trust this chat again") { bot.clearUntrustedFlag() }
+                    .buttonStyle(.compactPill)
+                    .help("Clears the untrusted-content flag so memory and routine changes apply immediately again.")
+            }
+            Text("This conversation read untrusted content, so these changes were not applied.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            ForEach(bot.pendingReview) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Text(item.summary).font(.system(size: 13)).lineLimit(3).textSelection(.enabled)
+                    Spacer(minLength: 8)
+                    Button("Dismiss") { bot.dismissPending(item) }.buttonStyle(.compactPill)
+                    Button("Apply") { bot.approvePending(item) }.buttonStyle(PillButtonStyle(kind: .primary, compact: true))
+                }
+            }
+        }
+        .padding(14)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(Theme.warning.opacity(0.4), lineWidth: 1))
     }
 }

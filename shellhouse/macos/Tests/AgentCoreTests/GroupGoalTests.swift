@@ -89,3 +89,72 @@ final class GroupGoalTests: XCTestCase {
         XCTAssertTrue(block.contains("[x]") && block.contains("[ ]") && block.contains("1/2 steps done") && block.contains("Mr. Smith"))
     }
 }
+
+final class GoalValidationTests: XCTestCase {
+    private let evidence = "ran `gh --version` and it printed 2.46.0 on the shared sandbox"
+
+    private func goal() -> GroupGoal {
+        GroupGoal(title: "Install gh", ownerBotID: "owner", steps: [GroupGoal.Step(text: "check"), GroupGoal.Step(text: "install")])
+    }
+
+    func testAMemberCanOnlySubmitNeverCompleteAStep() {
+        var g = goal()
+        let id = g.steps[0].id
+        XCTAssertEqual(g.updateStep(id: id, status: .done, evidence: evidence, assigneeName: "Bugbot", turnHadToolCalls: true, byOwner: false), .submitted)
+        XCTAssertEqual(g.steps[0].status, .review)
+        XCTAssertEqual(g.doneCount, 0)
+        XCTAssertEqual(g.messagesSinceProgress, 0)
+        XCTAssertFalse(g.steps[0].verified)
+    }
+
+    func testOnlyTheOwnerValidatesAndItNeedsTheirOwnToolRun() {
+        var g = goal()
+        let id = g.steps[0].id
+        _ = g.updateStep(id: id, status: .done, evidence: evidence, assigneeName: "Bugbot", turnHadToolCalls: true, byOwner: false)
+        // Owner rubber-stamping without running anything is refused.
+        if case .rejected = g.updateStep(id: id, status: .done, evidence: evidence, assigneeName: nil, turnHadToolCalls: false, byOwner: true) {} else { XCTFail("must validate first") }
+        XCTAssertEqual(g.steps[0].status, .review)
+        // After the owner re-checks, it counts.
+        XCTAssertEqual(g.updateStep(id: id, status: .done, evidence: "re-ran gh --version myself: 2.46.0", assigneeName: nil, turnHadToolCalls: true, byOwner: true), .progress)
+        XCTAssertEqual(g.steps[0].status, .done)
+        XCTAssertTrue(g.steps[0].verified)
+    }
+
+    func testMembersCannotTouchAStepUnderReviewOrDone() {
+        var g = goal()
+        let id = g.steps[0].id
+        _ = g.updateStep(id: id, status: .done, evidence: evidence, assigneeName: "Bugbot", turnHadToolCalls: true, byOwner: false)
+        for status in [GroupGoal.StepStatus.done, .inProgress, .blocked] {
+            if case .rejected = g.updateStep(id: id, status: status, evidence: evidence, assigneeName: "Cleo", turnHadToolCalls: true, byOwner: false) {} else { XCTFail("\(status)") }
+        }
+        _ = g.updateStep(id: id, status: .done, evidence: "owner check: gh --version -> 2.46.0 confirmed", assigneeName: nil, turnHadToolCalls: true, byOwner: true)
+        if case .rejected = g.updateStep(id: id, status: .inProgress, evidence: nil, assigneeName: "Cleo", turnHadToolCalls: true, byOwner: false) {} else { XCTFail("done is final for members") }
+    }
+
+    func testOwnerCanSendASubmissionBack() {
+        var g = goal()
+        let id = g.steps[0].id
+        _ = g.updateStep(id: id, status: .done, evidence: evidence, assigneeName: "Bugbot", turnHadToolCalls: true, byOwner: false)
+        XCTAssertEqual(g.updateStep(id: id, status: .inProgress, evidence: "output does not show a version", assigneeName: nil, turnHadToolCalls: false, byOwner: true), .recorded)
+        XCTAssertEqual(g.steps[0].status, .inProgress)
+    }
+
+    func testMembersCanStillClaimAndBlock() {
+        var g = goal()
+        let id = g.steps[1].id
+        XCTAssertEqual(g.updateStep(id: id, status: .inProgress, evidence: nil, assigneeName: "Cleo", turnHadToolCalls: false, byOwner: false), .recorded)
+        XCTAssertEqual(g.updateStep(id: id, status: .blocked, evidence: "needs root access", assigneeName: "Cleo", turnHadToolCalls: false, byOwner: false), .recorded)
+    }
+
+    func testCompletionCannotBeProposedWhileAStepAwaitsValidation() {
+        var g = goal()
+        _ = g.updateStep(id: g.steps[0].id, status: .done, evidence: evidence, assigneeName: "Bugbot", turnHadToolCalls: true, byOwner: false)
+        _ = g.updateStep(id: g.steps[1].id, status: .blocked, evidence: "needs root access we do not have", assigneeName: nil, turnHadToolCalls: false)
+        if case .rejected = g.proposeComplete(summary: "all done") {} else { XCTFail("an unvalidated step must block completion") }
+    }
+
+    func testReviewIsNotSettableDirectly() {
+        var g = goal()
+        if case .rejected = g.updateStep(id: g.steps[0].id, status: .review, evidence: evidence, assigneeName: nil, turnHadToolCalls: true) {} else { XCTFail() }
+    }
+}

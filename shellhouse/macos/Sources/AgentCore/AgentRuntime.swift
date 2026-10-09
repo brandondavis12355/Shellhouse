@@ -76,9 +76,11 @@ public actor AgentRuntime {
         case budgetExceeded(String)
         case repeated(String)
         case cancelled
+        case frozen(String)
 
         var description: String {
             switch self {
+            case .frozen(let message): return "guardrails froze this run: \(message)"
             case .budgetExceeded(let message): return message
             case .repeated(let message): return message
             case .cancelled: return "Stopped by user"
@@ -118,20 +120,40 @@ public actor AgentRuntime {
     /// every approval-tier call asks the human, standing grants are ignored,
     /// and "always allow" answers are not recorded.
     private let alwaysRequireApproval: Bool
+    /// Every tool call is judged by the shared gate (docs/GUARDRAILS.md).
+    /// `audit` and `inbox` are nil unless the owner supplies them, so tests
+    /// and CLI runs never write to the user's real audit log or review inbox.
+    private let gate: ToolGate
 
     private var messages: [ChatMessage] = []
     private var iterations = 0
     private var tokensUsed = 0
     private var startedAt = Date()
+    /// Time spent waiting for a person to answer an approval card: it does not count against the wall-clock budget.
+    private var secondsWaitingForHuman: TimeInterval = 0
     private var callFingerprints: [String: Int] = [:]
+    /// Chat-style turns (a group reply with no goal work): a substantial plain-text answer IS the
+    /// answer, so skip the "you did not call a tool" nudge round trip that makes models repeat themselves.
+    private let plainReplyEndsTurn: Bool
+    static let plainReplyMinLength = 25
     private static let loopRepeatThreshold = 3
+    private var lastResultKey = ""
+    private var sameResultStreak = 0
+    /// Same tool, same result this many times in a row ends the run (nudged at `sameResultNudgeAt`).
+    static let sameResultNudgeAt = 3
+    static let sameResultAbortAt = 5
+    private var abortForSameResults = false
+    private var stuck = StuckDetector()
+    private var currentGoal = ""
+    private var budgetWarningsSent: Set<Int> = []
+    private var abortForStuck: String?
 
     /// Tools that may still run without approval during an untrusted run:
     /// they only read this bot's own state or update shared bookkeeping.
     static let untrustedSafeTools: Set<String> = [
         "list_files", "read_file", "screenshot", "list_windows", "use_skill", "search_memory", "recall_memory",
         "list_routines", "get_profile", "list_tasks", "list_secrets", "list_bots", "complete_task", "update_user",
-        "get_goal", "update_goal_step", "propose_goal", "add_goal_step", "propose_goal_complete",
+        "get_goal", "update_goal_step", "propose_goal", "add_goal_step", "propose_goal_complete", "ask_helpers",
     ]
 
     /// Screenshots dominate token cost once skills are lazy-loaded (see
@@ -188,9 +210,24 @@ public actor AgentRuntime {
         onEvent: @escaping @Sendable (Event) -> Void = { _ in },
         requestApproval: @escaping @Sendable (Approval) async -> ApprovalDecision = { _ in .deny },
         alwaysRequireApproval: Bool = false,
-        excludedTools: Set<String> = []
+        excludedTools: Set<String> = [],
+        guardrails: GuardrailConfig = .standard,
+        limits: RunLimits = RunLimits(),
+        audit: AuditLog? = nil,
+        inbox: PendingInboxStore? = nil,
+        initialTaint: [TaintSource] = [],
+        plainReplyEndsTurn: Bool = false
     ) {
+        self.plainReplyEndsTurn = plainReplyEndsTurn
         self.alwaysRequireApproval = alwaysRequireApproval
+        // A friend's message in context is the strongest taint (a live human).
+        var sources = initialTaint
+        if alwaysRequireApproval, !sources.contains(.friendMessage) { sources.append(.friendMessage) }
+        self.gate = ToolGate(
+            sandboxID: sandboxID, sandbox: sandbox, permissions: permissions, config: guardrails, limits: limits,
+            audit: audit, inbox: inbox, initialTaint: sources, friendSafeTools: Self.untrustedSafeTools,
+            requestApproval: requestApproval, onEvent: onEvent
+        )
         self.model = model
         self.sandbox = sandbox
         self.sandboxID = sandboxID
@@ -216,6 +253,8 @@ public actor AgentRuntime {
     /// Follow with `send(_:)`, not `start`, to continue from here.
     public func seed(systemPrompt: String, history: [ChatMessage]) {
         startedAt = Date()
+        secondsWaitingForHuman = 0
+        stuck = StuckDetector(); abortForStuck = nil
         iterations = 0
         tokensUsed = 0
         callFingerprints = [:]
@@ -225,6 +264,8 @@ public actor AgentRuntime {
     /// Begin a brand new conversation.
     public func start(systemPrompt: String, goal: String) async {
         startedAt = Date()
+        secondsWaitingForHuman = 0
+        stuck = StuckDetector(); abortForStuck = nil
         iterations = 0
         tokensUsed = 0
         callFingerprints = [:]
@@ -232,6 +273,8 @@ public actor AgentRuntime {
             ChatMessage(role: .system, content: systemPrompt),
             ChatMessage(role: .user, content: goal),
         ]
+        currentGoal = goal
+        budgetWarningsSent = []
         await loop()
     }
 
@@ -242,6 +285,7 @@ public actor AgentRuntime {
     /// the agent's own eyes.
     public func send(_ userMessage: String, images: [String] = []) async {
         messages.append(ChatMessage(role: .user, content: userMessage, images: images.isEmpty ? nil : images))
+        currentGoal = userMessage
         // Loop-detection is meant to catch a model stuck repeating the
         // SAME call within one reasoning task, not across entirely
         // separate turns — without this reset, `callFingerprints`
@@ -260,6 +304,14 @@ public actor AgentRuntime {
 
     public func transcript() -> [ChatMessage] { messages }
 
+    /// Whether untrusted content has entered this run, and from where.
+    public var isTainted: Bool { get async { await gate.isTainted } }
+    public var taintSources: [String] { get async { await gate.taintSources } }
+
+    /// The user vouches that this conversation is trustworthy again (e.g.
+    /// after reviewing it). Friend-message taint can't be cleared this way.
+    public func clearTaint() async { await gate.clearTaint() }
+
     // MARK: - The loop
 
     private func loop() async {
@@ -274,29 +326,73 @@ public actor AgentRuntime {
                 return
             }
             await compactContextIfNeeded()
+            if Reliability.isOn(.outputLimits) { messages = ObservationPolicy.collapseStale(messages) }
             iterations += 1
+            if Reliability.isOn(.taskFocus), let warning = StepBudget.warning(iteration: iterations, max: budgets.maxIterations), budgetWarningsSent.insert(warning.id).inserted {
+                messages.append(ChatMessage(role: .user, content: "[budget] " + warning.text))
+            }
+            // Manus-style recitation: re-state the objective at the END of the context every few steps, where
+            // the model pays the most attention, instead of trusting it to remember step 0.
+            if Reliability.isOn(.taskFocus), iterations > 1, iterations % 5 == 0, !currentGoal.isEmpty {
+                messages.removeAll { $0.role == .user && $0.content.hasPrefix("[reminder]") }
+                messages.append(ChatMessage(role: .user, content: "[reminder] Your task: \(String(currentGoal.prefix(400))). "
+                    + "Step \(iterations) of \(budgets.maxIterations). Stay on this task; when it is answered, call finish_task."))
+            }
             onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
 
-            let reply: ModelReply
-            do {
-                reply = try await model.chatStream(
-                    messages: messages, tools: toolSchemas, model: modelName, temperature: 0.2,
-                    onDelta: { [onEvent] delta in onEvent(.messageDelta(delta)) }
-                )
-            } catch {
-                emitAbortMessage(for: error)
-                onEvent(.status(.failed(error.localizedDescription)))
-                return
+            var reply: ModelReply
+            var attempt = 0
+            while true {
+                do {
+                    reply = try await model.chatStream(
+                        messages: messages, tools: toolSchemas, model: modelName, temperature: 0.2,
+                        onDelta: { [onEvent] delta in onEvent(.messageDelta(delta)) }
+                    )
+                    break
+                } catch {
+                    // The model server restarting or briefly unreachable: wait for it and try the same step again
+                    // before giving up (up to ~14 s), instead of failing a whole run over a hiccup.
+                    if ModelConnection.isConnectionProblem(error), attempt < ModelConnection.retryDelays.count, !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: UInt64(ModelConnection.retryDelays[attempt] * 1_000_000_000))
+                        attempt += 1
+                        continue
+                    }
+                    emitAbortMessage(for: error)
+                    onEvent(.status(.failed(ModelConnection.isConnectionProblem(error) ? "the model server is unreachable" : error.localizedDescription)))
+                    return
+                }
             }
             if let usage = reply.usage { tokensUsed += usage.total }
+            if Reliability.isOn(.callChecks), (reply.message.toolCalls ?? []).isEmpty,
+               let recovered = ToolCallRecovery.extract(from: reply.message.content, toolNames: Set(tools.names())) {
+                // The model wrote its tool call as text. Treat it as the call it meant to make.
+                reply = ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [recovered]), usage: reply.usage)
+            }
             messages.append(reply.message)
             onEvent(.message(reply.message))
 
             guard let calls = reply.message.toolCalls, !calls.isEmpty else {
+                let plain = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if plainReplyEndsTurn, plain.count >= Self.plainReplyMinLength, !plain.hasSuffix(":") {
+                    onEvent(.message(ChatMessage(role: .assistant, content: plain, isTaskSummary: true)))
+                    onEvent(.status(.completed))
+                    return
+                }
                 // Deliberately NOT treated as completion — see
                 // `finishTaskSchema`'s doc comment. A plain-text reply with
                 // no tool call just means "keep going," bounded by the same
                 // budgets as everything else, not "the task is done."
+                switch Reliability.isOn(.loopGuards) ? stuck.recordPlainReply() : .fine {
+                case .abort(let why):
+                    let error = RuntimeError.repeated(why)
+                    emitAbortMessage(for: error)
+                    onEvent(.status(.aborted("\(error)")))
+                    return
+                case .nudge(let text):
+                    messages.append(ChatMessage(role: .user, content: text))
+                case .fine:
+                    break
+                }
                 messages.append(ChatMessage(
                     role: .user,
                     content: "You did not call a tool. Plain text alone never ends the task — if you are "
@@ -333,15 +429,23 @@ public actor AgentRuntime {
                 return
             }
 
+            var seenThisTurn = Set<String>()
             for call in calls {
-                let shouldContinue = await handle(call)
+                // The same call twice in one assistant turn runs once; the second still gets an answer.
+                let key = Self.repeatFingerprint(for: call)
+                if Reliability.isOn(.callChecks), !seenThisTurn.insert(key).inserted {
+                    appendToolResult(name: call.name, observation: ["note": "Duplicate of an identical call in this same turn; it was run once, see the result above."])
+                    continue
+                }
+                let shouldContinue = await handle(Reliability.isOn(.callChecks) ? ToolCallValidator.coerced(call, schemas: tools.schemas) : call)
                 if !shouldContinue { return }
             }
         }
     }
 
     /// Runs one tool call to completion. Returns `false` if the runtime
-    /// should stop entirely (budget exceeded, repeat loop detected).
+    /// should stop entirely (budget exceeded, repeat loop detected, or the
+    /// guardrail circuit breaker tripped).
     private func handle(_ call: ToolCall) async -> Bool {
         let repeatCount: Int
         do {
@@ -353,94 +457,111 @@ public actor AgentRuntime {
             return false
         }
 
+        // A malformed call gets a precise correction (missing field, wrong type, "did you mean run_shell?")
+        // instead of a confusing failure or an approval prompt for something that cannot work.
+        // An unknown tool is never run. With the call checks on, the model also gets "did you mean run_shell?".
         guard tools.names().contains(call.name) else {
-            appendToolResult(name: call.name, observation: ["error": "unknown tool '\(call.name)'"])
+            let message = Reliability.isOn(.callChecks)
+                ? (ToolCallValidator.problem(with: call, schemas: tools.schemas + [Self.finishTaskSchema]) ?? "unknown tool '\(call.name)'")
+                : "unknown tool '\(call.name)'"
+            appendToolResult(name: call.name, observation: ["error": message])
+            return true
+        }
+        if Reliability.isOn(.callChecks), let problem = ToolCallValidator.problem(with: call, schemas: tools.schemas + [Self.finishTaskSchema]) {
+            appendToolResult(name: call.name, observation: ["error": problem])
+            return true
+        }
+        if Reliability.isOn(.callChecks), call.name == "run_shell", let command = call.arguments["command"]?.asString, let problem = ShellLint.problem(in: command) {
+            appendToolResult(name: call.name, observation: ["error": problem])
             return true
         }
 
-        var decision = Policy.evaluate(tool: call.name)
-        // In an untrusted run (a friend's text is in context) only read-only
-        // and bookkeeping tools may run unattended; anything that writes,
-        // browses, or drives the desktop asks first — even if the default
-        // policy would allow it.
-        if alwaysRequireApproval, decision == .allow, !Self.untrustedSafeTools.contains(call.name) {
-            decision = .requireApproval
-        }
-        switch decision {
-        case .deny:
-            appendToolResult(name: call.name, observation: ["error": "denied by policy"])
+        let evaluationStarted = Date()
+        let outcome = await gate.evaluate(call)
+        // Judging a call is instant; anything longer was a person deciding.
+        let waited = Date().timeIntervalSince(evaluationStarted)
+        if waited > 1 { secondsWaitingForHuman += waited }
+        switch outcome {
+        case .freeze(let why):
+            // Keep the transcript well-formed: the assistant's tool call gets an answer.
+            appendToolResult(name: call.name, observation: ["error": "run frozen by guardrails: \(why)"])
+            let error = RuntimeError.frozen(why)
+            emitAbortMessage(for: error)
+            onEvent(.status(.aborted("\(error)")))
+            return false
+        case .refuse(let message):
+            appendToolResult(name: call.name, observation: ["error": message])
             return true
-
-        case .requireApproval:
-            // For run_shell specifically: a previously "always allow"-ed
-            // binary skips approval entirely rather than re-asking for a
-            // command already trusted. Every other tool this policy tier
-            // covers still asks every time.
-            let binary = call.name == "run_shell"
-                ? call.arguments["command"]?.asString.flatMap(RunShellPermissions.extractBinary(fromCommand:))
-                : nil
-            // A command that asks for Keychain secrets is never auto-approved,
-            // whatever grants exist: injected instructions could otherwise
-            // exfiltrate a secret (encoded past output masking) unattended.
-            let usesSecrets = !(call.arguments["use_secrets"]?.asStringArray ?? []).isEmpty
-            if call.name == "run_shell", !usesSecrets, !alwaysRequireApproval,
-               await permissions.isBlanketAllowed(botID: sandboxID) {
-                await execute(call, repeatCount: repeatCount)
-                return true
-            }
-            if let binary, !usesSecrets, !alwaysRequireApproval, await permissions.isAllowed(binary) {
-                await execute(call, repeatCount: repeatCount)
-                return true
-            }
-
-            onEvent(.status(.waitingForApproval))
-            let approval = Approval(
-                taskID: sandboxID,
-                toolName: call.name,
-                argumentsSummary: jsonString(call.arguments.mapValues(\.value)),
-                alwaysAllowCandidate: alwaysRequireApproval ? nil : binary,
-                untrusted: alwaysRequireApproval
-            )
-            onEvent(.approvalNeeded(approval))
-            let decision = await requestApproval(approval)
-            switch decision {
-            case .deny:
-                appendToolResult(name: call.name, observation: ["error": "denied by user"])
-                return true
-            case .approveAlwaysSession where !alwaysRequireApproval:
-                if let binary { await permissions.allow(binary, scope: .session) }
-            case .approveAlwaysGlobal where !alwaysRequireApproval:
-                if let binary { await permissions.allow(binary, scope: .global) }
-            case .approveAllShellThisBotSession where !alwaysRequireApproval:
-                await permissions.allowAll(botID: sandboxID, scope: .botSession)
-            case .approveAllShellThisBotAlways where !alwaysRequireApproval:
-                await permissions.allowAll(botID: sandboxID, scope: .botAlways)
-            case .approveAllShellEveryBot where !alwaysRequireApproval:
-                await permissions.allowAll(botID: sandboxID, scope: .everyBot)
-            case .approve, .approveAlwaysSession, .approveAlwaysGlobal,
-                 .approveAllShellThisBotSession, .approveAllShellThisBotAlways, .approveAllShellEveryBot:
-                // The untrusted-context cases land here: approve this ONE
-                // call, record nothing.
-                break
-            }
-            onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
-            await execute(call, repeatCount: repeatCount)
+        case .held(let note, let stored):
+            onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
+            appendToolResult(name: call.name, observation: ["ok": stored, "held_for_review": stored, "note": note])
+            onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(["held_for_review": stored])))
             return true
-
-        case .allow:
-            await execute(call, repeatCount: repeatCount)
+        case .run(let decision, let askedHuman):
+            if askedHuman {
+                onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
+            }
+            await execute(call, repeatCount: repeatCount, decision: decision)
+            switch Reliability.isOn(.loopGuards) ? stuck.recordAction(Self.repeatFingerprint(for: call)) : .fine {
+            case .abort(let why): abortForStuck = why
+            case .nudge(let text): messages.append(ChatMessage(role: .user, content: text))
+            case .fine: break
+            }
+            if let why = abortForStuck {
+                let error = RuntimeError.repeated(why)
+                emitAbortMessage(for: error)
+                onEvent(.status(.aborted("\(error)")))
+                return false
+            }
+            if abortForSameResults {
+                let error = RuntimeError.repeated("'\(call.name)' kept returning the same result; the run was going in circles")
+                emitAbortMessage(for: error)
+                onEvent(.status(.aborted("\(error)")))
+                return false
+            }
             return true
         }
     }
 
-    private func execute(_ call: ToolCall, repeatCount: Int) async {
+    private func execute(_ call: ToolCall, repeatCount: Int, decision: GuardrailDecision) async {
         onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
         var observation = await tools.execute(
             name: call.name, arguments: call.arguments, sandboxID: sandboxID, sandbox: sandbox, secretStore: secretStore
         )
         let screenshotBase64 = observation.removeValue(forKey: "_base64") as? String
-        appendToolResult(name: call.name, observation: observation)
-        onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(observation)))
+        // What the model reads (and the console shows): bounded, with grounded warnings/hints added.
+        var shown = observation
+        if Reliability.isOn(.outputLimits) { shown = ObservationPolicy.bounded(shown) }
+        if Reliability.isOn(.failureHints) { shown = ObservationPolicy.annotate(tool: call.name, observation: shown) }
+        appendToolResult(name: call.name, observation: shown)
+        onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(shown)))
+        // Something changed on the machine (an install, a write, a command with side effects): checking again
+        // is now a different question, so earlier identical checks no longer count as a loop.
+        if decision.effect != .observe {
+            callFingerprints.removeAll()
+            lastResultKey = ""
+            sameResultStreak = 0
+            stuck.reset()
+        }
+        let streak = noteResult(call, observation: observation)
+        if !Reliability.isOn(.loopGuards) {
+            // same-result guard switched off
+        } else if streak == Self.sameResultNudgeAt {
+            messages.append(ChatMessage(
+                role: .user,
+                content: "\(call.name) has now returned the identical result \(streak) times in a row. Running it again, even "
+                    + "reworded, will not change the answer. An empty or negative result is information: change your approach "
+                    + "(for example, a package lookup that prints nothing usually means the package lists are not loaded: run "
+                    + "`sudo apt-get update` first), do what the result implies, or say plainly that you are blocked and what you need."
+            ))
+        } else if streak >= Self.sameResultAbortAt {
+            abortForSameResults = true
+        }
+
+        // Whatever this call brought into context may be attacker-controlled.
+        if let notice = await gate.didExecute(call, decision: decision, observation: observation) {
+            onEvent(.message(ChatMessage(role: .system, content: notice)))
+        }
 
         // Escalating nudges before `checkRepeat`'s own hard abort at
         // `loopRepeatThreshold` — that only ever fires silently-until-
@@ -526,6 +647,11 @@ public actor AgentRuntime {
     /// not a failure worth narrating.
     private func emitAbortMessage(for error: Error) {
         if case RuntimeError.cancelled = error { return }
+        // A dead model server is not something the bot said or did: one plain sentence, not the raw URL error.
+        if ModelConnection.isConnectionProblem(error) {
+            onEvent(.message(ChatMessage(role: .assistant, content: ModelConnection.friendlyMessage(for: error), isTaskSummary: true)))
+            return
+        }
         onEvent(.message(ChatMessage(role: .assistant, content: "(stopped early: \(error))", isTaskSummary: true)))
     }
 
@@ -639,7 +765,7 @@ public actor AgentRuntime {
         if iterations >= budgets.maxIterations {
             throw RuntimeError.budgetExceeded("max iterations (\(budgets.maxIterations)) reached")
         }
-        if Date().timeIntervalSince(startedAt) > budgets.maxWallSeconds {
+        if Date().timeIntervalSince(startedAt) - secondsWaitingForHuman > budgets.maxWallSeconds {
             throw RuntimeError.budgetExceeded("max wall-clock time (\(Int(budgets.maxWallSeconds))s) exceeded")
         }
         if tokensUsed > budgets.maxTokens {
@@ -652,14 +778,53 @@ public actor AgentRuntime {
     /// nudge the model once, well before the hard abort below.
     @discardableResult
     private func checkRepeat(_ call: ToolCall) throws -> Int {
-        let argsJSON = jsonString(call.arguments.mapValues(\.value))
-        let key = "\(call.name)|\(argsJSON)"
+        let key = Self.repeatFingerprint(for: call)
         let count = (callFingerprints[key] ?? 0) + 1
         callFingerprints[key] = count
         if count > Self.loopRepeatThreshold {
             throw RuntimeError.repeated("repeated the same '\(call.name)' call too many times")
         }
         return count
+    }
+
+    /// What counts as "the same call". Exact argument equality missed a model re-running one check with
+    /// cosmetic changes (`| head -20`, an added `timeout`, echo labels, a duplicated clause), so shell
+    /// commands are reduced to their set of real commands, and `timeout` is ignored everywhere.
+    static func repeatFingerprint(for call: ToolCall) -> String {
+        var args = call.arguments
+        args["timeout"] = nil
+        if call.name == "run_shell", let command = args["command"]?.asString {
+            args["command"] = AnyCodable(normalizedShell(command))
+        }
+        let data = try? JSONSerialization.data(withJSONObject: args.mapValues(\.value), options: [.sortedKeys])
+        return "\(call.name)|" + (data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
+    }
+
+    static func normalizedShell(_ command: String) -> String {
+        var text = command
+        for noise in ["2>&1", "2>/dev/null", "1>/dev/null", ">/dev/null"] { text = text.replacingOccurrences(of: noise, with: " ") }
+        let separators = CharacterSet(charactersIn: ";\n")
+        var parts: [String] = []
+        for rawPart in text.components(separatedBy: separators) {
+            // `a && b || c` -> a, b, c
+            for sub in rawPart.replacingOccurrences(of: "&&", with: ";").replacingOccurrences(of: "||", with: ";").components(separatedBy: ";") {
+                var piece = sub.trimmingCharacters(in: .whitespaces)
+                // drop display-only pipes
+                if let pipe = piece.range(of: #"\|\s*(head|tail)\b.*$"#, options: .regularExpression) { piece.removeSubrange(pipe) }
+                piece = piece.split(whereSeparator: { $0 == " " || $0 == "\t" }).joined(separator: " ")
+                if piece.isEmpty || piece.hasPrefix("echo ") || piece == "echo" || piece.hasPrefix("exit=") { continue }
+                parts.append(piece)
+            }
+        }
+        return Array(Set(parts)).sorted().joined(separator: " ; ")
+    }
+
+    /// A tool returning the very same result again and again means the model is going in circles,
+    /// whatever the arguments look like.
+    private func noteResult(_ call: ToolCall, observation: [String: Any]) -> Int {
+        let key = call.name + "|" + jsonString(observation)
+        if key == lastResultKey { sameResultStreak += 1 } else { lastResultKey = key; sameResultStreak = 1 }
+        return sameResultStreak
     }
 
     // MARK: - Transcript helpers
