@@ -74,7 +74,7 @@ chmod 600 .env
 # Both are git-ignored (they can hold real credentials), so a fresh clone has
 # neither: create a minimal seed so the image builds. Existing files are left
 # alone; add your own dotfiles or starter files there if you want them.
-mkdir -p box/.config box/reference workspace
+mkdir -p box/.config workspace
 for f in .bashrc .profile .bash_logout .gitconfig; do
   if [ ! -e "box/$f" ]; then
     if [ -f "/etc/skel/$f" ]; then cp "/etc/skel/$f" "box/$f"; else : > "box/$f"; fi

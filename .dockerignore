@@ -12,11 +12,6 @@ api
 evals
 docs
 box/.config/gh
-box/agent-data
-box/sand-data
-box/sand-host
-box/deps
-box/cli-config
 **/*.pem
 **/*.key
 **/id_rsa*

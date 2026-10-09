@@ -1,7 +1,6 @@
 #!/bin/bash
-# Brings up the agent's desktop session and pre-opens the same windows as the
-# reference environment: a terminal in /workspace (left) and Thunar showing
-# /workspace (right).
+# Brings up the agent's desktop session and pre-opens its two working windows:
+# a terminal in /workspace (left) and Thunar showing /workspace (right).
 set -e
 
 export DISPLAY=:1

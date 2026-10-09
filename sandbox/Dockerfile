@@ -1,5 +1,5 @@
 # The agent's "computer": a real Debian 13 (trixie) desktop, streamed over VNC.
-# Mirrors the reference environment: dark wallpaper, openbox WM, a small bottom
+# Dark wallpaper, openbox WM, a small bottom
 # dock (Chromium / Thunar / Terminal), Thunar file manager, xfce4-terminal,
 # user `box`, working directory /workspace.
 FROM debian:trixie-slim
@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 install --no-cache-dir --break-system-packages \
     requests beautifulsoup4 openpyxl pandas
 
-# Non-root desktop user, matching the reference environment's `box@...`
+# Non-root desktop user (`box@...` in the shell prompt)
 RUN useradd -m -s /bin/bash box \
     && mkdir -p /workspace \
     && chown -R box:box /workspace /home/box \
@@ -58,16 +58,11 @@ RUN mkdir -p /home/box/.config/openbox /home/box/.config/tint2 \
 RUN /usr/local/bin/make-wallpaper.sh && chown box:box /usr/share/backgrounds/agent-wallpaper.png
 
 # --- Seed /home/box from the top-level box/ directory (gitignored — see
-# .gitignore) ---------------------------------------------------------------
-# Deliberately NOT box/agent-data, box/sand-data, box/sand-host, box/deps, or
-# box/cli-config: those turned out to be a third-party product's internal
-# agent-sandbox runtime (literal secrets files — box-secrets.json,
-# host-secrets.json, chrome-cookie-seed.json — plus browser
-# cookie/session-injection tooling), not anything authored for this project,
-# and are excluded on purpose rather than by oversight.
+# .gitignore; ./setup.sh creates a minimal one) ------------------------------
+# Only these named files are copied, so nothing else that lands in box/ ends
+# up in the image.
 COPY box/.bashrc box/.profile box/.gitconfig box/.bash_logout /home/box/
 COPY box/.config/ /home/box/.config/
-COPY box/reference/ /home/box/reference/
 # box/.config/gh (GitHub CLI) holds OAuth tokens in hosts.yml — belt-and-
 # suspenders removal in case the box/.config COPY above ever picks it back up.
 RUN rm -rf /home/box/.config/gh \

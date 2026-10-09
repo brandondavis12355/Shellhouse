@@ -1,6 +1,6 @@
 #!/bin/bash
 # Generates the dark wallpaper with a soft diagonal light sweep, so the
-# desktop matches the reference environment without shipping a binary image.
+# desktop has its look without shipping a binary image.
 set -e
 mkdir -p /usr/share/backgrounds
 OUT=/usr/share/backgrounds/agent-wallpaper.png

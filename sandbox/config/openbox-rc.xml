@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc">
   <!-- Compact, dark-ish decorations with the classic
-       shade / minimize / maximize / close button row, matching the
-       reference environment's window titlebars. -->
+       shade / minimize / maximize / close button row on window titlebars. -->
   <theme>
     <name>Clearlooks</name>
     <titleLayout>NLIMC</titleLayout>
