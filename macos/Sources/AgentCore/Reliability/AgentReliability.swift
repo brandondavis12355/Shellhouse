@@ -278,6 +278,15 @@ public enum ReplyQuality {
     }
 }
 
+/// Tool results are stored as JSON, which escapes every `/` as `\/`, so a
+/// path the tools really returned ("/usr/bin/gh") would never be found in
+/// them verbatim. Lowercase and undo that escaping before searching.
+enum ObservationText {
+    static func searchable(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\/", with: "/").lowercased()
+    }
+}
+
 public enum EvidenceGrounding {
     private static let filler: Set<String> = ["this", "that", "with", "from", "have", "were", "which", "what", "when", "then", "than", "ran", "output",
                                               "result", "showed", "shows", "returned", "command", "step", "done", "worked", "works", "exit", "code", "verified", "confirmed", "checked"]
@@ -286,7 +295,7 @@ public enum EvidenceGrounding {
     /// file name) really appears in what the tools returned during this run. Self-assessment alone is not
     /// evidence (research on self-graded loops found a "progress mirage"); the world's output is.
     public static func isGrounded(evidence: String, observations: String) -> Bool {
-        let haystack = observations.lowercased()
+        let haystack = ObservationText.searchable(observations)
         guard !haystack.isEmpty else { return false }
         let tokens = evidence.lowercased()
             .split { !($0.isLetter || $0.isNumber || $0 == "." || $0 == "/" || $0 == "-" || $0 == "_") }
@@ -334,7 +343,7 @@ public enum ClaimCheck {
 
     /// Specifics in `reply` that appear in none of `sources`.
     public static func unsupported(in reply: String, sources: String) -> [String] {
-        let haystack = sources.lowercased()
+        let haystack = ObservationText.searchable(sources)
         return specifics(in: reply).filter { !haystack.contains($0.lowercased()) }
     }
 
