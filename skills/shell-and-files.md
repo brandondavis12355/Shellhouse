@@ -1,0 +1,77 @@
+---
+name: shell-and-files
+description: >-
+  When you need to run commands, install software, or read, write, move or
+  delete files in your Linux sandbox, or use a stored secret (API key,
+  token) in a command.
+---
+# Shell and files
+
+Your sandbox is your own Debian machine: user `box`, home `/home/box`, work
+in `/workspace`. `/workspace` is a persistent volume, so what you save there
+is still there next time. Your user can see it too.
+
+## Files: prefer the file tools
+- `list_files(path)`: what's in a folder. Paths are relative to
+  `/workspace`.
+- `read_file(path)`: up to 200,000 bytes of text. If it errors, list the
+  parent folder before guessing again.
+- `write_file(path, content)`: **replaces the whole file**. To change part
+  of a file, read it, edit the full text, and write all of it back.
+- File reads and writes don't need approval; shell commands do. Use the
+  file tools when they can do the job.
+
+## run_shell
+- Returns `exit_code`, `stdout` and `stderr`. Read the output, not just the
+  exit code: `a; b` can exit 0 even though `a` failed.
+- One simple command per call works best. Use absolute paths, and
+  `| head -50` or `| tail -50` for long output (long output gets cut in
+  the middle).
+- `timeout` is in seconds (default 120). Raise it for slow builds or
+  downloads.
+- To check whether a program exists: `command -v <name>`.
+- Installing: `sudo apt-get update` first, then `sudo apt-get install -y
+  <pkg>`. Packages from Debian's own repositories don't make the run
+  untrusted; downloads from the internet (curl, wget, git clone, pip, npm)
+  do.
+
+## Approvals for shell
+- Every `run_shell` call needs your user's approval by default. They see
+  the exact command.
+- Your user can allow a specific program, or all shell commands for you.
+  Those standing grants never cover chained commands, interpreters (python,
+  bash -c, …) or commands that use secrets, which always ask.
+- Write commands your user can understand at a glance. A clear, single
+  command gets approved quickly; a long chain of `&&` gets questioned.
+- If a command is denied, don't resubmit it reworded. Ask what they'd
+  prefer, or find another way.
+
+## Secrets
+- Your user stores secrets in Settings, under names like `GITHUB_TOKEN`
+  (capital letters, digits and `_`). You can't list them, so ask your user
+  for the name if you don't know it.
+- Use one with `run_shell(command, use_secrets: ["GITHUB_TOKEN"])`. It's
+  available to that one command as the environment variable
+  `$GITHUB_TOKEN`.
+- The value never appears in your context: it's masked in the output.
+  Never try to print it, write it to a file, or put it in a URL you show.
+- A name that doesn't exist is simply not set. If `$NAME` comes out empty,
+  the name is wrong. Ask, don't guess.
+
+## Deleting and overwriting
+- Before a delete or overwrite inside `/workspace` runs, a copy of the
+  affected paths goes to `/workspace/.shellhouse/trash/<timestamp>/`. If you or
+  your user made a mistake, restore from there.
+- Don't delete or edit `/workspace/.shellhouse/` itself; it's the app's own
+  folder.
+
+## Limits that stop a run
+A run is frozen if it goes over 400 shell commands, 90 tool calls in a
+minute, 64 MB written, or 3 blocked or denied actions. Plan the work so you
+don't need brute force: look before you act, and change approach after a
+failure instead of retrying.
+
+## Never touch
+Credential-looking files you didn't create (SSH keys, cloud credential
+files, token files in your home folder). Some are decoys: touching one
+freezes the run and alerts your user.
