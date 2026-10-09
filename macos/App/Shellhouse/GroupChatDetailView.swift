@@ -69,7 +69,10 @@ struct GroupChatDetailView: View {
                 messages: group.displayMessages,
                 memberColors: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.id, $0.colorHex) }),
                 memberStyles: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.id, $0.avatarStyle) }),
-                mentionColors: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.name.lowercased(), $0.colorHex) })
+                mentionColors: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.name.lowercased(), $0.colorHex) }),
+                drafts: resolvedMembers.compactMap { member in
+                    group.liveDrafts[member.id].map { GroupMessage(id: "draft-\(member.id)", speakerBotID: member.id, speakerName: member.name, text: $0) }
+                }
             )
             .padding(.horizontal, 20)
 

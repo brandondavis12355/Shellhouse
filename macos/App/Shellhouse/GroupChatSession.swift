@@ -34,6 +34,17 @@ final class GroupChatSession: Identifiable {
     /// Bots currently gating/generating, in the order they started — drives
     /// the "X is thinking…" indicator.
     private var activeSpeakers: [Bot] = []
+    /// What each member is writing right now (bot id -> text), streamed while
+    /// its turn runs and cleared when the turn ends. Display only; never saved.
+    private(set) var liveDrafts: [String: String] = [:]
+    /// The turn each member's draft belongs to, so a late update from a turn
+    /// that already ended can't bring a stale draft back.
+    private var draftTurns: [String: UUID] = [:]
+
+    private func endDraft(_ botID: String) {
+        draftTurns[botID] = nil
+        liveDrafts[botID] = nil
+    }
     /// How many messages of `displayMessages` each member has already been
     /// shown (as of its last worker pass). Anything after that is "new".
     private var seenCount: [String: Int] = [:]
@@ -185,6 +196,8 @@ final class GroupChatSession: Identifiable {
         workers.values.forEach { $0.cancel() }
         workers.removeAll()
         activeSpeakers.removeAll()
+        liveDrafts.removeAll()
+        draftTurns.removeAll()
         refreshBusy()
     }
 
@@ -398,6 +411,7 @@ final class GroupChatSession: Identifiable {
             // An owner that exits without running intake (nothing new, no
             // longer a member, cancelled) must not leave the others waiting.
             if intakeOwnerID == botID { intakeOwnerID = nil }
+            endDraft(botID)
             workers[botID] = nil
             activeSpeakers.removeAll { $0.id == botID }
             refreshBusy()
@@ -565,6 +579,8 @@ final class GroupChatSession: Identifiable {
                 if !usedQuickPath { debugLog(bot, "quick reply failed — falling back to a full turn") }
             }
             if reply == nil {
+                let draftTurn = UUID()
+                draftTurns[botID] = draftTurn
                 reply = await bot.respondInGroup(
                     groupName: name,
                     otherMembers: others,
@@ -575,8 +591,18 @@ final class GroupChatSession: Identifiable {
                     goalHandler: handler,
                     untrustedInput: untrusted,
                     // No goal work this turn: a substantial plain-text answer is the answer.
-                    plainReplyEndsTurn: goal?.isLive != true && !isIntakeTurn
+                    plainReplyEndsTurn: goal?.isLive != true && !isIntakeTurn,
+                    onDraft: { [weak self] text in
+                        guard let self, self.draftTurns[botID] == draftTurn else { return }
+                        if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            self.liveDrafts[botID] = text
+                        } else {
+                            self.liveDrafts[botID] = nil
+                        }
+                    }
                 )
+                // The real message (or nothing) replaces the draft from here on.
+                endDraft(botID)
             }
             // Last resort for a required reply: a direct, tool-less answer beats silence.
             if reply == nil, mustAnswer, owes == .mustReply, bot.lastTurnFailure == nil, !Task.isCancelled, let humanMessage {

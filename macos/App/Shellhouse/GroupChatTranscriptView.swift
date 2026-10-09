@@ -21,6 +21,9 @@ struct GroupChatTranscriptView: View {
     /// since matching happens on the name actually typed/said in the
     /// text, not an id.
     let mentionColors: [String: String]
+    /// What members are writing right now, shown as dimmed "typing…" bubbles
+    /// after the real messages until each turn's message is posted.
+    var drafts: [GroupMessage] = []
 
     var body: some View {
         GeometryReader { geometry in
@@ -36,6 +39,17 @@ struct GroupChatTranscriptView: View {
                                     mentionColors: mentionColors
                                 )
                                 .id(message.id)
+                            }
+                            ForEach(drafts) { draft in
+                                GroupMessageBubble(
+                                    message: draft,
+                                    colorHex: draft.speakerBotID.flatMap { memberColors[$0] },
+                                    avatarStyle: draft.speakerBotID.flatMap { memberStyles[$0] },
+                                    mentionColors: mentionColors,
+                                    isDraft: true
+                                )
+                                .id(draft.id)
+                                .transition(.opacity)
                             }
                         }
                         .padding(.vertical, 12)
@@ -56,6 +70,10 @@ struct GroupChatTranscriptView: View {
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
                     }
                 }
+                // Keep a growing draft in view while it streams.
+                .onChange(of: drafts.map(\.text.count).reduce(0, +)) { _, _ in
+                    if let last = drafts.last?.id { proxy.scrollTo(last, anchor: .bottom) }
+                }
             }
         }
     }
@@ -66,6 +84,8 @@ private struct GroupMessageBubble: View {
     let colorHex: String?
     let avatarStyle: Int?
     let mentionColors: [String: String]
+    /// A message still being written: dimmed, marked "typing…", no timestamp.
+    var isDraft = false
 
     private var isFriend: Bool { message.externalUserID != nil }
     private var isUser: Bool { message.speakerBotID == nil && !isFriend }
@@ -116,7 +136,12 @@ private struct GroupMessageBubble: View {
                     .padding(.vertical, 13)
                     .background(isUser ? Theme.userBubble : Theme.bubble)
                     .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
-                MessageTimestamp(date: message.timestamp)
+                    .opacity(isDraft ? 0.65 : 1)
+                if isDraft {
+                    Text("typing…").font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 6)
+                } else {
+                    MessageTimestamp(date: message.timestamp)
+                }
             }
             if !isUser { Spacer(minLength: 72) }
         }

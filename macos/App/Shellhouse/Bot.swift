@@ -1736,7 +1736,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         extraSuffix: String = "",
         goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
         untrustedInput: Bool = false,
-        plainReplyEndsTurn: Bool = false
+        plainReplyEndsTurn: Bool = false,
+        onDraft: (@MainActor (String?) -> Void)? = nil
     ) async -> String? {
         let mustReply = wasMentioned && !mentionedByBot
         lastTurnFailure = nil
@@ -1776,6 +1777,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         var outcome = await runIsolatedTaskResult(
             systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler,
             untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn,
+            onDraft: onDraft,
             followUp: { [weak self] result in
                 guard let self, !result.failed else { return nil }
                 let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1998,6 +2000,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
         untrustedInput: Bool = false,
         plainReplyEndsTurn: Bool = false,
+        onDraft: (@MainActor (String?) -> Void)? = nil,
         followUp: (@MainActor (IsolatedResult) async -> String?)? = nil
     ) async -> IsolatedResult {
         guard let sandbox, let handle else {
@@ -2048,6 +2051,14 @@ final class Bot: Identifiable, @unchecked Sendable {
             // itself rather than hoping the model reproduces an exact string
             // like `[[silent]]` verbatim with no narration wrapped around it.
             var isSilent = false
+            // Live text for the UI while the model streams (see `onDraft`):
+            // reset whenever a tool starts so it always shows the current step.
+            var draftText = ""
+            var lastDraftFlush = Date.distantPast
+            func publishDraft(_ text: String?) {
+                guard let onDraft else { return }
+                Task { @MainActor in onDraft(text) }
+            }
             let runtime = AgentRuntime(
                 model: await makeModelBackend(),
                 sandbox: sandbox,
@@ -2147,8 +2158,14 @@ final class Bot: Identifiable, @unchecked Sendable {
                         toolCallCounter.note(toolName)
                         toolCallCounter.noteOutput(toolName, argumentsJSON)
                         phaseTracker.set(responding: false, botID: botIDForPhase)
-                    case .messageDelta:
+                        if !draftText.isEmpty { draftText = ""; publishDraft(nil) }
+                    case .messageDelta(let delta):
                         phaseTracker.set(responding: true, botID: botIDForPhase)
+                        draftText += delta
+                        if Date().timeIntervalSince(lastDraftFlush) > 0.08 {
+                            lastDraftFlush = Date()
+                            publishDraft(draftText)
+                        }
                     case .status(.aborted("silent")):
                         isSilent = true
                     default:
@@ -2206,6 +2223,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 rounds += 1
                 replyPicker = IsolatedReplyPicker()
                 isSilent = false
+                draftText = ""
+                publishDraft(nil)
                 await runtime.send(correction)
                 let next = await currentResult()
                 // Keep the first answer if the follow-up produced nothing usable.
