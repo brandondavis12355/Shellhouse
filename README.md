@@ -13,6 +13,7 @@ They remember, schedule their own work, and coordinate with each other, all on h
 ![Swift 5.9](https://img.shields.io/badge/Swift-5.9-F05138?style=flat-square&logo=swift&logoColor=white)
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Local models](https://img.shields.io/badge/models-local%20via%20Ollama-111827?style=flat-square)
+![License: MIT](https://img.shields.io/badge/license-MIT-FACC15?style=flat-square)
 
 <img src="avatars/blob_purple.svg" width="56" alt=""> <img src="avatars/capsule_cyan.svg" width="56" alt=""> <img src="avatars/diamond_yellow.svg" width="56" alt=""> <img src="avatars/cloud_pink.svg" width="56" alt=""> <img src="avatars/circle_green.svg" width="56" alt=""> <img src="avatars/blob_orange.svg" width="56" alt="">
 
@@ -144,6 +145,10 @@ Details, and commands to verify each claim: [docs/SECURITY.md](docs/SECURITY.md)
 | [docs/MODEL_TIERS.md](docs/MODEL_TIERS.md) | Model tiers, thinking and parallel helpers for faster local replies |
 | [docs/EGRESS.md](docs/EGRESS.md) · [docs/FIRECRACKER.md](docs/FIRECRACKER.md) | Network policy and microVM isolation |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The reference stack's architecture |
+
+## License
+
+[MIT](LICENSE)
 
 ---
 
