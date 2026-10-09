@@ -1167,10 +1167,12 @@ public enum ActionClassifier {
             if rest.isEmpty || rest.allSatisfy({ ["-a", "-r", "-v", "-vv", "--list", "--all", "--remotes", "--show-current", "--verbose"].contains($0) }) {
                 return [Finding(.observe, "read.git_branch", "lists branches", clean: .allow, tainted: .allow)]
             }
-            if flagSet.contains("-D") || flagSet.contains("--delete") || flagSet.contains("-d") || flagSet.contains("-M") || flagSet.contains("-f") || flagSet.contains("--force") || flagSet.contains("-m") || flagSet.contains("-C") || flagSet.contains("-c") {
-                return [Finding(.destructive, "destroy.git_branch", "deletes or force-renames a branch", clean: .askStrict, tainted: .deny)]
+            // `-c`/`--copy` is left out on purpose: a plain copy refuses to
+            // overwrite an existing branch, unlike `-C` (force-copy).
+            if flagSet.contains("-D") || flagSet.contains("--delete") || flagSet.contains("-d") || flagSet.contains("-M") || flagSet.contains("-f") || flagSet.contains("--force") || flagSet.contains("-m") || flagSet.contains("-C") {
+                return [Finding(.destructive, "destroy.git_branch", "deletes, renames or force-copies a branch", clean: .askStrict, tainted: .deny)]
             }
-            return [Finding(.exec, "exec.git_branch", "creates or renames a branch", clean: .ask, tainted: .askStrict)]
+            return [Finding(.exec, "exec.git_branch", "creates or copies a branch", clean: .ask, tainted: .askStrict)]
         case "remote":
             return rest.isEmpty || rest.allSatisfy({ $0.hasPrefix("-") }) || rest.first == "show" || rest.first == "get-url"
                 ? [Finding(.observe, "read.git_remote", "lists remotes", clean: .allow, tainted: .allow)]

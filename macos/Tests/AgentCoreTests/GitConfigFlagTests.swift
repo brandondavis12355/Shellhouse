@@ -19,13 +19,22 @@ final class GitConfigFlagTests: XCTestCase {
         let expected: [(String, String)] = [
             ("git switch -c fix-parser", "exec.git_switch"),
             ("git checkout -b fix-parser", "exec.git_checkout"),
+            ("git branch -c old new", "exec.git_branch"),
+            ("git branch --copy old new", "exec.git_branch"),
         ]
         for (c, rule) in expected {
             XCTAssertFalse(rules(c).contains("security.git_exec"), c)
             XCTAssertTrue(rules(c).contains(rule), "\(c): \(rules(c))")
         }
-        for c in ["git grep -c TODO", "git commit -c HEAD", "git branch -c old new"] {
+        for c in ["git grep -c TODO", "git commit -c HEAD"] {
             XCTAssertFalse(rules(c).contains("security.git_exec"), c)
+        }
+    }
+
+    func testForceCopyAndDeleteStayStrict() {
+        for c in ["git branch -C old new", "git branch -D old", "git branch -M old new"] {
+            XCTAssertTrue(rules(c).contains("destroy.git_branch"), c)
+            XCTAssertEqual(ActionClassifier.classifyShell(c).verdict(tainted: true), .deny, c)
         }
     }
 }
