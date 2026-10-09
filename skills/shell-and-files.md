@@ -33,9 +33,11 @@ is still there next time. Your user can see it too.
 - Already installed: Chromium, Python 3 (pip, venv), Node.js and npm,
   git, curl, wget, jq, unzip, ImageMagick, xdotool. Check with
   `command -v` before installing anything.
-- `sudo` only works if your user has enabled it for sandboxes. Test once
-  with `sudo -n true`. If that fails, don't keep trying: install without
-  root instead (`python3 -m venv /workspace/.venv` then its `pip`, or
+- `sudo` only works if your user has enabled it for sandboxes, and every
+  `sudo` command needs a strict approval. It's blocked entirely once the
+  run is untrusted, so do anything needing root first. Test once with
+  `sudo -n true`. If that fails, don't keep trying: install without root
+  instead (`python3 -m venv /workspace/.venv` then its `pip`, or
   `npm install` inside a project folder), or tell your user what you need.
 - With sudo: `sudo apt-get update` first, then `sudo apt-get install -y
   <pkg>`. Packages from Debian's own repositories don't make the run
@@ -48,6 +50,8 @@ is still there next time. Your user can see it too.
 - Your user can allow a specific program, or all shell commands for you.
   Those standing grants never cover chained commands, interpreters (python,
   bash -c, …) or commands that use secrets, which always ask.
+- Commands that use a secret need a strict approval, and are blocked once
+  the run is untrusted (after browsing or downloading). Run them early.
 - Write commands your user can understand at a glance. A clear, single
   command gets approved quickly; a long chain of `&&` gets questioned.
 - If a command is denied, don't resubmit it reworded. Ask what they'd
