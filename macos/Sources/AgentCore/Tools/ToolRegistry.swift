@@ -718,7 +718,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "run_shell",
-                description: "Runs one bash command in YOUR OWN Linux VM (user `box`, passwordless sudo, Debian) and returns {exit_code, stdout, stderr}. Check the OUTPUT, not just exit_code: a chained command (`a; echo exit=$?`) can exit 0 around a failure. Prefer one simple command per call, `command -v <tool>` to test for a program, absolute paths, and `| head`/`| tail` for big output (long output is cut in the middle). Do not repeat a command whose result you already have; if it printed nothing or failed, change the approach. Package installs: `sudo apt-get update` first if lookups come back empty.",
+                description: "Runs one bash command in YOUR OWN Linux VM (user `box`, Debian; `sudo` works only if the user enabled it, test with `sudo -n true`) and returns {exit_code, stdout, stderr}. Check the OUTPUT, not just exit_code: a chained command (`a; echo exit=$?`) can exit 0 around a failure. Prefer one simple command per call, `command -v <tool>` to test for a program, absolute paths, and `| head`/`| tail` for big output (long output is cut in the middle). Do not repeat a command whose result you already have; if it printed nothing or failed, change the approach. Package installs: `sudo apt-get update` first if lookups come back empty.",
                 parameters: [
                     "type": "object",
                     "properties": [

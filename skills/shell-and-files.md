@@ -30,7 +30,14 @@ is still there next time. Your user can see it too.
 - `timeout` is in seconds (default 120). Raise it for slow builds or
   downloads.
 - To check whether a program exists: `command -v <name>`.
-- Installing: `sudo apt-get update` first, then `sudo apt-get install -y
+- Already installed: Chromium, Python 3 (pip, venv), Node.js and npm,
+  git, curl, wget, jq, unzip, ImageMagick, xdotool. Check with
+  `command -v` before installing anything.
+- `sudo` only works if your user has enabled it for sandboxes. Test once
+  with `sudo -n true`. If that fails, don't keep trying: install without
+  root instead (`python3 -m venv /workspace/.venv` then its `pip`, or
+  `npm install` inside a project folder), or tell your user what you need.
+- With sudo: `sudo apt-get update` first, then `sudo apt-get install -y
   <pkg>`. Packages from Debian's own repositories don't make the run
   untrusted; downloads from the internet (curl, wget, git clone, pip, npm)
   do.
