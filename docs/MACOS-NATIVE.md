@@ -1,5 +1,11 @@
 # macOS-native architecture
 
+> **Historical design doc.** This was the original plan for an all-local
+> Mac build (Virtualization.framework VMs, an XPC sandbox helper, GRDB). The
+> shipped app took a different route: each bot's sandbox runs on a Linux host
+> reached over SSH, managed by `sandbox-manager`. See
+> [`macos/README.md`](../macos/README.md) for how the app works today.
+
 Target: a signed, notarized Swift app that runs the whole AI-computer stack
 with no Docker, no Homebrew, no Python at runtime. Apple Silicon only.
 

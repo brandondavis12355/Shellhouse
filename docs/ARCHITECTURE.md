@@ -1,7 +1,7 @@
 # Architecture notes for this implementation
 
-This repo implements the MVP loop from the full platform design (see the
-project's development instructions): a model-agnostic
+The Docker/Python stack implements the MVP loop of the full platform design: a
+model-agnostic
 agent runtime, a permission-gated tool system, a sandboxed execution
 environment, and durable/event-sourced task state — wired exclusively to a
 local Ollama server.
@@ -56,7 +56,7 @@ decisions: **`docs/FIRECRACKER.md`**.
 
 ## Loop detection
 
-`agent/runtime.py` hashes `(tool_name, arguments)` per tool call. If the same
+`api/agent/runtime.py` hashes `(tool_name, arguments)` per tool call. If the same
 exact call repeats more than `LOOP_REPEAT_THRESHOLD` times in one task, the
 task is moved to `BLOCKED` instead of burning tokens/compute forever.
 
@@ -65,7 +65,7 @@ task is moved to `BLOCKED` instead of burning tokens/compute forever.
 The system prompt explicitly tells the model that `web_search`/`fetch_url`/
 `read_file` output is data, not instructions. This is a mitigation, not a
 guarantee — the actual security boundary is the policy engine
-(`agent/policy.py`), which is what decides whether a tool call executes,
+(`api/agent/policy.py`), which is what decides whether a tool call executes,
 regardless of what the model "decided" after reading untrusted content.
 
 
@@ -85,7 +85,7 @@ supervisord
 The agent drives that desktop through the same policy-gated tool interface as
 everything else — `screenshot` (scrot), `list_windows` (wmctrl -lG), `click` /
 `type_text` / `press_key` (xdotool), `open_app`. Nothing bypasses
-`agent/policy.py`.
+`api/agent/policy.py`.
 
 Two deliberate choices worth knowing about:
 

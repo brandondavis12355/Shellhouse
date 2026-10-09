@@ -1,6 +1,6 @@
 # Shellhouse agent runner: protocol v1
 
-Status: implemented in `src/shellhouse_agent`; the Swift side is not written yet. This file is the source of truth. Drafted with AI assistance (Claude Code); review before relying on it.
+Status: implemented in `src/shellhouse_agent`; the Swift side is `SmolAgentsEngine` in `macos/Sources/AgentCore/Engine/`. This file is the source of truth. Drafted with AI assistance (Claude Code); review before relying on it.
 
 The runner executes in an **untrusted** container and the run directory is readable and writable by the model's own tools. Swift must treat every runner-written value as untrusted data: size-cap it, validate it, never execute it.
 

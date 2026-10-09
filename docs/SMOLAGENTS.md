@@ -27,7 +27,7 @@ Mac (Swift)                                         Linux host
 │   ├─ BuiltInEngine  (AgentRuntime)│               │                                           │
 │   └─ SmolAgentsEngine             │   events.jsonl│  shellhouse-agent runner (Python)               │
 │        launch / poll / answer     │◀──────────────│   └─ smolagents ToolCallingAgent          │
-│ PolicyEngine · ToolRegistry       │   rpc/*.json  │        ├─ in-sandbox tools (shell, fs, GUI)│
+│ Policy · ToolRegistry             │   rpc/*.json  │        ├─ in-sandbox tools (shell, fs, GUI)│
 │ Memory · Routines · Secrets · UI  │──────────────▶│        └─ bridge tools (Mac-side state)    │
 │ Model proxy (token-gated)  ◀──────┼── ssh -R ─────┼── OpenAI-compatible calls ────────────────│
 └──────────────────────────────────┘               └───────────────────────────────────────────┘
@@ -45,7 +45,7 @@ Polled at ~0.5 s through the existing tunnel. Durable across tunnel drops and Ma
 ### 2. Tools
 - **In-sandbox tools** run natively in the container: `run_shell`, `read_file`, `write_file`, `list_files`, screenshot/window/click/type/key/scroll (port the exact commands from `ToolRegistry.swift`).
 - **Bridge tools** execute in Swift: `remember`, `recall_memory`, tasks, routines, `list_bots`, `message_bot`, `create_bot`, `post_to_group`, `use_skill`, secrets, goal tools. The runner sends `rpc_request`; Swift runs the existing implementation and replies.
-- **Policy stays Swift's.** Before any approval-tier tool the runner sends a `policy_check`; `PolicyEngine` answers allow/deny or raises the approval card, then the runner proceeds. Untrusted-run rules (friend messages → always ask) are passed in the run config.
+- **Policy stays Swift's.** Before any approval-tier tool the runner sends a `policy_check`; Swift's `Policy` answers allow/deny or raises the approval card, then the runner proceeds. Untrusted-run rules (friend messages → always ask) are passed in the run config.
 - **Rule:** anything touching Mac state, memory, or secrets is enforced in Swift. In-container gating of in-sandbox tools is sound for `ToolCallingAgent` (fixed wrappers) but only best-effort once `CodeAgent` exists, because model-written Python could call `subprocess` directly. Treat the container as untrusted either way.
 
 ### 3. Model access (the hard part)
@@ -100,7 +100,7 @@ The full guardrail design (effect classes, taint tracking, deny/ask rules, egres
 
 ## Trying the pilot (untested end to end)
 Nothing below has been run against a real sandbox image or sshd; expect to debug. Needs InfoSec review first (new dependency and a new network path).
-1. **Build the sandbox image** from `shellhouse/` (`sandbox/Dockerfile` has an unbuilt runner section). Regenerate `sandbox/agent-runner/requirements.lock` on Linux, review the transitive packages (the macOS lock includes `httpx2`/`httpcore2`, which need a supply-chain check), and pin hashes.
+1. **Build the sandbox image** from the repo root (`sandbox/Dockerfile` has an unbuilt runner section). Regenerate `sandbox/agent-runner/requirements.lock` on Linux, review the transitive packages (the macOS lock includes `httpx2`/`httpcore2`, which need a supply-chain check), and pin hashes.
 2. **sshd on the Linux host:** `GatewayPorts clientspecified` so the Mac's reverse forward can bind to the docker bridge gateway address.
 3. **In the Mac app:** Settings › Agent engine: enter the bridge gateway address (private IPv4 only) and port, Save & reconnect. If you run the egress allowlist (`docs/EGRESS.md`), enable the model relay and enter its alias in "Address sandboxes use".
 4. **Per bot:** Bot settings › Model › Engine → smolagents (local Ollama models only in this pilot). 1:1 chat only; group turns, delegations and routines still use the built-in engine.

@@ -1,5 +1,8 @@
 # Fixes 1–3
 
+> **Historical.** The "(fix 1/2/3)" labels in `.env.example`,
+> `docker-compose.yml` and `api/` comments refer to this document.
+
 Three changes, in dependency order. None of this has been executed — it is
 written carefully, syntax-checked, and reviewed, but a first build will find
 things. Assumptions that a build will confirm or break are marked **[unverified]**.

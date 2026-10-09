@@ -9,7 +9,7 @@ Status: preliminary signal, **not a benchmark**. Drafted with AI assistance (Cla
 - Host: macOS, 64 GB RAM. Workspace is a temp dir, **not** a Linux container; prompts name that real path (a first pass that told the model `/workspace` failed the shell/read tasks purely because the path did not exist on macOS, so those numbers were discarded and the harness fixed).
 - Models: `qwen3.5:9b-mlx` (9.4B params, nvfp4, tools+thinking capable, 8.9 GB) and `qwen3.5:4b` (4.7B params, Q4_K_M, 3.4 GB). Ollama defaults for thinking/sampling except temperature 0.2. max_steps 12. 3 trials per task.
 - Pass = task-specific check on the files/tool results/final answer AND the run ended with outcome=done. Tokens are as reported by Ollama's usage counters (summed over model calls).
-- Harness: `spike/run_spike.py`. Raw per-run JSON was kept outside the repo.
+- Harness: a one-off script (since removed from the repo) that ran `python -m shellhouse_agent run` per task. Raw per-run JSON was kept outside the repo.
 
 ## Results (3 trials per cell; means)
 

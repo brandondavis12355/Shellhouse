@@ -1,5 +1,8 @@
 # Build notes — what to expect on first run
 
+> **Historical.** Written before the Docker/Python stack had ever been run.
+> Kept as a debugging checklist; the stack has since been built and run.
+
 None of this has been executed. It is syntax-checked, and the tool/schema/
 policy tables reconcile, but that only rules out a category of error. Below is
 where I actually expect trouble, roughly in the order you'll hit it, so the

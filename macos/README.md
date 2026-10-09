@@ -53,10 +53,12 @@ actually got solved.
 
 ```
 macos/
-├── App/AICompute/        ← the actual app (SwiftUI + the Bot/GroupChat logic)
-├── Sources/AgentCore/     ← the agent loop, tools, model backends, sandbox protocol
-├── Sources/AgentUI/       ← shared UI components
-└── Sources/AgentCLI/      ← aic — a command-line doctor/debug tool
+├── App/Shellhouse/          ← the app itself (SwiftUI views + the Bot/GroupChat logic)
+├── Sources/AgentCore/    ← the agent loop, tools, guardrails, model backends, sandbox client
+├── Sources/AgentUI/      ← the live-desktop view shared by chats and bot details
+├── Tests/AgentCoreTests/ ← `swift test`
+├── project.yml           ← XcodeGen spec for the .app target
+└── Signing.xcconfig      ← includes your git-ignored Signing.local.xcconfig
 ```
 
 - **`AgentRuntime`** — the ReAct loop. Call the model → dispatch tool
@@ -67,13 +69,13 @@ macos/
 - **`ToolRegistry`** — everything a bot can reach: filesystem, shell,
   screenshots, GUI input, plus the memory/task/routine/bot-directory
   tools above.
-- **`PolicyEngine`** — every tool is `.allow`, `.requireApproval`, or
+- **`Policy`** — every tool is `.allow`, `.requireApproval`, or
   `.deny`. Arbitrary shell commands (and creating bots) always stop for
   an approval card; per-binary and "allow all shell" grants exist but never
   cover chained commands, interpreters, or commands that use secrets.
   File writes, web access and GUI input are allowed by default, and ask
   first whenever a friend's message is in the conversation (shared groups).
-- **Skills** (`../skills/*.md`, 47 and counting) — lazily-loaded
+- **Skills** (`../skills/*.md`, about 50) — lazily-loaded
   playbooks a bot pulls in only when the task actually calls for it,
   instead of stuffing every possible instruction into every prompt.
 - **The Debug Console** (Settings → Debug) — a live, filterable feed of
@@ -88,21 +90,27 @@ macos/
 - [Ollama](https://ollama.com) (native, Metal-accelerated — the app
   supervises it for you, no need to run `ollama serve` by hand)
 - A Linux host reachable over SSH, running the sandbox-manager service
-  from the root of this repo (each bot's "computer" lives there)
+  from the root of this repo (each bot's "computer" lives there). See
+  [Linux host setup](../README.md#1-linux-host-setup).
 
 ## Building
 
 ```bash
 cd macos
+echo 'DEVELOPMENT_TEAM = YOUR_TEAM_ID' > Signing.local.xcconfig   # once; git-ignored
 xcodegen generate        # regenerates the .xcodeproj from project.yml
 open "Shellhouse.xcodeproj"
 ```
 
-Set your own signing team in Xcode (Signing & Capabilities), or put it in
-`project.yml` locally before generating. Re-run `xcodegen generate` after
-pulling changes that add or remove files. Build and run from Xcode with your own signing team — the app is
-sandboxed (`com.apple.security.app-sandbox`), so it needs a real
-provisioning profile, not just a debug build.
+Your team ID is in Xcode › Settings › Accounts. Keeping it in
+`Signing.local.xcconfig` means regenerating the project never loses it, and it
+never reaches the repo. Re-run `xcodegen generate` after pulling changes that
+add or remove files, or use `scripts/build.sh`, which regenerates, builds and
+launches in one step. The app is sandboxed (`com.apple.security.app-sandbox`),
+so it needs a real provisioning profile: build once from Xcode so it can create
+one.
+
+Tests: `swift test` (from `macos/`).
 
 First launch: add the sandbox-manager's shared token in Settings, pull a
 tool-calling-capable model (`qwen2.5:7b-instruct`, `llama3.1:8b-instruct`,
@@ -140,10 +148,10 @@ other, and fixed in place.
 
 Actively developed, self-hosted, no cloud model calls — same principle as
 the Python/Docker reference build at the repo root, just running natively
-on the Mac instead of in containers. See `../docs/MACOS-NATIVE.md` for the
-original design notes (some now superseded by what's actually built) and
-`../docs/SECURITY.md` for the privilege split between the app and the
-sandbox host.
+on the Mac instead of in containers. See `../docs/SECURITY.md` for the privilege
+split between the app and the sandbox host, `../docs/GUARDRAILS.md` and
+`../docs/RELIABILITY.md` for how runs are kept safe and on track, and
+`../docs/MACOS-NATIVE.md` for the original (since superseded) design notes.
 
 ## Goals, asynchronous groups and friends
 

@@ -48,7 +48,7 @@ fi
 # The host user sandbox-manager runs as, and where its socket lives on the
 # host filesystem — a bind mount (not a named volume) so something outside
 # Docker entirely (e.g. an SSH-tunneled remote client; see
-# macos/README.md's remote-hosting setup) can reach it too. Docker volumes'
+# README.md › Linux host setup) can reach it too. Docker volumes'
 # backing paths are internal and normally root-owned, which such a client
 # can't get to.
 set_env() {
@@ -70,12 +70,23 @@ echo "Manager socket: $(id -u):$(id -g) @ ./sandbox-manager-run"
 
 chmod 600 .env
 
+# The sandbox image seeds /home/box and /workspace from box/ and workspace/.
+# Both are git-ignored (they can hold real credentials), so a fresh clone has
+# neither: create a minimal seed so the image builds. Existing files are left
+# alone; add your own dotfiles or starter files there if you want them.
+mkdir -p box/.config box/reference workspace
+for f in .bashrc .profile .bash_logout .gitconfig; do
+  if [ ! -e "box/$f" ]; then
+    if [ -f "/etc/skel/$f" ]; then cp "/etc/skel/$f" "box/$f"; else : > "box/$f"; fi
+  fi
+done
+
 # The workspace volume name is project-prefixed by compose, and the Sandbox
-# Manager needs it verbatim to mount into per-task sandboxes. Compose keeps
-# hyphens/underscores in the project name (only lowercasing and dropping
-# other invalid characters) — stripping them here previously produced the
-# wrong volume name for any hyphenated directory name.
-PROJECT="$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+# Manager needs it verbatim to mount into per-task sandboxes. The project name
+# is pinned by `name:` in docker-compose.yml, so read it from there rather than
+# from this folder's name.
+PROJECT="$(sed -n 's/^name:[[:space:]]*//p' docker-compose.yml | head -1)"
+PROJECT="${PROJECT:-shellhouse}"
 VOL="${PROJECT}_workspace"
 if grep -q '^WORKSPACE_VOLUME=' .env; then
   if sed --version >/dev/null 2>&1; then

@@ -3,9 +3,10 @@
 # Xcode UI needed, PROVIDED you've built once from Xcode after any
 # bundle-id/team change so it can create/cache the provisioning profile.
 # `xcodebuild` itself has no access to the Apple ID signed into Xcode's own
-# Settings > Accounts, so it can't create that profile from a cold start —
-# see the chat history for why. If this script fails with a provisioning
-# error, that one-time Xcode build is what's missing.
+# Settings > Accounts, so it can't create that profile from a cold start.
+# If this script fails with a provisioning error, that one-time Xcode build
+# is what's missing. The Xcode project is regenerated from project.yml first,
+# so a fresh clone works without opening Xcode to generate it.
 #
 # Usage:
 #   scripts/build.sh              # build (Debug) and launch
@@ -27,6 +28,10 @@ for arg in "$@"; do
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
+
+command -v xcodegen >/dev/null || { echo "XcodeGen is required: brew install xcodegen" >&2; exit 1; }
+echo "==> Generating Shellhouse.xcodeproj"
+xcodegen generate --quiet
 
 echo "==> Building (${CONFIGURATION})"
 xcodebuild \
