@@ -514,11 +514,29 @@ final class GroupChatSession: Identifiable {
                 extraSuffix = goalPrompt(for: live, botID: botID)
             }
 
+            // During a goal, a member nobody @mentioned with no step of its own has nothing to do
+            // here: stay quiet without spending a model call on the reply gate. The owner still
+            // looks at every update, since it validates submissions.
+            if decision == .optional, let live = goal, live.isLive, live.ownerBotID != botID,
+               !live.steps.contains(where: { step in
+                   guard step.status != .done else { return false }
+                   if step.isPerMember { return step.membersRemaining.contains { $0.caseInsensitiveCompare(bot.name) == .orderedSame } }
+                   return step.assigneeName?.caseInsensitiveCompare(bot.name) == .orderedSame
+               }) {
+                finishTurn(messageID: turnMessageID, bot: bot, .passed("no goal step and not @mentioned"))
+                continue
+            }
             if decision == .optional {
                 debugLog(bot, "new messages — checking whether to reply")
                 let goalContext = goal.flatMap { $0.isLive ? goalBlockText($0) : nil }
                 guard await bot.wantsToRespondInGroup(groupName: name, transcript: formatRecentTranscript(limit: 8, clipTo: 500), goalContext: goalContext) else {
                     finishTurn(messageID: turnMessageID, bot: bot, .passed("reply gate: nothing to add"))
+                    continue
+                }
+                // Someone else already answered while the gate ran: don't spend a full run on a
+                // reply that would be dropped for being stale (checked again after generating).
+                if displayMessages[snapshot...].contains(where: { $0.speakerBotID != botID && $0.isSystem != true }) {
+                    finishTurn(messageID: turnMessageID, bot: bot, .passed("others answered first"))
                     continue
                 }
             }

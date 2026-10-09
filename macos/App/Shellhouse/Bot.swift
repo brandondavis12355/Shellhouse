@@ -744,7 +744,13 @@ final class Bot: Identifiable, @unchecked Sendable {
 
     /// Notes relevant to an incoming message; `withRelevantMemoryContext` puts them in front of the model so it does
     /// not have to notice them in a long list.
+    /// How many notes the system prompt already lists in full (see `fullSystemPrompt`).
+    static let coreMemoryLimit = 12
+
     private func memoriesRelevant(to text: String, limit: Int = 5) async -> [String] {
+        // Every note is already in the system prompt: ranking them again would only cost
+        // an embedding call on the shared model server.
+        guard memoryBook.entries.count > Self.coreMemoryLimit else { return [] }
         let q = await memoryQueryVector(text)
         let ranked = memoryBook.rank(query: String(text.suffix(3_000)), queryEmbedding: q?.vector, queryModel: q?.model, limit: limit)
         noteMemoriesUsed(ranked.map(\.entry.id))
@@ -2397,7 +2403,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             }
         }
         if !memoryBook.entries.isEmpty {
-            let core = memoryBook.core(limit: 12)
+            let core = memoryBook.core(limit: Self.coreMemoryLimit)
             result += "\n\n---\n\nYour most important notes from earlier conversations — follow "
                 + "these unless the current conversation says otherwise:\n\n"
             for memory in core {
