@@ -389,7 +389,8 @@ final class RuntimeRoundTwoTests: XCTestCase {
         let users = await runtime.transcript().filter { $0.role == .user }.map(\.content)
         XCTAssertTrue(users.contains { $0.hasPrefix("[reminder]") && $0.contains("Install gh on the VM") })
         XCTAssertTrue(users.contains { $0.hasPrefix("[budget]") && $0.contains("wrapping up") || $0.contains("wrap") })
-        XCTAssertEqual(users.filter { $0.hasPrefix("[reminder]") }.count, 1, "only the latest reminder is kept")
+        // Earlier reminders stay in place (cache-friendly); the newest one is the last reminder.
+        XCTAssertTrue(users.last { $0.hasPrefix("[reminder]") }?.contains("Install gh on the VM") == true)
     }
 }
 

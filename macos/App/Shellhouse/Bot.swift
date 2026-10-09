@@ -2367,7 +2367,6 @@ final class Bot: Identifiable, @unchecked Sendable {
             result += " Your role: \(tagline)."
         }
         result += "\n\n" + BuiltInSystemPrompt.text
-        result += "\n\n" + TemporalContext.promptLine()
         result += "\n\nYour machine: you work in your own private Linux VM" + (handle.map { " (hostname shellhouse-vm-\($0.id))" } ?? "")
             + ". Every other bot has its own separate VM — nothing you install, download or save here appears on theirs, "
             + "and you cannot see theirs. Never describe it as a shared sandbox. If something is needed on every member's "
@@ -2440,6 +2439,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                 result += "- \(other.name): \(other.role)\n"
             }
         }
+        // Last on purpose: it changes every minute, and everything before it can
+        // then be reused from the model server's prompt cache between runs.
+        result += "\n\n" + TemporalContext.promptLine()
         return result
     }
 

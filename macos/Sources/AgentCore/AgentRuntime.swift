@@ -332,8 +332,9 @@ public actor AgentRuntime {
             }
             // Manus-style recitation: re-state the objective at the END of the context every few steps, where
             // the model pays the most attention, instead of trusting it to remember step 0.
+            // Earlier reminders stay where they are: removing one shifts everything after it, which
+            // makes the model server re-read the conversation from that point instead of reusing its cache.
             if Reliability.isOn(.taskFocus), iterations > 1, iterations % 5 == 0, !currentGoal.isEmpty {
-                messages.removeAll { $0.role == .user && $0.content.hasPrefix("[reminder]") }
                 messages.append(ChatMessage(role: .user, content: "[reminder] Your task: \(String(currentGoal.prefix(400))). "
                     + "Step \(iterations) of \(budgets.maxIterations). Stay on this task; when it is answered, call finish_task."))
             }

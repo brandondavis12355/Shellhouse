@@ -77,10 +77,16 @@ public enum ObservationPolicy {
 
     /// Replaces older, large tool results with a one-line stub, keeping the newest `keepLast` intact.
     /// The assistant's own messages and the user's messages are never touched.
-    public static func collapseStale(_ messages: [ChatMessage], keepLast: Int = 8, minCharacters: Int = 700) -> [ChatMessage] {
+    ///
+    /// Collapses in batches of `batch`: rewriting an early message makes the model server re-read the
+    /// conversation from there, so doing it every few results instead of on every step keeps more of the
+    /// prompt cached. Up to `batch - 1` extra results stay in full in between.
+    public static func collapseStale(_ messages: [ChatMessage], keepLast: Int = 8, minCharacters: Int = 700, batch: Int = 4) -> [ChatMessage] {
         let toolIndices = messages.indices.filter { messages[$0].role == .tool }
-        guard toolIndices.count > keepLast else { return messages }
-        let stale = Set(toolIndices.dropLast(keepLast))
+        let excess = toolIndices.count - keepLast
+        let step = max(1, batch)
+        guard excess >= step else { return messages }
+        let stale = Set(toolIndices.prefix(excess - excess % step))
         var out = messages
         for index in stale {
             let message = messages[index]

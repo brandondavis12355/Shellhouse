@@ -263,7 +263,7 @@ final class GroupChatSession: Identifiable {
     /// member re-processes it on every turn, and with several bots sharing one
     /// local model that prompt processing is the bottleneck (see
     /// `Bot.fullSystemPrompt(isolated:)`). Long messages are clipped.
-    private func formatRecentTranscript(limit: Int = 16, clipTo: Int = 1500) -> String {
+    private func formatRecentTranscript(limit: Int = 12, clipTo: Int = 1200) -> String {
         displayMessages.suffix(limit).map { original in
             var message = original
             if message.text.count > clipTo { message.text = String(message.text.prefix(clipTo)) + " …[clipped]" }
