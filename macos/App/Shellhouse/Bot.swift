@@ -1770,49 +1770,43 @@ final class Bot: Identifiable, @unchecked Sendable {
             + "Match your effort to the question: a simple question gets a direct answer with at most one or two tool calls; only a multi-part task justifies investigating. "
             + "Do not re-verify what the chat already establishes, and never state a version, path or number you did not see in a tool result or in the chat. "
             + "Messages below are labeled by who sent them. \(rule)\(goalRule)\(extraSuffix.isEmpty ? "" : "\n\n" + extraSuffix)"
-        var outcome = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler, untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn)
-        if mustReply, !outcome.failed, outcome.text.trimmingCharacters(in: .whitespacesAndNewlines) == "[[silent]]" {
-            // Being called on (especially via @everyone) means every member
-            // answers. A model that opted out anyway gets exactly one
-            // retry with the opt-out spelled out as not allowed.
-            outcome = await runIsolatedTaskResult(
-                systemPromptSuffix: suffix + " Staying silent is NOT allowed for this turn — you were explicitly "
-                    + "called on. Post a short reply; if you truly have nothing to add, say that in one sentence.",
-                goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: mentioned)", goalHandler: goalHandler, untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn
-            )
-        }
-        // A "reply" that only announces what the bot is about to do ("I'll check that now") is not an answer.
-        // One retry that asks for the content itself, grounded in what its tools returned.
-        if Reliability.isOn(.replyChecks), !outcome.failed, outcome.text != "[[silent]]", ReplyQuality.looksLikeNarration(outcome.text) {
-            let retry = await runIsolatedTaskResult(
-                systemPromptSuffix: suffix + " Your previous reply was only an announcement (\"" + String(outcome.text.prefix(80))
-                    + "…\"). Do the work now with your tools if needed, then put the actual result in finish_task's summary: facts, "
-                    + "numbers and outputs, not intentions.",
-                goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: narration)", goalHandler: goalHandler,
-                untrustedInput: untrustedInput, plainReplyEndsTurn: false
-            )
-            if !retry.failed, !ReplyQuality.looksLikeNarration(retry.text) { outcome = retry }
-        }
-        // CRITIC-style check: a version, path or address the reply states must appear in what the tools returned
-        // (or in the chat / the bot's own records). Otherwise one retry that must verify or drop it; if it
-        // still can't, those lines are removed rather than posted as fact.
+        // Reply checks run inside the same run (see `runIsolatedTaskResult`'s
+        // `followUp`): a correction goes to the runtime that already has the
+        // tool results, instead of a fresh run that repeats all of the work.
+        var outcome = await runIsolatedTaskResult(
+            systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler,
+            untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn,
+            followUp: { [weak self] result in
+                guard let self, !result.failed else { return nil }
+                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Being called on (especially via @everyone) means every member answers.
+                if mustReply, text == "[[silent]]" {
+                    return "Staying silent is NOT allowed for this turn: you were explicitly called on. Post a short reply; "
+                        + "if you truly have nothing to add, say that in one sentence. Call finish_task with outcome \"done\" and the reply as its summary."
+                }
+                guard Reliability.isOn(.replyChecks), text != "[[silent]]", !text.hasPrefix("(stopped early") else { return nil }
+                // A reply that only announces what the bot is about to do is not an answer.
+                if ReplyQuality.looksLikeNarration(result.text) {
+                    return "Your reply was only an announcement (\"" + String(result.text.prefix(80)) + "…\"). Do the work now with "
+                        + "your tools if needed, then call finish_task with the actual result as its summary: facts, numbers and outputs, not intentions."
+                }
+                // CRITIC-style check: every version, path or address stated must appear in what the tools returned or the chat.
+                let allowed = self.lastTurnObservations + "\n" + transcriptSoFar + "\n" + extraSuffix + "\n" + self.standupContext()
+                let unsupported = ClaimCheck.unsupported(in: result.text, sources: allowed)
+                guard !unsupported.isEmpty else { return nil }
+                self.debugLogReliability("unverified specifics in reply: \(unsupported.joined(separator: ", ")) — asking the same run to verify or drop them", groupName: groupName)
+                return "Your reply stated specifics that appear in NONE of your tool output or the chat: "
+                    + unsupported.joined(separator: ", ") + ". Verify each with a tool now, or leave it out, then call finish_task "
+                    + "with the corrected reply. Never state unverified versions, paths, addresses or numbers."
+            }
+        )
+        // Last resort: lines that still state unverified specifics are removed rather than posted as fact.
         if Reliability.isOn(.replyChecks), !outcome.failed, outcome.text != "[[silent]]", !outcome.text.hasPrefix("(stopped early") {
             let allowed = lastTurnObservations + "\n" + transcriptSoFar + "\n" + extraSuffix + "\n" + standupContext()
-            let unsupported = ClaimCheck.unsupported(in: outcome.text, sources: allowed)
-            if !unsupported.isEmpty {
-                debugLogReliability("unverified specifics in reply: \(unsupported.joined(separator: ", ")) — retrying", groupName: groupName)
-                let retry = await runIsolatedTaskResult(
-                    systemPromptSuffix: suffix + " Your draft stated specifics that appear in NONE of your tool output or the chat: "
-                        + unsupported.joined(separator: ", ") + ". Verify each with a tool now, or leave it out. Never state "
-                        + "unverified versions, paths, addresses or numbers.",
-                    goal: transcriptSoFar, debugContext: "group: \(groupName) (retry: unverified claims)", goalHandler: goalHandler,
-                    untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn
-                )
-                var candidate = retry.failed ? outcome.text : retry.text
-                let allowedAfter = lastTurnObservations + "\n" + transcriptSoFar + "\n" + extraSuffix + "\n" + standupContext()
-                let still = ClaimCheck.unsupported(in: candidate, sources: allowedAfter)
-                if !still.isEmpty { candidate = ClaimCheck.removingLines(stating: still, from: candidate) }
-                if !candidate.isEmpty { outcome = IsolatedResult(text: candidate, failed: false, tainted: outcome.tainted) }
+            let still = ClaimCheck.unsupported(in: outcome.text, sources: allowed)
+            if !still.isEmpty {
+                let cleaned = ClaimCheck.removingLines(stating: still, from: outcome.text)
+                if !cleaned.isEmpty { outcome = IsolatedResult(text: cleaned, failed: false, tainted: outcome.tainted) }
             }
         }
         // Stopped early (budget, loop, guardrail freeze): say honestly what was verified instead of a bare error.
@@ -1992,11 +1986,19 @@ final class Bot: Identifiable, @unchecked Sendable {
         var tainted = false
     }
 
+    /// `followUp` sees each result while the run (and this bot's run lock) is
+    /// still held. Returning a correction sends it into the SAME runtime, so
+    /// the bot keeps everything its tools already returned and only has to fix
+    /// its answer, instead of a fresh run repeating all of that work. At most
+    /// `maxFollowUps` rounds.
+    static let maxFollowUps = 2
+
     private func runIsolatedTaskResult(
         systemPromptSuffix: String, goal: String, debugContext: String,
         goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
         untrustedInput: Bool = false,
-        plainReplyEndsTurn: Bool = false
+        plainReplyEndsTurn: Bool = false,
+        followUp: (@MainActor (IsolatedResult) async -> String?)? = nil
     ) async -> IsolatedResult {
         guard let sandbox, let handle else {
             return IsolatedResult(text: "\(name) has no running sandbox to work with right now.", failed: true)
@@ -2190,12 +2192,27 @@ final class Bot: Identifiable, @unchecked Sendable {
             )
 
             await runtime.start(systemPrompt: fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract, goal: await withRelevantMemoryContext(goal))
-            let runTainted = await runtime.isTainted
-            lastTurnObservations = toolCallCounter.observations
-            lastTurnToolCalls = toolCallCounter.value
-            let picked = replyPicker.result
-            let resultText = picked ?? "(\(name) didn't produce a response.)"
-            return IsolatedResult(text: isSilent ? "[[silent]]" : resultText, failed: picked == nil && !isSilent, tainted: runTainted)
+            @MainActor func currentResult() async -> IsolatedResult {
+                let runTainted = await runtime.isTainted
+                lastTurnObservations = toolCallCounter.observations
+                lastTurnToolCalls = toolCallCounter.value
+                let picked = replyPicker.result
+                let resultText = picked ?? "(\(name) didn't produce a response.)"
+                return IsolatedResult(text: isSilent ? "[[silent]]" : resultText, failed: picked == nil && !isSilent, tainted: runTainted)
+            }
+            var result = await currentResult()
+            var rounds = 0
+            while rounds < Self.maxFollowUps, !Task.isCancelled, let correction = await followUp?(result) {
+                rounds += 1
+                replyPicker = IsolatedReplyPicker()
+                isSilent = false
+                await runtime.send(correction)
+                let next = await currentResult()
+                // Keep the first answer if the follow-up produced nothing usable.
+                if next.failed { break }
+                result = next
+            }
+            return result
         }
         return await withTaskCancellationHandler { await inner.value } onCancel: { inner.cancel() }
     }
