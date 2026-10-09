@@ -3,10 +3,9 @@ import Foundation
 /// Swift port of `api/agent/runtime.py`'s state machine: call the model,
 /// dispatch any tool calls, repeat until the model stops calling tools.
 ///
-/// Deliberately smaller than the Python original for this first pass:
+/// Deliberately smaller than the Python original:
 /// - No `TaskEvent`/DB persistence — this runtime is in-memory only, scoped
-///   to one chat session's lifetime, since `macos/`'s task store hasn't been
-///   ported yet (see `macos/README.md`'s porting order).
+///   to one chat session's lifetime; the app persists transcripts itself.
 /// - No MCP tool discovery — only the built-in `ToolRegistry`.
 /// Everything else (budgets, approval-pause, loop/repeat detection,
 /// screenshot vision-attach) mirrors the Python runtime's behavior.
@@ -243,7 +242,7 @@ public actor AgentRuntime {
     /// Restores prior conversation turns into a freshly-created runtime
     /// without triggering a model call — for resuming a chat the user closed
     /// and reopened. `history` is plain `role`/`content` (see
-    /// `TranscriptStore`/`Bot.chatHistory`): no `images` or `toolCalls`,
+    /// `TranscriptStore`): no `images` or `toolCalls`,
     /// since those aren't persisted (screenshots are large and this app
     /// already prunes older ones from a *live* run for the same reason — see
     /// `pruneOldScreenshots` — and a `toolCalls` entry with no matching tool

@@ -115,9 +115,8 @@ public extension ModelBackend {
 /// Local inference via a native Ollama install.
 ///
 /// Recommended starting backend: already Metal-accelerated, has real tool
-/// calling, stable HTTP API. The cost is an external dependency the user must
-/// install, which is awkward for a shipping app — see MLXBackend below for the
-/// end state.
+/// calling, stable HTTP API. The app installs and supervises Ollama itself
+/// (see `OllamaManager`).
 public actor OllamaBackend: ModelBackend {
     public let name = "ollama"
 
@@ -395,44 +394,8 @@ public actor OllamaBackend: ModelBackend {
     }
 }
 
-/// In-process inference via MLX — the end state for a shipping app, because it
-/// removes the external Ollama dependency entirely.
-///
-/// Left unimplemented on purpose rather than stubbed with something that
-/// silently returns nothing. The hard part is not loading a model; it is tool
-/// calling, which MLX does not give you as an API. You have to constrain
-/// generation (grammar/JSON schema) or prompt for a structured block and parse
-/// it, then handle the cases where a 7B model emits almost-valid JSON.
-///
-/// Do not cut over from Ollama until this passes the same eval suites.
-public actor MLXBackend: ModelBackend {
-    public let name = "mlx"
-
-    public init() {}
-
-    public func supportsVision(model: String?) async -> Bool { false }
-
-    public func chat(
-        messages: [ChatMessage],
-        tools: [ToolSchema],
-        model: String?,
-        temperature: Double
-    ) async throws -> ModelReply {
-        throw ModelError.notImplemented(
-            """
-            MLXBackend is not implemented yet. Use OllamaBackend. \
-            See docs/MACOS-NATIVE.md, "Decision 2: model inference" — the open \
-            problem is tool calling, not inference.
-            """
-        )
-    }
-
-    public func availableModels() async throws -> [String] { [] }
-}
-
 public enum ModelError: LocalizedError {
     case requestFailed(status: Int, detail: String)
-    case notImplemented(String)
     case noBackend
 
     public var errorDescription: String? {
@@ -445,8 +408,6 @@ public enum ModelError: LocalizedError {
                 """
             }
             return "Model request failed (\(status)): \(detail)"
-        case .notImplemented(let message):
-            return message
         case .noBackend:
             return "No model backend configured"
         }

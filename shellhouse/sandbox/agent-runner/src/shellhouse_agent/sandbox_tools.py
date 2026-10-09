@@ -70,11 +70,6 @@ def resolve_in_workspace(ctx: RunContext, path: Any, *, allow_root: bool = True)
     return real
 
 
-def _display(ctx: RunContext, real: str) -> str:
-    rel = os.path.relpath(real, ctx.workspace)
-    return "." if rel == "." else rel
-
-
 # ---------------------------------------------------------------- filesystem
 def list_files(ctx: RunContext, args: dict) -> dict:
     try:

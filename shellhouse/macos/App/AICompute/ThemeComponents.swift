@@ -118,22 +118,6 @@ extension SettingRow where Trailing == EmptyView {
     }
 }
 
-/// Right-aligned "value >" for a `SettingRow`.
-struct RowValue: View {
-    let text: String
-    var chevron = true
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(text).font(.system(size: 16)).foregroundStyle(.secondary).lineLimit(1)
-            if chevron {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-}
-
 /// A row with a green switch on the right.
 struct ToggleRow: View {
     let title: String

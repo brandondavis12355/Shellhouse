@@ -17,7 +17,6 @@ An evidence object separates:
 Postgres/SQLite holds the record, Qdrant holds the vector for semantic recall.
 """
 import datetime as dt
-import json
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Optional

@@ -8,7 +8,6 @@ as themselves (`kind=human`), and lets only the group OWNER post `bot` and
 must still treat every message text as untrusted input.
 """
 import asyncio
-import base64
 import logging
 import os
 import re

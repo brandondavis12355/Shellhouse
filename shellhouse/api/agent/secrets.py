@@ -198,17 +198,3 @@ def mask_values(text: str, values: list[str]) -> str:
             out = out.replace(value, "[REDACTED]")
     return out
 
-
-def scan_for_leaks(text: str, db: Session) -> list[str]:
-    """
-    Names of any stored secrets whose value appears in `text`. Used to warn
-    the user when a tool result contained a credential.
-    """
-    if not is_enabled():
-        return []
-    found = []
-    for row in db.query(models.Credential).all():
-        value = _decrypt(row)
-        if value and len(value) >= 6 and value in text:
-            found.append(row.name)
-    return found

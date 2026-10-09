@@ -205,6 +205,3 @@ class AllowlistFile:
             self._sig = None   # force reload next call
         return canonical
 
-
-def check_port(port: int, allowed: frozenset) -> bool:
-    return port in allowed

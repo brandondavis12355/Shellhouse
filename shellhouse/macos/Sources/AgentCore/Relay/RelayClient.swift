@@ -180,7 +180,6 @@ public actor RelayClient {
 
     // MARK: Transport
 
-    private struct Empty: Decodable {}
     private struct OK: Decodable { let ok: Bool? }
 
     private func send<T: Decodable>(

@@ -926,7 +926,6 @@ final class GroupChatSession: Identifiable {
         goal = nil; persistGoal()
     }
 
-    func setGoalTitle(_ title: String) { goal?.setTitle(title); persistGoal() }
     func addGoalStep(_ text: String) { goal?.addStep(text); persistGoal() }
     func removeGoalStep(_ stepID: String) {
         if let g = goal { for member in members { member.clearGoalTasks(key: goalTaskKey(g, stepID)) } }

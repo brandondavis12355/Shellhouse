@@ -136,9 +136,8 @@ public extension SandboxProvider {
     ///
     /// Also strips a leading `workspace/` segment (in addition to a leading
     /// `/`), so `/workspace/notes.txt`, `workspace/notes.txt`, and
-    /// `notes.txt` all normalize to the same `notes.txt` — every backend
-    /// here (`RemoteSandboxManager`'s HTTP calls, `GuestAgentClient`'s vsock
-    /// protocol) runs relative to /workspace already, so a caller-supplied
+    /// `notes.txt` all normalize to the same `notes.txt` — the sandbox
+    /// manager already runs relative to /workspace, so a caller-supplied
     /// `/workspace/...` prefix would otherwise double up server-side and
     /// silently look in the wrong place. The system prompt tells the model
     /// its working directory *is* /workspace, so it including that prefix

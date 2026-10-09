@@ -1,7 +1,7 @@
 import uuid
 import datetime as dt
 
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Float
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -113,32 +113,3 @@ class Credential(Base):
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
-
-class EvidenceRecord(Base):
-    """
-    Relational record of a finding. Qdrant holds the vector for semantic
-    recall; this is the queryable, auditable copy — "which task learned this,
-    and from where."
-    """
-    __tablename__ = "evidence"
-
-    id = Column(String, primary_key=True, default=lambda: new_id("evidence"))
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=True)
-    finding = Column(Text, nullable=False)
-    subject = Column(String, nullable=True)
-    source = Column(String, nullable=False)
-    confidence = Column(Float, default=0.8)
-    original_reference = Column(Text, nullable=True)    # JSON
-    relationships = Column(Text, nullable=True)         # JSON
-    tags = Column(Text, nullable=True)                  # JSON
-    created_at = Column(DateTime, default=now)
-
-
-class Artifact(Base):
-    __tablename__ = "artifacts"
-
-    id = Column(String, primary_key=True, default=lambda: new_id("art"))
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
-    type = Column(String, nullable=False)
-    path = Column(String, nullable=False)
-    created_at = Column(DateTime, default=now)

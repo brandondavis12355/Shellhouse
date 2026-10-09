@@ -68,10 +68,6 @@ public struct TurnLedger: Sendable {
         return e.outcomes.values.allSatisfy(\.isSettled)
     }
 
-    public func hasReply(messageID: String) -> Bool {
-        entries[messageID]?.outcomes.values.contains(.replied) ?? false
-    }
-
     /// Roll call: a member may start once everyone before it has finished (replied, passed or failed).
     public func canProceed(messageID: String, botID: String) -> Bool {
         guard let e = entries[messageID], e.plan.isSequential, let index = e.plan.rollCall.firstIndex(of: botID) else { return true }

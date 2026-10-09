@@ -26,7 +26,6 @@ This provider talks to Firecracker's HTTP API over a unix domain socket. It
 does not shell out to a CLI, so failures surface as real status codes.
 """
 import asyncio
-import json
 import os
 import shutil
 import uuid
@@ -283,7 +282,7 @@ class FirecrackerBackend:
             "is_root_device": True,
             "is_read_only": False,
         })
-        await self._api(slot, "PUT", f"/network-interfaces/eth0", {
+        await self._api(slot, "PUT", "/network-interfaces/eth0", {
             "iface_id": "eth0",
             "guest_mac": slot.mac,
             "host_dev_name": slot.tap,

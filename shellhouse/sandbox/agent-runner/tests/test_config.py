@@ -118,5 +118,4 @@ def test_cli_run_invalid_config_exit_code(tmp_path):
     assert read_events(run_dir)[-1]["state"] == "failed"
     t = subprocess.run([sys.executable, "-m", "shellhouse_agent", "tail", "--dir", run_dir, "--after", "0", "--max-bytes", "5000"],
                        env=dict(os.environ, PYTHONPATH=src), capture_output=True, text=True, timeout=60)
-    import json
     assert json.loads(t.stdout.splitlines()[-1]) == {"tail_done": True, "last_seq": 2, "finished": True}

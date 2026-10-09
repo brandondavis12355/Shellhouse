@@ -771,9 +771,8 @@ final class Bot: Identifiable, @unchecked Sendable {
 
     // MARK: - Tasks
 
-    /// Capped for the same reason `memories` is — `fullSystemPrompt`
-    /// resends every active task in full on every turn, every run.
-    /// Lower than `maxMemories`: tasks are meant to be short-lived
+    /// Capped because `fullSystemPrompt` resends every active task in full
+    /// on every turn, every run. Tasks are meant to be short-lived
     /// (completed and removed), so a pile of 60 of them sitting around
     /// would mean something's not calling `complete_task` when it
     /// should, not a legitimately large backlog worth keeping.
@@ -1979,19 +1978,6 @@ final class Bot: Identifiable, @unchecked Sendable {
         note so they're kept informed — load the where-to-post skill if unsure what belongs where.
         """
 
-    /// Delegations want the failure text (the asking bot should see why);
-    /// see `runIsolatedTaskResult` for what group turns and routines do.
-    private func runIsolatedTask(
-        systemPromptSuffix: String, goal: String, debugContext: String,
-        goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
-        untrustedInput: Bool = false
-    ) async -> String {
-        await runIsolatedTaskResult(
-            systemPromptSuffix: systemPromptSuffix, goal: goal, debugContext: debugContext,
-            goalHandler: goalHandler, untrustedInput: untrustedInput
-        ).text
-    }
-
     /// `failed` marks text that is an infrastructure message ("no sandbox",
     /// "cancelled", "didn't produce a response"), not something the bot said —
     /// group turns and routines must never post it as if the bot wrote it.
@@ -2746,8 +2732,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 // to roughly this same digest on the very next turn, paying
                 // for that round trip again on every relaunch. `min(...)`
                 // guards a summary that's now stale relative to a shorter
-                // transcript (e.g. after `clearHistory`, if this bot ever
-                // grows one) rather than indexing out of bounds.
+                // transcript rather than indexing out of bounds.
                 let history: [ChatMessage]
                 if let cached = contextSummary, cached.coveredMessageCount > 0 {
                     let coveredCount = min(cached.coveredMessageCount, displayMessages.count)

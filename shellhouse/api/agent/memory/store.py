@@ -141,34 +141,6 @@ class MemoryStore:
         )
         return mem_id
 
-    async def add_knowledge(
-        self, chunks: list[str], subject: str, reference: Optional[dict] = None
-    ) -> int:
-        if not chunks:
-            return 0
-        await self.ensure_collections()
-        vectors = await self.embedder.embed(chunks)
-        now = dt.datetime.now(dt.timezone.utc).isoformat()
-        points = []
-        for chunk, vector in zip(chunks, vectors):
-            doc_id = f"doc_{uuid.uuid4().hex[:12]}"
-            points.append(qm.PointStruct(
-                id=_point_id(doc_id),
-                vector=vector,
-                payload={
-                    "evidence_id": doc_id,
-                    "finding": chunk,
-                    "subject": subject,
-                    "source": "file",
-                    "confidence": 0.7,
-                    "timestamp": now,
-                    "original_reference": reference or {},
-                    "tags": ["knowledge"],
-                },
-            ))
-        await self._c().upsert(collection_name=COLLECTION_KNOWLEDGE, points=points)
-        return len(points)
-
     # -- reads ---------------------------------------------------------------
 
     async def search(

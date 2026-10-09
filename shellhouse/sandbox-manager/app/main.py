@@ -38,7 +38,6 @@ service. What this service guarantees is that `exec` can only ever land
 *inside a sandbox it created*, as an unprivileged user, with a timeout and
 bounded output.
 """
-import asyncio
 import hmac
 import json
 import logging

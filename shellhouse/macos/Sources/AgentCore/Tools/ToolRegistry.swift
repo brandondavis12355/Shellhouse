@@ -5,8 +5,7 @@ import ImageIO
 /// tools — the ones that let the model act inside the VM: files, shell,
 /// screenshots, windows, and input. `web_search`/`fetch_url` (external web)
 /// and the embedding-backed memory tools (`save_evidence`, `search_memory`,
-/// `list_secrets`) are deliberately out of scope for this pass — see
-/// `macos/README.md`'s porting-order note. `run_shell`'s `use_secrets` is
+/// `list_secrets`) are deliberately out of scope. `run_shell`'s `use_secrets` is
 /// kept, since `SecretStore` already exists and wiring it is cheap. `remember`
 /// IS wired (see `init`'s `onRemember`) — it's a plain per-bot text list, not
 /// the embedding-search memory those other tools would need.
@@ -39,7 +38,7 @@ public struct ToolRegistry: Sendable {
     /// every loop iteration regardless of whether it was ever used.
     ///
     /// `onRemember`, if provided, adds the `remember` tool (`.allow` in
-    /// `PolicyEngine`'s defaults — bots are instructed to remember
+    /// the default `Policy` — bots are instructed to remember
     /// proactively, so a per-call approval prompt would defeat the
     /// point; still visible/removable after the fact in the bot's own
     /// Settings sheet) — the model's own way to add to this bot's

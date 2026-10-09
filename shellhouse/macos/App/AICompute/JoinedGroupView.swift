@@ -112,7 +112,6 @@ final class JoinedGroupSession: Identifiable {
 final class JoinedGroups {
     static let shared = JoinedGroups()
     private(set) var sessions: [JoinedGroupSession] = []
-    var totalUnread: Int { sessions.reduce(0) { $0 + $1.unreadCount } }
     private init() {}
 
     /// Called after every friends refresh with the user's full group list.

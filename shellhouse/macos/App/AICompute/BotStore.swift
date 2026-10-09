@@ -309,21 +309,6 @@ enum BotMemoryStore {
         saveBook(id: id, MemoryBook(legacy: memories))
     }
 
-    @discardableResult
-    private static func saveLegacy(id: String, _ memories: [String]) -> Bool {
-        guard let data = try? JSONEncoder().encode(memories) else {
-            print("[BotMemoryStore] failed to encode memories for bot \(id)")
-            return false
-        }
-        do {
-            try data.write(to: fileURL(for: id), options: .atomic)
-            return true
-        } catch {
-            print("[BotMemoryStore] failed to write memories for bot \(id): \(error)")
-            return false
-        }
-    }
-
     static func delete(id: String) {
         try? FileManager.default.removeItem(at: fileURL(for: id))
     }

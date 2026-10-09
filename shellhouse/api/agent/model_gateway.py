@@ -9,7 +9,6 @@ Swapping in vLLM or another OpenAI-compatible local server later means
 adding a new class here that implements the same `chat()` signature — the
 runtime never needs to change.
 """
-import json
 import os
 from typing import Any, Optional
 
@@ -81,17 +80,3 @@ class ModelGateway:
             resp.raise_for_status()
             data = resp.json()
             return [m["name"] for m in data.get("models", [])]
-
-    async def ensure_model(self, model: str) -> None:
-        """Pull a model if it isn't present yet (idempotent, blocks until done)."""
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST", f"{self.base_url}/api/pull", json={"model": model, "stream": True}
-            ) as resp:
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    try:
-                        json.loads(line)
-                    except json.JSONDecodeError:
-                        continue

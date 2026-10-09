@@ -24,7 +24,6 @@ This version adds three things the first pass lacked:
 3. **Vision.** Screenshots are fed back to the model as images when the model
    supports it, so the agent can actually see its own desktop.
 """
-import asyncio
 import base64
 import hashlib
 import json
@@ -58,9 +57,6 @@ MAX_WALL_SECONDS = int(os.environ.get("TASK_MAX_SECONDS", "1800"))
 MAX_TOKENS = int(os.environ.get("TASK_MAX_TOKENS", "200000"))
 LOOP_REPEAT_THRESHOLD = int(os.environ.get("TASK_LOOP_THRESHOLD", "3"))
 
-# --- context compaction ----------------------------------------------------
-# Rough char-per-token ratio; good enough for deciding *when* to compact.
-CHARS_PER_TOKEN = 4
 CONTEXT_COMPACT_CHARS = int(os.environ.get("CONTEXT_COMPACT_CHARS", "48000"))
 KEEP_RECENT_MESSAGES = int(os.environ.get("CONTEXT_KEEP_RECENT", "8"))
 

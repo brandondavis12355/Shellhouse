@@ -32,12 +32,11 @@ Transport: HTTP POST with JSON-RPC 2.0, which covers the "streamable HTTP"
 servers this is most likely to meet. stdio servers would need a subprocess
 transport; that is noted as unimplemented rather than faked.
 """
-import asyncio
 import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 import httpx
 

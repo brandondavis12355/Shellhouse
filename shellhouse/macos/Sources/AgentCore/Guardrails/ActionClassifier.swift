@@ -594,7 +594,6 @@ public enum ActionClassifier {
     static let hackTools: Set<String> = ["nmap", "masscan", "zmap", "hydra", "sqlmap", "nikto", "john", "hashcat", "aircrack-ng", "metasploit", "msfconsole", "msfvenom", "responder", "mimikatz", "netcat", "ettercap"]
     static let privilege: Set<String> = ["sudo", "su", "doas", "pkexec", "runuser", "setpriv"]
     static let installers: Set<String> = ["pip", "pip3", "pipx", "npm", "yarn", "pnpm", "npx", "uvx", "bunx", "pnpx", "apt", "apt-get", "dpkg", "gem", "cargo", "go", "brew", "snap", "flatpak", "conda", "uv", "bun", "deno"]
-    static let remoteTransfer: Set<String> = ["scp", "sftp", "rsync", "ftp", "tftp", "ssh", "mosh", "telnet", "nc", "ncat", "socat", "mail", "mailx", "sendmail", "mutt", "msmtp", "swaks"]
     static let systemModifiers: Set<String> = ["mkfs", "mkfs.ext4", "mkfs.ext3", "mkfs.xfs", "mkfs.btrfs", "mkfs.vfat", "mkswap", "wipefs", "fdisk", "sfdisk", "cfdisk", "parted", "gdisk", "shred", "blkdiscard", "losetup", "cryptsetup"]
 
     public static func classifyShell(_ command: String, usesSecrets: Bool = false, config: GuardrailConfig = .standard) -> Classification {
@@ -946,7 +945,7 @@ public enum ActionClassifier {
                 out.append(Finding(.exec, "exec.symlink", "creates a symbolic link (can point outside the workspace)", clean: .askStrict, tainted: .deny))
             }
 
-        case "mount", "umount", "chroot", "unshare", "nsenter", "capsh", "setcap", "modprobe", "insmod", "rmmod", "sysctl", "swapon", "swapoff":
+        case "mount", "umount", "chroot", "unshare", "nsenter", "capsh", "setcap", "modprobe", "insmod", "rmmod", "swapon", "swapoff":
             out.append(Finding(.credential, "security.system", "\(name) changes system isolation or kernel state", clean: .askStrict, tainted: .deny))
 
         case "env", "printenv", "declare", "export", "set", "compgen", "typeset", "readonly":

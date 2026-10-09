@@ -9,7 +9,7 @@ import AppKit
 /// and `GroupChatTranscriptView` (group members). Matching is greedy-
 /// longest-first over consecutive words after the `@` (capped at
 /// `maxMentionWords`), so a multi-word bot name like "Dr. EggBot" pills up
-/// as one unit instead of just its first word — see `rawSegments`, also
+/// as one unit instead of just its first word — see `MentionScanner`, also
 /// shared with `GroupChatSession.mentionedMemberIDs` so the pill and the
 /// actual "who gets called to respond" logic can never disagree about
 /// what counts as a mention.

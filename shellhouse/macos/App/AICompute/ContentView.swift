@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import AgentCore
-import AgentUI
 
 /// Keychain name for the shared secret `sandbox-manager` requires on every
 /// call (`X-Manager-Token`). Store it once with:
@@ -451,19 +450,6 @@ struct ContentView: View {
 
     private func startNewGroupChat() {
         showingCreateGroup = true
-    }
-
-    /// Drag-to-reorder within a sidebar section. Sections are just `bots`
-    /// grouped by `Bot.group`, so the new order is written back into the
-    /// SAME slots those bots already occupy in `bots` — other sections'
-    /// positions are untouched — then saved like any other bot-list change.
-    private func moveBots(inSection group: String, from source: IndexSet, to destination: Int) {
-        var sectionBots = bots.filter { $0.group == group }
-        sectionBots.move(fromOffsets: source, toOffset: destination)
-        var reordered = sectionBots.makeIterator()
-        bots = bots.map { $0.group == group ? (reordered.next() ?? $0) : $0 }
-        botDirectory.sync(bots)
-        saveBots()
     }
 
     /// Drag-reorder within a sidebar section: `dragged` takes the slot just
