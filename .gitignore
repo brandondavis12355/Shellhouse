@@ -1,12 +1,39 @@
-# Swift Package Manager build artifacts and dependency checkouts —
-# large, machine-specific, and trivially regenerated; never commit these.
+# Everything here is generated or machine-specific: a fresh clone rebuilds it.
+
+# Swift / Xcode
 .build/
 .swiftpm/
-
-# Xcode
 DerivedData/
 xcuserdata/
 *.xcuserstate
+# Generated from macos/project.yml by XcodeGen (`xcodegen generate`); it also holds
+# each developer's own signing team, so it must not be shared.
+*.xcodeproj/
+*.xcworkspace/
+# SwiftPM's resolved versions; recreated on the first build.
+Package.resolved
 
-# macOS
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node (web/ tooling, if used)
+node_modules/
+
+# Editors and OS
 .DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local run output
+*.log
+/baseline.json

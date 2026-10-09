@@ -84,6 +84,7 @@ macos/
 ## Requirements
 
 - Apple Silicon Mac, macOS 14+
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`): the Xcode project is generated from `project.yml`, not stored in the repo
 - [Ollama](https://ollama.com) (native, Metal-accelerated — the app
   supervises it for you, no need to run `ollama serve` by hand)
 - A Linux host reachable over SSH, running the sandbox-manager service
@@ -97,7 +98,9 @@ xcodegen generate        # regenerates the .xcodeproj from project.yml
 open "Shellhouse.xcodeproj"
 ```
 
-Build and run from Xcode with your own signing team — the app is
+Set your own signing team in Xcode (Signing & Capabilities), or put it in
+`project.yml` locally before generating. Re-run `xcodegen generate` after
+pulling changes that add or remove files. Build and run from Xcode with your own signing team — the app is
 sandboxed (`com.apple.security.app-sandbox`), so it needs a real
 provisioning profile, not just a debug build.
 
