@@ -39,6 +39,16 @@ public enum SkillLibrary {
     /// overrides it, so a built-in playbook can be locally customized just
     /// by adding a skill under its exact name. Never throws: a missing
     /// folder just means no skills from that source, not a hard failure.
+    /// A saved skill selection brought up to date with the skills that exist
+    /// now: skills that were removed drop out, skills the bot has never seen
+    /// are switched on (the default for new skills), and anything the user
+    /// switched off stays off. `known` is every skill that existed when the
+    /// selection was saved; `nil` (saved before this was recorded) treats
+    /// the saved selection itself as everything that was known.
+    public static func reconcileSelection(saved: Set<String>, known: Set<String>?, available: Set<String>) -> Set<String> {
+        saved.intersection(available).union(available.subtracting(known ?? saved))
+    }
+
     public static func loadAll() -> [Skill] {
         var byID: [String: Skill] = [:]
         for skill in loadDirectory(bundledSkillsDirectory) { byID[skill.id] = skill }

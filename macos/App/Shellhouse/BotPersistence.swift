@@ -40,6 +40,10 @@ struct BotConfig: Codable {
     var remoteBaseURLText: String?
     /// `nil` decodes as `.builtin` — added after configs were already saved.
     var engine: AgentEngineKind?
+    /// Every skill that existed when this was saved, so a skill added later
+    /// is switched on by default without re-enabling ones the user turned
+    /// off. See `SkillLibrary.reconcileSelection`.
+    var knownSkillIDs: Set<String>? = nil
 }
 
 /// A bot's settings plus memory and routines, portable across export/

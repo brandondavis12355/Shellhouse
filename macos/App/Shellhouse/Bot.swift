@@ -340,7 +340,9 @@ final class Bot: Identifiable, @unchecked Sendable {
         )
         avatarStyle = config.avatarStyle
         systemPromptText = BuiltInSystemPrompt.userPortion(of: config.systemPromptText)
-        selectedSkillIDs = config.selectedSkillIDs
+        selectedSkillIDs = SkillLibrary.reconcileSelection(
+            saved: config.selectedSkillIDs, known: config.knownSkillIDs, available: Set(availableSkills.map(\.id))
+        )
         selectedModel = config.selectedModel
         modelHasVision = config.modelHasVision
         maxTokensText = config.maxTokensText
@@ -365,7 +367,9 @@ final class Bot: Identifiable, @unchecked Sendable {
         )
         avatarStyle = template.avatarStyle
         systemPromptText = BuiltInSystemPrompt.userPortion(of: template.systemPromptText)
-        selectedSkillIDs = template.selectedSkillIDs
+        selectedSkillIDs = SkillLibrary.reconcileSelection(
+            saved: template.selectedSkillIDs, known: nil, available: Set(availableSkills.map(\.id))
+        )
         selectedModel = template.selectedModel
         modelHasVision = template.modelHasVision
         maxTokensText = template.maxTokensText
@@ -416,7 +420,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             systemPromptText: systemPromptText, selectedSkillIDs: selectedSkillIDs, selectedModel: selectedModel,
             modelHasVision: modelHasVision, maxTokensText: maxTokensText, maxIterationsText: maxIterationsText,
             modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText,
-            engine: engine
+            engine: engine, knownSkillIDs: Set(availableSkills.map(\.id))
         )
     }
 
