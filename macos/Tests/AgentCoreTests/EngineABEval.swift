@@ -90,7 +90,10 @@ final class EngineABEval: XCTestCase {
             for trial in 1...trials {
                 for engineName in engines {
                     // Fresh workspace and desktop for every run.
-                    _ = try? await sandbox.exec(sandboxID, command: "pkill -f chromium; find /workspace -mindepth 1 -maxdepth 1 ! -name .shellhouse -exec rm -rf {} +; rm -rf /workspace/.shellhouse/runs; true", timeout: 30, env: nil)
+                    // `[c]hromium` so pkill can't match (and kill) this very shell's command line.
+                    _ = try? await sandbox.exec(sandboxID, command: "pkill -f '[c]hromium'; find /workspace -mindepth 1 -maxdepth 1 ! -name .shellhouse -exec rm -rf {} +; rm -rf /workspace/.shellhouse/runs; true", timeout: 30, env: nil)
+                    let leftover = await Self.shell(sandbox, sandboxID, "ls -A /workspace | grep -v '^.shellhouse$' | wc -l")
+                    XCTAssertEqual(leftover, "0", "workspace reset failed before \(task.id)")
                     if !task.setup.isEmpty { _ = try? await sandbox.exec(sandboxID, command: task.setup, timeout: 60, env: nil) }
 
                     let recorder = Recorder()
