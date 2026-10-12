@@ -359,12 +359,13 @@ struct ContentView: View {
             // shape as the first-launch `addBot` bootstrap below: a tool
             // call isn't a place to show a settings sheet, so this commits
             // immediately.
-            botDirectory.createBot = { name, tagline in
+            botDirectory.createBot = { name, tagline, configure in
                 let botID = "bot-\(UUID().uuidString.prefix(8))"
                 let colorHex = botColorPalette[bots.count % botColorPalette.count]
                 let bot = Bot(id: botID, name: name, colorHex: colorHex, tagline: tagline, permissions: runShellPermissions, botDirectory: botDirectory)
                 bot.maxTokensText = defaultMaxTokens
                 bot.maxIterationsText = defaultMaxIterations
+                configure(bot)
                 bots.append(bot)
                 botDirectory.sync(bots)
                 saveBots()

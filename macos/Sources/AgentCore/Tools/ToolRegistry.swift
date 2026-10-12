@@ -501,8 +501,9 @@ public struct ToolRegistry: Sendable {
             name: "create_bot",
             description: "Create a brand-new bot with its own sandbox — for when something is outside your "
                 + "own scope AND no existing bot (see list_bots) specializes in it either, so you're "
-                + "recruiting a specialist rather than handling it yourself. The new bot boots its own "
-                + "sandbox in the background and starts with no conversation and no memory, so give it a "
+                + "recruiting a specialist rather than handling it yourself. The new bot gets your local model, "
+                + "boots its own sandbox in the background (message_bot waits for it), and starts with no "
+                + "conversation, no memory and none of your files, so give it a "
                 + "clear tagline — its role, shown in every bot's \"other bots\" index — and, if its role "
                 + "needs instructions beyond the standard default, a system_prompt (prepended to that "
                 + "default, not a replacement for it). This is a real, persistent bot the "

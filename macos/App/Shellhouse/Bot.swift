@@ -1387,12 +1387,25 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// in MY OWN transcript (not the recipient's) — the user sees that
     /// notice here and can tap it to read the full exchange, but the
     /// recipient's own chat is untouched by any of this.
+    static let delegationBootWaitSeconds = 90
+
     func delegateToBot(named name: String, message: String) async -> [String: Any] {
         guard let recipient = botDirectory.bot(named: name, excluding: id) else {
             return ["error": "No other bot named '\(name)'. Use list_bots to see who's available."]
         }
+        // A bot that was just created (or the app just launched) is still booting its sandbox: wait
+        // for it rather than failing and leaving the model to retry in a loop. A failed boot answers at once.
+        var waited = 0
+        while recipient.sandbox == nil || recipient.handle == nil, waited < Self.delegationBootWaitSeconds, !Task.isCancelled {
+            if case .failed = recipient.state { break }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            waited += 1
+        }
         guard recipient.sandbox != nil, recipient.handle != nil else {
-            return ["error": "\(recipient.name) hasn't finished starting up yet — try again shortly."]
+            if case .failed(let why) = recipient.state {
+                return ["error": "\(recipient.name)'s computer failed to start (\(why)). Tell your user; they can reset it in that bot's settings."]
+            }
+            return ["error": "\(recipient.name) is still starting up after \(waited) s. Tell your user and try again in a few minutes; don't retry in a loop."]
         }
 
         InterBotStore.append(InterBotMessage(fromBotID: id, fromBotName: self.name, toBotID: recipient.id, toBotName: recipient.name, text: message))
@@ -1470,15 +1483,25 @@ final class Bot: Identifiable, @unchecked Sendable {
         if let existing = botDirectory.allBots().first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
             return ["created": false, "already_existed": true, "id": existing.id, "name": existing.name, "tagline": existing.tagline]
         }
-        guard let newBot = botDirectory.createBot(name, tagline) else {
+        let model = selectedModel, vision = modelHasVision, isLocal = modelProvider == .ollama
+        guard let newBot = botDirectory.createBot(name, tagline, { newBot in
+            // The role prompt becomes the new bot's custom instructions; the
+            // built-in prompt (tools, finish_task rule) is always applied on top.
+            if let systemPrompt, !systemPrompt.isEmpty {
+                newBot.systemPromptText = systemPrompt
+            }
+            // Same local model as the bot that recruited it: the hard-coded default may not even be
+            // installed. (A remote provider's API key is stored per bot, so that isn't carried over.)
+            if isLocal {
+                newBot.selectedModel = model
+                newBot.modelHasVision = vision
+            }
+        }) else {
             return ["error": "couldn't create a new bot right now"]
         }
-        // The role prompt becomes the new bot's custom instructions; the
-        // built-in prompt (tools, finish_task rule) is always applied on top.
-        if let systemPrompt, !systemPrompt.isEmpty {
-            newBot.systemPromptText = systemPrompt
-        }
-        return ["id": newBot.id, "name": newBot.name, "tagline": newBot.tagline]
+        return ["id": newBot.id, "name": newBot.name, "tagline": newBot.tagline, "model": newBot.selectedModel,
+                "note": "\(newBot.name) is starting its own computer in the background (usually under a minute). "
+                    + "message_bot waits for it, so you can brief it right away."]
     }
 
     /// The `add_bot_to_group` tool — `botName` can be this bot's own name

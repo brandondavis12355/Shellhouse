@@ -51,7 +51,8 @@ final class BotDirectory {
     /// sandbox — for the `create_bot` tool. `nil` only if this was somehow
     /// never wired up (never true in practice; `ContentView` sets it
     /// before any bot's runtime can start).
-    var createBot: (_ name: String, _ tagline: String) -> Bot? = { _, _ in nil }
+    /// `configure` runs on the new bot before it is saved and booted.
+    var createBot: (_ name: String, _ tagline: String, _ configure: (Bot) -> Void) -> Bot? = { _, _, _ in nil }
 
     /// Set once by `ContentView` — adds `bot` as a member of the named
     /// group chat (case-insensitive match), for the `add_bot_to_group`
