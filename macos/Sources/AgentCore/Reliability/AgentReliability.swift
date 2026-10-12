@@ -299,6 +299,21 @@ public enum ReplyQuality {
     }
 }
 
+/// Whether a finished task's summary should be tucked away as "Done — tap for summary" (it only
+/// repeats a reply already shown this turn) or shown as the reply itself (nothing was shown yet, or
+/// what was shown was a step like "Let me check…", not the answer).
+public enum SummaryDisplay {
+    public static func collapses(summary: String, shownThisTurn: [String]) -> Bool {
+        let s = summary.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !s.isEmpty else { return true }
+        return shownThisTurn.contains { shown in
+            let r = shown.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !r.isEmpty else { return false }
+            return r.contains(s) || s.contains(r) || ReplyQuality.similarity(s, r) >= 0.5
+        }
+    }
+}
+
 /// Tool results are stored as JSON, which escapes every `/` as `\/`, so a
 /// path the tools really returned ("/usr/bin/gh") would never be found in
 /// them verbatim. Lowercase and undo that escaping before searching.

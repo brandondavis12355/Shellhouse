@@ -477,6 +477,18 @@ final class Bot: Identifiable, @unchecked Sendable {
                     timestamp: $0.timestamp ?? Date(), toolName: $0.toolName, isTaskSummary: $0.isTaskSummary ?? false
                 )
             }
+            // Saved before summaries were judged per turn: show any whose answer was never shown otherwise.
+            var shownThisTurn: [String] = []
+            for index in displayMessages.indices {
+                let message = displayMessages[index]
+                if message.role == .user { shownThisTurn = []; continue }
+                guard message.role == .assistant, message.toolName == nil, message.interBotPeerID == nil else { continue }
+                if message.isTaskSummary {
+                    displayMessages[index].isTaskSummary = SummaryDisplay.collapses(summary: message.text, shownThisTurn: shownThisTurn)
+                } else {
+                    shownThisTurn.append(message.text)
+                }
+            }
             hasStarted = true
         }
         // Reads the managed memory book (or migrates the old plain list), then tidies it once.
@@ -2922,9 +2934,19 @@ final class Bot: Identifiable, @unchecked Sendable {
                 displayMessages[index].text = message.content
                 pendingReuseClear = false
             } else {
+                var collapsed = message.isTaskSummary
+                if collapsed {
+                    // Only tuck the summary away when it repeats a reply already shown this turn;
+                    // a turn whose answer lives only in the summary must show it as the reply.
+                    let lastUser = displayMessages.lastIndex { $0.role == .user } ?? -1
+                    let shown = displayMessages.suffix(from: lastUser + 1)
+                        .filter { $0.role == .assistant && !$0.isTaskSummary && $0.toolName == nil && $0.interBotPeerID == nil }
+                        .map(\.text)
+                    collapsed = SummaryDisplay.collapses(summary: message.content, shownThisTurn: Array(shown))
+                }
                 displayMessages.append(DisplayMessage(
                     role: message.role, text: message.content,
-                    toolName: message.toolName, isTaskSummary: message.isTaskSummary
+                    toolName: message.toolName, isTaskSummary: collapsed
                 ))
             }
             persistTranscript()

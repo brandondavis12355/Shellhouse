@@ -621,3 +621,17 @@ final class ModelConnectionTests: XCTestCase {
         XCTAssertTrue(seen.messages.joined().contains("stopped early"))
     }
 }
+
+final class SummaryDisplayTests: XCTestCase {
+    func testAnswerOnlyInTheSummaryIsShown() {
+        XCTAssertFalse(SummaryDisplay.collapses(summary: "Hey! How can I help you today?", shownThisTurn: []))
+    }
+    func testANarrationStepDoesNotHideTheResult() {
+        XCTAssertFalse(SummaryDisplay.collapses(summary: "The kernel is 6.17.0 on Debian 13.", shownThisTurn: ["Let me check that for you."]))
+    }
+    func testARepeatOfTheShownReplyIsCollapsed() {
+        let reply = "The kernel is 6.17.0-1032-oem and the distribution is Debian GNU/Linux 13 (trixie)."
+        XCTAssertTrue(SummaryDisplay.collapses(summary: "Kernel 6.17.0-1032-oem on Debian GNU/Linux 13 (trixie).", shownThisTurn: [reply]))
+        XCTAssertTrue(SummaryDisplay.collapses(summary: reply, shownThisTurn: [reply]))
+    }
+}
