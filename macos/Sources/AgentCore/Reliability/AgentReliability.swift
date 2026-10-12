@@ -258,6 +258,20 @@ public enum ReplyQuality {
     ]
 
     /// True when a "reply" only announces what the bot is about to do instead of doing it.
+    /// The reply's LAST sentence says what the bot is about to do ("…returned Not Found. Let me try
+    /// the correct URL."). Such a reply opens with a fact, so `looksLikeNarration` misses it, but the
+    /// work isn't finished: it must not end the turn.
+    public static func endsWithIntent(_ text: String) -> Bool {
+        let sentences = text.lowercased()
+            .components(separatedBy: CharacterSet(charactersIn: ".!?\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count > 3 }
+        guard let last = sentences.last, !last.hasPrefix("let me know") else { return false }
+        let intents = ["let me ", "i'll ", "i will ", "i’ll ", "i am going to ", "i'm going to ", "i’m going to ",
+                       "next, i", "now i", "i need to ", "i should ", "i'm now ", "i am now "]
+        return intents.contains { last.hasPrefix($0) || last.contains(" " + $0) || last.contains(", " + $0.trimmingCharacters(in: .whitespaces)) }
+    }
+
     public static func looksLikeNarration(_ text: String) -> Bool {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !t.isEmpty else { return false }

@@ -384,7 +384,8 @@ public actor AgentRuntime {
             guard let calls = reply.message.toolCalls, !calls.isEmpty else {
                 let plain = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
                 let isAnswer = plain.count >= Self.plainReplyMinLength && !plain.hasSuffix(":")
-                let answeredAfterWork = answerEndsTurnAfterTools && toolCallsThisTurn > 0 && !ReplyQuality.looksLikeNarration(plain)
+                let answeredAfterWork = answerEndsTurnAfterTools && toolCallsThisTurn > 0
+                    && !ReplyQuality.looksLikeNarration(plain) && !ReplyQuality.endsWithIntent(plain)
                 if isAnswer, plainReplyEndsTurn || answeredAfterWork {
                     onEvent(.message(ChatMessage(role: .assistant, content: plain, isTaskSummary: true)))
                     onEvent(.status(.completed))

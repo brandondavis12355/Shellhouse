@@ -403,6 +403,24 @@ final class RuntimeRoundTwoTests: XCTestCase {
         XCTAssertEqual(model.calls, 2)
     }
 
+    func testAReplyEndingInAPlanDoesNotEndTheTurn() async {
+        let model = Counting([
+            ChatMessage(role: .assistant, content: "", toolCalls: [call("curl -s https://example.com/licence")]),
+            ChatMessage(role: .assistant, content: "The licensing page returned \"Not Found\". Let me try the correct URL."),
+        ])
+        let runtime = AgentRuntime(model: model, sandbox: Box(), sandboxID: "t", requestApproval: { _ in .approve }, answerEndsTurnAfterTools: true)
+        await runtime.start(systemPrompt: "x", goal: "Which license?")
+        XCTAssertEqual(model.calls, 3, "a reply that ends with what it will do next keeps going")
+    }
+
+    func testEndsWithIntent() {
+        XCTAssertTrue(ReplyQuality.endsWithIntent("The browser window is open. Let me focus it and take a screenshot to confirm."))
+        XCTAssertTrue(ReplyQuality.endsWithIntent("Found the file. Next, I'll check its contents"))
+        XCTAssertFalse(ReplyQuality.endsWithIntent("I checked it. PostgreSQL uses the PostgreSQL License (source: postgresql.org)."))
+        XCTAssertFalse(ReplyQuality.endsWithIntent("Let me know if you need anything else? The average is 18.0."))
+        XCTAssertFalse(ReplyQuality.endsWithIntent("The average is 18.0. Let me know if you need anything else."))
+    }
+
     func testAToolCallWrittenAsTextIsExecuted() async {
         let model = Script([ChatMessage(role: .assistant, content: "Action: {\"name\": \"run_shell\", \"arguments\": {\"command\": \"mkdir /workspace/from_text\"}}")])
         let box = Box()
