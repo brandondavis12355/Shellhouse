@@ -37,15 +37,15 @@ The full tour of the app is in **[macos/README.md](macos/README.md)**.
 ## How it fits together
 
 ```
- ┌──────────────── Your Mac ────────────────┐            ┌──────────── Linux host (~/shellhouse) ────────────┐
- │                                           │            │                                                  │
+ ┌──────────────── Your Mac ─────────────────┐            ┌──────────── Linux host (~/shellhouse) ────────────┐
+ │                                           │            │                                                 │
  │  Shellhouse.app                             │    SSH     │  sandbox-manager   the only privileged service; │
  │   ├─ bots, groups, memory, routines       │  tunnel    │   (unix socket)    creates and drives sandboxes │
- │   ├─ guardrails + approvals + audit log  ─┼───────────▶│        │                                         │
- │   └─ Ollama (local models, Metal)         │            │        ▼                                         │
+ │   ├─ guardrails + approvals + audit log  ─┼───────────▶│        │                                        │
+ │   └─ Ollama (local models, Metal)         │            │        ▼                                        │
  │                                           │            │  one Debian desktop container per bot           │
  └───────────────────────────────────────────┘            │  (shell, Chromium, files, own workspace volume) │
-                                                          └──────────────────────────────────────────────────┘
+                                                          └─────────────────────────────────────────────────┘
           optional:  group-relay (share groups with friends) · egress-proxy (per-sandbox outbound allowlist)
 ```
 
