@@ -145,6 +145,7 @@ Details, and commands to verify each claim: [docs/SECURITY.md](docs/SECURITY.md)
 | [docs/MODEL_TIERS.md](docs/MODEL_TIERS.md) | Model tiers, thinking and parallel helpers for faster local replies |
 | [docs/EGRESS.md](docs/EGRESS.md) · [docs/FIRECRACKER.md](docs/FIRECRACKER.md) | Network policy and microVM isolation |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The reference stack's architecture |
+| [docs/AGENT-CLI-COMPARISON.md](docs/AGENT-CLI-COMPARISON.md) | How Shellhouse compares to open-source agent CLIs, and what to adopt |
 
 ## License
 
