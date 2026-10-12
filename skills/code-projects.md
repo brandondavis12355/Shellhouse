@@ -34,11 +34,15 @@ work.
 - Never put a token in a URL, a file or a commit, and never print it.
 
 ## Work in small, checked steps
+For anything with several steps, keep a plan with `update_plan` and mark
+each step done as you go; you can't finish while steps are still open.
+
 1. Read before changing: the README, how the project is built and tested,
    and the code around what you're touching (`ls`, `git log --oneline -10`,
    `grep -rn`).
-2. Change one thing at a time with `read_file` and `write_file` (write the
-   whole file back).
+2. Change one thing at a time: `read_file`, then `edit_file` with the
+   exact lines to replace. Use `search_files` / `find_files` to locate code.
+   `write_file` is for new files or complete rewrites.
 3. Run it. Use the project's own test command (`pytest`, `npm test`, a
    Makefile target) after every meaningful change. Read the output.
 4. Fix what broke before moving on.

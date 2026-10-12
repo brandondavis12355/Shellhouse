@@ -33,6 +33,17 @@ public enum Policy: Sendable {
         "list_files": .allow,
         "read_file": .allow,
         "write_file": .allow,
+        // Same footing as read_file / write_file: confined to /workspace, edits are
+        // checkpointed and syntax-checked (see WorkspaceTools).
+        "edit_file": .allow,
+        "search_files": .allow,
+        "find_files": .allow,
+        // Background jobs are started through run_shell (which asks); these only
+        // look at or stop the bot's own jobs.
+        "check_job": .allow,
+        "stop_job": .allow,
+        // The run's own checklist (AgentRuntime), no side effects.
+        "update_plan": .allow,
         "web_search": .allow,
         "fetch_url": .allow,
 

@@ -92,6 +92,9 @@ public struct ToolRegistry: Sendable {
     ) {
         var schemas = Self.buildSchemas()
         var executors = Self.buildExecutors()
+        // Edit/read/search/job tools share one tracker per registry (one per run), so an edit is
+        // checked against what this run actually read.
+        executors.merge(WorkspaceTools.executors(tracker: FileReadTracker())) { _, new in new }
         if !skills.isEmpty {
             schemas.append(Self.useSkillSchema)
             let byID = Dictionary(uniqueKeysWithValues: skills.map { ($0.id, $0) })
@@ -697,16 +700,20 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "read_file",
-                description: "Returns the text of one file in the sandbox (up to 200,000 bytes). Use it to read a file you know the path of; to find files, use list_files or run_shell with find/grep. Paths are relative to /workspace unless absolute. An error means the path is wrong or unreadable: list the parent directory before retrying.",
+                description: "Returns the text of one file in the sandbox, a page at a time: about 5,500 characters from line `offset` on, with start_line, end_line, total_lines and next_offset when there is more. Read a file before editing it with edit_file. To find files or text, use find_files or search_files. Paths are relative to /workspace unless absolute. An error means the path is wrong or unreadable: list the parent directory before retrying.",
                 parameters: [
                     "type": "object",
-                    "properties": ["path": ["type": "string"]],
+                    "properties": [
+                        "path": ["type": "string"],
+                        "offset": ["type": "integer", "description": "1-based line to start at (default 1). Use next_offset from the previous page to continue."],
+                        "limit": ["type": "integer", "description": "Optional maximum number of lines."],
+                    ],
                     "required": ["path"],
                 ]
             ),
             ToolSchema(
                 name: "write_file",
-                description: "Replaces the ENTIRE contents of one file in /workspace with `content` (creates it if missing). Read the file first if you only mean to change part of it, and write the full corrected text. Returns ok or an error naming the problem.",
+                description: "Creates a file, or replaces the ENTIRE contents of one, in /workspace. To change part of an existing file, use edit_file instead. .py, .json, .sh and .yaml files are syntax-checked: a change that breaks a file which parsed before is refused and the file left unchanged. Returns ok or an error naming the problem.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -728,6 +735,10 @@ public struct ToolRegistry: Sendable {
                             "type": "array",
                             "items": ["type": "string"],
                             "description": "Names of stored secrets to inject as environment variables for this command only.",
+                        ],
+                        "background": [
+                            "type": "boolean",
+                            "description": "Start it and return at once with a job_id, for builds, installs, servers or anything slower than about 2 minutes. Follow it with check_job / stop_job. Not with use_secrets.",
                         ],
                     ],
                     "required": ["command"],
@@ -813,6 +824,68 @@ public struct ToolRegistry: Sendable {
                     "required": ["direction"],
                 ]
             ),
+            ToolSchema(
+                name: "edit_file",
+                description: "Changes part of a file: replaces old_text with new_text. old_text must match the file exactly once (indentation differences are tolerated), so include a few surrounding lines. Read the file with read_file first; the edit is refused if you haven't, or if it changed since. Returns a numbered snippet of the result. Syntax-checked like write_file. To create or rewrite a whole file, use write_file.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string"],
+                        "old_text": ["type": "string", "description": "Exact text currently in the file (no line numbers)."],
+                        "new_text": ["type": "string", "description": "What to put in its place (empty to delete it)."],
+                        "replace_all": ["type": "boolean", "description": "Replace every match instead of requiring exactly one."],
+                    ],
+                    "required": ["path", "old_text", "new_text"],
+                ]
+            ),
+            ToolSchema(
+                name: "search_files",
+                description: "Searches file contents under /workspace (grep -E, extended regex) and returns up to max_results matches as \"file:line: text\". Skips .git, node_modules and binary files. No approval needed. If there are too many matches, narrow the pattern, path or file_glob.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "pattern": ["type": "string", "description": "Extended regular expression, e.g. \"def (load|save)_\"."],
+                        "path": ["type": "string", "description": "Folder or file inside /workspace (default: all of it)."],
+                        "file_glob": ["type": "string", "description": "Only files whose name matches, e.g. \"*.py\"."],
+                        "max_results": ["type": "integer", "description": "Default 50, at most 200."],
+                    ],
+                    "required": ["pattern"],
+                ]
+            ),
+            ToolSchema(
+                name: "find_files",
+                description: "Lists files under /workspace whose name matches a glob (e.g. \"*.csv\", \"report*\"), sorted, up to 200. Skips .git and node_modules. No approval needed.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "pattern": ["type": "string", "description": "File-name glob."],
+                        "path": ["type": "string", "description": "Folder inside /workspace (default: all of it)."],
+                    ],
+                    "required": ["pattern"],
+                ]
+            ),
+            ToolSchema(
+                name: "check_job",
+                description: "Status of a background job started with run_shell(background: true): running or finished (with exit_code), and the last lines of its output. To wait for it, pass wait_seconds (up to 110) and call again if it's still running; don't poll with sleep commands. Its full output is in the log file it names.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "job_id": ["type": "string"],
+                        "tail_lines": ["type": "integer", "description": "How many output lines to return (default 40)."],
+                        "wait_seconds": ["type": "integer", "description": "Wait up to this many seconds (max 110) for the job to finish before answering, instead of checking again and again."],
+                    ],
+                    "required": ["job_id"],
+                ]
+            ),
+            ToolSchema(
+                name: "stop_job",
+                description: "Stops a background job started with run_shell(background: true).",
+                parameters: [
+                    "type": "object",
+                    "properties": ["job_id": ["type": "string"]],
+                    "required": ["job_id"],
+                ]
+            ),
         ]
     }
 
@@ -861,6 +934,20 @@ public struct ToolRegistry: Sendable {
                 }
                 let timeout = args["timeout"]?.asDouble ?? 120
                 let useSecrets = args["use_secrets"]?.asStringArray ?? []
+                if args["background"]?.asBool == true {
+                    guard useSecrets.isEmpty else {
+                        return ["error": "background jobs can't use secrets (their output isn't masked); run it in the foreground"]
+                    }
+                    let jobID = WorkspaceTools.newJobID()
+                    do {
+                        let started = try await sandbox.exec(sandboxID, command: WorkspaceTools.backgroundCommand(command, jobID: jobID), timeout: 20, env: nil)
+                        guard started.exitCode == 0 else { return ["error": started.stderr.isEmpty ? "could not start the job" : started.stderr] }
+                        return ["job_id": jobID, "started": true, "log": "/workspace/.shellhouse/jobs/\(jobID)/log",
+                                "note": "Running in the background. Use check_job to see progress and stop_job to stop it."]
+                    } catch {
+                        return ["error": error.localizedDescription]
+                    }
+                }
                 let resolved = useSecrets.isEmpty ? [:] : ((try? await secretStore.resolveForExecution(names: useSecrets)) ?? [:])
                 do {
                     let result = try await sandbox.exec(
@@ -869,7 +956,19 @@ public struct ToolRegistry: Sendable {
                     let secretValues = Array(resolved.values)
                     let stdout = secretValues.isEmpty ? result.stdout : secretStore.mask(result.stdout, values: secretValues)
                     let stderr = secretValues.isEmpty ? result.stderr : secretStore.mask(result.stderr, values: secretValues)
-                    return ["exit_code": Int(result.exitCode), "stdout": stdout, "stderr": stderr]
+                    var out: [String: Any] = ["exit_code": Int(result.exitCode), "stdout": stdout, "stderr": stderr]
+                    if result.exitCode == 124, stderr.hasPrefix("Timed out") {
+                        out["hint"] = "The command may still be running, and its output is lost. For anything this slow, use "
+                            + "run_shell with background: true, then check_job."
+                    }
+                    // Too long to show in full: keep all of it in a file the model can search or page through.
+                    if let path = await WorkspaceTools.spill(stdout, field: "stdout", sandboxID: sandboxID, sandbox: sandbox) {
+                        out["full_stdout_path"] = path
+                    }
+                    if let path = await WorkspaceTools.spill(stderr, field: "stderr", sandboxID: sandboxID, sandbox: sandbox) {
+                        out["full_stderr_path"] = path
+                    }
+                    return out
                 } catch {
                     return ["error": error.localizedDescription]
                 }

@@ -31,6 +31,8 @@ final class EngineABEval: XCTestCase {
         var note: String
         var seconds: Double
         var toolCalls: Int
+        var tools: [String] = []
+        var results: [String] = []
         var assistantTurns: Int
         var problems: [String]
         var answer: String
@@ -41,6 +43,8 @@ final class EngineABEval: XCTestCase {
         var turns = 0
         var problems: [String] = []
         var said: [String] = []
+        var results: [String] = []
+        func result(_ name: String, _ json: String) { results.append(name + ": " + String(json.prefix(300))) }
         func tool(_ name: String) { tools.append(name) }
         func turn(_ text: String) {
             turns += 1
@@ -101,6 +105,7 @@ final class EngineABEval: XCTestCase {
                         Swift.Task {
                             switch event {
                             case .toolStarted(let name, _): await recorder.tool(name)
+                            case .toolCompleted(let name, let json): await recorder.result(name, json)
                             case .message(let m) where m.role == .assistant: await recorder.turn(m.content)
                             case .status(.failed(let s)): await recorder.problem("failed: \(s)")
                             case .status(.aborted(let s)): await recorder.problem("aborted: \(s)")
@@ -138,7 +143,7 @@ final class EngineABEval: XCTestCase {
                     let (pass, note) = await task.check(answer, sandbox, sandboxID)
                     let r = Result(
                         engine: engineName, task: task.id, model: model, trial: trial, pass: pass, note: note,
-                        seconds: (seconds * 10).rounded() / 10, toolCalls: await recorder.tools.count,
+                        seconds: (seconds * 10).rounded() / 10, toolCalls: await recorder.tools.count, tools: await recorder.tools, results: await recorder.results,
                         assistantTurns: await recorder.turns, problems: await recorder.problems, answer: String(answer.prefix(1500))
                     )
                     out.write(try JSONEncoder().encode(r) + Data("\n".utf8))
@@ -176,6 +181,22 @@ final class EngineABEval: XCTestCase {
              setup: "cd /workspace && touch a.txt b.md c.csv d.log && mkdir -p sub && touch sub/e.txt") { a, _, _ in
             let pass = a.range(of: #"\b(4|four)\b"#, options: [.regularExpression, .caseInsensitive]) != nil
             return (pass, "")
+        },
+        Task(id: "files.edit",
+             prompt: "In settings.py, change TIMEOUT from 30 to 45. Don't change anything else in the file.",
+             setup: "mkdir -p /workspace/.shellhouse && cd /workspace && python3 -c \"lines=[f'OPTION_{i} = {i}' for i in range(1,301)]; lines[149]='TIMEOUT = 30'; open('settings.py','w').write(chr(10).join(lines)+chr(10))\" && md5sum settings.py | cut -c1-32 > .shellhouse/settings.orig") { _, s, id in
+            let ok = await shell(s, id, "cd /workspace && sed -n 150p settings.py && wc -l < settings.py && sed 's/^TIMEOUT = 45$/TIMEOUT = 30/' settings.py | md5sum | cut -c1-32 | diff -q - .shellhouse/settings.orig >/dev/null && echo SAME_OTHERWISE")
+            return (ok.contains("TIMEOUT = 45") && ok.contains("300") && ok.contains("SAME_OTHERWISE"), ok.replacingOccurrences(of: "\n", with: " | "))
+        },
+        Task(id: "files.search",
+             prompt: "Somewhere in the project folder there's a function called compute_invoice_total. Which file defines it?",
+             setup: "mkdir -p /workspace/project/billing /workspace/project/api /workspace/project/util && cd /workspace/project && for d in billing api util; do for i in $(seq 1 13); do printf 'def helper_%s_%s():\\n    return %s\\n' $d $i $i > $d/mod_$i.py; done; done && printf 'def compute_invoice_total(items):\\n    return sum(items)\\n' > billing/mod_9.py") { a, _, _ in
+            (has(a, "billing/mod_9.py"), "")
+        },
+        Task(id: "shell.background",
+             prompt: "Run this build step, which takes about two and a half minutes: `sleep 150 && echo built > /workspace/build.txt`. Tell me once it has finished.") { a, s, id in
+            let file = await shell(s, id, "cat /workspace/build.txt 2>/dev/null")
+            return (file == "built" && (has(a, "finish") || has(a, "done") || has(a, "complete")), "build.txt=\(file)")
         },
         Task(id: "shell.system",
              prompt: "Use the shell to find out which Linux distribution and kernel version your computer is running, and report both.") { a, s, id in

@@ -38,9 +38,8 @@ entirely in an untrusted run (for example, after browsing).
 - Give long jobs an explicit `timeout`, and don't start interactive
   programs that wait for input (editors, `top`, prompts). Use flags like
   `-y` and `--no-pager` instead.
-- To run something long in the background:
-  `nohup <cmd> > /workspace/<job>.log 2>&1 &`, then check the log with
-  `tail` later.
+- To run something long, use `run_shell` with `background: true`, then
+  `check_job(job_id)` for progress and `stop_job(job_id)` to stop it.
 
 ## Disk full
 Delete what you created and don't need: old screenshots, downloads,

@@ -71,7 +71,7 @@ These show up in most of the 13 projects. "Shellhouse today" is from this repo's
 | 9 | **Skills in the Agent Skills layout:** `skills/<name>/SKILL.md` (still reading single files), "Use when…" first in every description, optional `scripts/`; then add skills for documents (PDF/DOCX/XLSX via Python), a research brief with citations, and verify-before-finish | Interoperable with other agents' skills; fills the common skill topics we lack | M |
 | 10 | **Built-in `fetch_url`:** returns page text (tags stripped, truncated) | Removes the most error-prone research step | S |
 
-Items 1–6 are the reliability core and touch `ToolRegistry`, `Policy`, `ActionClassifier` and the runtime. Each one
+**Items 1–6 are implemented** (October 2026): `edit_file`, paged `read_file`, `search_files`/`find_files`, validate-on-write, background `run_shell` with `check_job`/`stop_job` (built-in engine only), `update_plan` with the completion guard, and the same-error nudge. `EngineABEval` gained `files.edit`, `files.search` and `shell.background`; all 15 tasks pass. Items 1–6 are the reliability core and touch `ToolRegistry`, `Policy`, `ActionClassifier` and the runtime. Each one
 needs its skill updated (`shell-and-files`, `desktop-control`, `code-projects`) and a task added to
 `EngineABEval` to measure it.
 

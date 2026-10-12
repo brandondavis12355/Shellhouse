@@ -39,9 +39,12 @@ public actor SmolAgentsEngine: AgentEngine {
         }
     }
 
-    /// Tools the runner implements itself, inside the container.
+    /// Tools the runner implements itself, inside the container. `read_file` and `write_file` are
+    /// bridged to Swift instead, so both engines share paged reads, read-before-edit tracking for
+    /// `edit_file`, and syntax checks on write (see `WorkspaceTools`). `run_shell` stays in the
+    /// container, so background jobs are a built-in-engine feature for now.
     public static let inSandboxTools: Set<String> = [
-        "run_shell", "read_file", "write_file", "list_files",
+        "run_shell", "list_files",
         "screenshot", "list_windows", "focus_window", "open_app", "click", "type_text", "press_key", "scroll",
     ]
     static let maxFieldBytes = 256 * 1024

@@ -285,7 +285,7 @@ final class SmolAgentsEngineTests: XCTestCase {
 
     func testDecoyCredentialFreezesTheRunAndCancelsTheRunner() async {
         let sandbox = FakeRunnerSandbox([
-            .events([ev("rpc_request", ["id": "t1", "kind": "policy_check", "name": "read_file", "args": ["path": "/workspace/.env.production"]])]),
+            .events([ev("rpc_request", ["id": "t1", "kind": "policy_check", "name": "run_shell", "args": ["command": "cat /workspace/.env.production"]])]),
             .never,
         ])
         let rec = Recorder()
@@ -294,6 +294,17 @@ final class SmolAgentsEngineTests: XCTestCase {
         XCTAssertEqual(sandbox.replyDecision("t1")?["decision"] as? String, "deny")
         XCTAssertTrue(sandbox.cancelWritten)
         XCTAssertTrue(rec.all.contains { $0.hasPrefix("status:aborted") && $0.contains("froze") })
+    }
+
+    func testABridgedToolSentAsPolicyCheckIsDenied() async {
+        // read_file runs on the Mac side now; the runner must ask for it as a bridge_call.
+        let sandbox = FakeRunnerSandbox([
+            .events([ev("rpc_request", ["id": "t1", "kind": "policy_check", "name": "read_file", "args": ["path": "notes.txt"]])]),
+            .events([ev("final", ["summary": "done", "outcome": "done"]), ev("status", ["state": "completed"])]),
+        ])
+        let e = engine(sandbox, rec: Recorder(), answer: .approve)
+        await e.send("go", images: [])
+        XCTAssertEqual(sandbox.replyDecision("t1")?["decision"] as? String, "deny")
     }
 
     func testCancellingTheTurnTellsTheRunnerToStopAndRevokesTheToken() async throws {

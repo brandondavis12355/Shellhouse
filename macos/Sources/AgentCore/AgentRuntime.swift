@@ -140,6 +140,20 @@ public actor AgentRuntime {
     /// still record steps.
     private let answerEndsTurnAfterTools: Bool
     private var toolCallsThisTurn = 0
+
+    /// The run's own checklist (`update_plan`). `finish_task` with outcome "done" is refused once
+    /// while items are still open (Roo Code's completion guard), so "done" means done.
+    public struct PlanItem: Sendable, Equatable {
+        public enum Status: String, Sendable { case pending, in_progress, done, blocked }
+        public let text: String
+        public let status: Status
+    }
+    private(set) var plan: [PlanItem] = []
+    private var finishGuardUsed = false
+    /// Identical errors per tool this turn; the third gets one message naming it (OpenHands).
+    private var errorCounts: [String: Int] = [:]
+    static let sameErrorNudgeAt = 3
+    var openPlanItems: [PlanItem] { plan.filter { $0.status == .pending || $0.status == .in_progress } }
     static let plainReplyMinLength = 25
     private static let loopRepeatThreshold = 3
     private var lastResultKey = ""
@@ -156,7 +170,8 @@ public actor AgentRuntime {
     /// Tools that may still run without approval during an untrusted run:
     /// they only read this bot's own state or update shared bookkeeping.
     static let untrustedSafeTools: Set<String> = [
-        "list_files", "read_file", "screenshot", "list_windows", "use_skill", "search_memory", "recall_memory",
+        "list_files", "read_file", "search_files", "find_files", "check_job", "update_plan",
+        "screenshot", "list_windows", "use_skill", "search_memory", "recall_memory",
         "list_routines", "get_profile", "list_tasks", "list_secrets", "list_bots", "complete_task", "update_user",
         "get_goal", "update_goal_step", "propose_goal", "add_goal_step", "propose_goal_complete", "ask_helpers",
     ]
@@ -180,6 +195,67 @@ public actor AgentRuntime {
     /// LangGraph's structured-response mode both require the same thing),
     /// not just a nudge that hopes the model self-corrects.
     private static let finishTaskName = "finish_task"
+    static let updatePlanName = "update_plan"
+    private static var updatePlanSchema: ToolSchema {
+        ToolSchema(
+            name: updatePlanName,
+            description: "Write or update your plan for this task: a short checklist (at most 12 steps) with one "
+                + "status each. Send the whole list every time. Use it for anything with several steps; skip it for "
+                + "a one-step answer. At most one step may be in_progress. finish_task with outcome \"done\" is "
+                + "refused while steps are pending or in_progress: finish them, or mark them blocked with the reason.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "steps": [
+                        "type": "array",
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "text": ["type": "string"],
+                                "status": ["type": "string", "enum": ["pending", "in_progress", "done", "blocked"]],
+                            ],
+                            "required": ["text", "status"],
+                        ],
+                    ],
+                ],
+                "required": ["steps"],
+            ]
+        )
+    }
+
+    /// The plan as the model and the reminder show it.
+    var planText: String {
+        plan.map { item in
+            let mark: String
+            switch item.status {
+            case .done: mark = "[x]"
+            case .in_progress: mark = "[~]"
+            case .blocked: mark = "[!]"
+            case .pending: mark = "[ ]"
+            }
+            return "\(mark) \(item.text)"
+        }.joined(separator: "\n")
+    }
+
+    private func updatePlan(_ call: ToolCall) -> [String: Any] {
+        guard let raw = call.arguments["steps"]?.value as? [Any], !raw.isEmpty else {
+            return ["error": "update_plan needs 'steps': a list of {text, status}."]
+        }
+        var items: [PlanItem] = []
+        for entry in raw.prefix(12) {
+            guard let dict = entry as? [String: Any], let text = (dict["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else { return ["error": "Every step needs a non-empty 'text'."] }
+            let status = PlanItem.Status(rawValue: (dict["status"] as? String ?? "pending").replacingOccurrences(of: "-", with: "_")) ?? .pending
+            items.append(PlanItem(text: String(text.prefix(200)), status: status))
+        }
+        if items.filter({ $0.status == .in_progress }).count > 1 {
+            return ["error": "Only one step can be in_progress at a time; mark the others pending or done."]
+        }
+        plan = items
+        var out: [String: Any] = ["ok": true, "plan": planText]
+        if raw.count > 12 { out["note"] = "Kept the first 12 steps." }
+        return out
+    }
     private static var finishTaskSchema: ToolSchema {
         ToolSchema(
             name: finishTaskName,
@@ -282,6 +358,9 @@ public actor AgentRuntime {
         ]
         currentGoal = goal
         toolCallsThisTurn = 0
+        plan = []
+        finishGuardUsed = false
+        errorCounts = [:]
         budgetWarningsSent = []
         await loop()
     }
@@ -295,6 +374,9 @@ public actor AgentRuntime {
         messages.append(ChatMessage(role: .user, content: userMessage, images: images.isEmpty ? nil : images))
         currentGoal = userMessage
         toolCallsThisTurn = 0
+        plan = []
+        finishGuardUsed = false
+        errorCounts = [:]
         // Loop-detection is meant to catch a model stuck repeating the
         // SAME call within one reasoning task, not across entirely
         // separate turns — without this reset, `callFingerprints`
@@ -325,7 +407,9 @@ public actor AgentRuntime {
 
     private func loop() async {
         onEvent(.status(.planning))
-        let toolSchemas = tools.schemas + [Self.finishTaskSchema]
+        // Group goal turns already have the goal's checklist; a second plan would compete with it.
+        let offersPlan = !tools.names().contains("update_goal_step")
+        let toolSchemas = tools.schemas + [Self.finishTaskSchema] + (offersPlan ? [Self.updatePlanSchema] : [])
         while true {
             do {
                 try checkBudgets()
@@ -346,7 +430,8 @@ public actor AgentRuntime {
             // makes the model server re-read the conversation from that point instead of reusing its cache.
             if Reliability.isOn(.taskFocus), iterations > 1, iterations % 5 == 0, !currentGoal.isEmpty {
                 messages.append(ChatMessage(role: .user, content: "[reminder] Your task: \(String(currentGoal.prefix(400))). "
-                    + "Step \(iterations) of \(budgets.maxIterations). Stay on this task; when it is answered, call finish_task."))
+                    + "Step \(iterations) of \(budgets.maxIterations). Stay on this task; when it is answered, call finish_task."
+                    + (plan.isEmpty ? "" : "\nYour plan:\n" + planText)))
             }
             onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
 
@@ -386,7 +471,7 @@ public actor AgentRuntime {
                 let isAnswer = plain.count >= Self.plainReplyMinLength && !plain.hasSuffix(":")
                 let answeredAfterWork = answerEndsTurnAfterTools && toolCallsThisTurn > 0
                     && !ReplyQuality.looksLikeNarration(plain) && !ReplyQuality.endsWithIntent(plain)
-                if isAnswer, plainReplyEndsTurn || answeredAfterWork {
+                if isAnswer, plainReplyEndsTurn || answeredAfterWork, openPlanItems.isEmpty {
                     onEvent(.message(ChatMessage(role: .assistant, content: plain, isTaskSummary: true)))
                     onEvent(.status(.completed))
                     return
@@ -437,6 +522,17 @@ public actor AgentRuntime {
                     ))
                     continue
                 }
+                // "Done" with plan steps still open: refuse once (only when finish_task is the sole call,
+                // so every call in the turn still gets an answer). A second attempt goes through.
+                if outcome == "done", calls.count == 1, !openPlanItems.isEmpty, !finishGuardUsed {
+                    finishGuardUsed = true
+                    appendToolResult(name: Self.finishTaskName, observation: [
+                        "error": "Not finished: your plan still has open steps:\n"
+                            + openPlanItems.map { "- \($0.text) (\($0.status.rawValue))" }.joined(separator: "\n")
+                            + "\nDo them, or call update_plan marking each done or blocked (with the reason), then finish.",
+                    ])
+                    continue
+                }
                 onEvent(.message(ChatMessage(role: .assistant, content: summary, isTaskSummary: true)))
                 onEvent(.status(outcome == "done" ? .completed : .aborted(outcome)))
                 return
@@ -445,6 +541,13 @@ public actor AgentRuntime {
             var seenThisTurn = Set<String>()
             toolCallsThisTurn += calls.count
             for call in calls {
+                if call.name == Self.updatePlanName {
+                    onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
+                    let result = updatePlan(call)
+                    appendToolResult(name: call.name, observation: result)
+                    onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(result)))
+                    continue
+                }
                 // The same call twice in one assistant turn runs once; the second still gets an answer.
                 let key = Self.repeatFingerprint(for: call)
                 if Reliability.isOn(.callChecks), !seenThisTurn.insert(key).inserted {
@@ -557,6 +660,7 @@ public actor AgentRuntime {
             sameResultStreak = 0
             stuck.reset()
         }
+        noteError(call, observation: observation)
         let streak = noteResult(call, observation: observation)
         if !Reliability.isOn(.loopGuards) {
             // same-result guard switched off
@@ -842,6 +946,25 @@ public actor AgentRuntime {
     }
 
     // MARK: - Transcript helpers
+
+    /// The third identical error from one tool this turn gets a single message naming it, before the
+    /// loop guards would stop the run.
+    private func noteError(_ call: ToolCall, observation: [String: Any]) {
+        guard Reliability.isOn(.loopGuards) else { return }
+        var error = observation["error"] as? String ?? ""
+        if error.isEmpty, let code = observation["exit_code"] as? Int, code != 0 {
+            error = (observation["stderr"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !error.isEmpty else { return }
+        let normalized = String(error.prefix(300)).replacingOccurrences(of: "[0-9]+", with: "#", options: .regularExpression)
+        let key = call.name + "|" + normalized
+        errorCounts[key, default: 0] += 1
+        guard errorCounts[key] == Self.sameErrorNudgeAt else { return }
+        messages.append(ChatMessage(role: .user, content:
+            "[stuck] \(call.name) has failed \(Self.sameErrorNudgeAt) times with the same error: \"\(String(error.prefix(240)))\". "
+            + "Repeating it won't help. Read the error, check your assumptions (path, name, arguments, whether a tool is installed), "
+            + "and try a different approach; if you can't, finish_task with outcome \"blocked\" and say what you need."))
+    }
 
     private func appendToolResult(name: String, observation: [String: Any]) {
         let message = ChatMessage(role: .tool, content: jsonString(observation), toolName: name)

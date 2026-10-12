@@ -264,11 +264,20 @@ public enum ActionClassifier {
                 Finding(.observe, "tool.\(tool)", "reads a file", clean: .allow, tainted: .allow),
             ])
 
-        case "write_file":
+        case "search_files", "find_files":
+            let path = arguments["path"]?.asString ?? "."
+            return Classification(findings: pathFindings(path, mode: .read, config: config) + [
+                Finding(.observe, "tool.\(tool)", "searches the workspace", clean: .allow, tainted: .allow),
+            ])
+
+        case "check_job", "stop_job":
+            return Classification(findings: [Finding(.observe, "tool.\(tool)", "checks or stops this bot's own background job", clean: .allow, tainted: .allow)])
+
+        case "write_file", "edit_file":
             let path = arguments["path"]?.asString ?? ""
             var findings = pathFindings(path, mode: .write, config: config)
             let normalized = ShellAnalyzer.normalize(path: path, cwd: config.cwd, home: config.home)
-            findings.append(Finding(.reversibleWrite, "tool.write_file", "writes a workspace file",
+            findings.append(Finding(.reversibleWrite, "tool.\(tool)", tool == "edit_file" ? "edits a workspace file" : "writes a workspace file",
                                     clean: .allow, tainted: .allow, checkpointPaths: [normalized]))
             return Classification(findings: findings)
 
@@ -326,7 +335,7 @@ public enum ActionClassifier {
             return Classification(findings: [Finding(.state, "tool.\(tool)", "changes goals or tasks", clean: .allow, tainted: .ask)])
 
         case "list_bots", "list_tasks", "list_routines", "get_profile",
-             "recall_memory", "search_memory", "use_skill", "list_secrets", "get_goal", "ask_helpers":
+             "recall_memory", "search_memory", "use_skill", "list_secrets", "get_goal", "ask_helpers", "update_plan":
             return Classification(findings: [Finding(.observe, "tool.\(tool)", "bookkeeping", clean: .allow, tainted: .allow)])
 
         default:
