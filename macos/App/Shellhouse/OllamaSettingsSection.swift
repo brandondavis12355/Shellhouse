@@ -100,9 +100,9 @@ struct OllamaSettingsSection: View {
     @State private var pullStatus: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        CollapsibleSection("Ollama", summary: binaryPath == nil ? "Not found" : "\(models.count) models", storageKey: "ollama") {
             HStack {
-                SectionLabel("Ollama")
+                Spacer()
                 Spacer()
                 if isRefreshing { ProgressView().controlSize(.small) }
                 Button("Refresh") { Task { await refresh() } }

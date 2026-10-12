@@ -40,9 +40,9 @@ struct SkillsSettingsSection: View {
     private var builtInSkills: [Skill] { skills.filter { !SkillLibrary.isUserSkill(id: $0.id) } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        CollapsibleSection("Skills", summary: "\(skills.count) skills", storageKey: "skills") {
             HStack {
-                SectionLabel("Skills")
+                Spacer()
                 Spacer()
                 Button(isAdding ? "Cancel" : "New skill…") {
                     if isAdding {

@@ -197,6 +197,52 @@ struct ExpandableCard<Content: View>: View {
     }
 }
 
+/// A whole settings section that folds into one row: its title, a short live summary and a chevron.
+/// Expanded, the section's own cards show below that row. Remembers per section whether it was
+/// left open.
+struct CollapsibleSection<Content: View>: View {
+    let title: String
+    var summary: String?
+    @AppStorage private var isExpanded: Bool
+    private let content: Content
+
+    init(_ title: String, summary: String? = nil, storageKey: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.summary = summary
+        self._isExpanded = AppStorage(wrappedValue: false, "settings.section.\(storageKey).expanded")
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Card {
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) { isExpanded.toggle() }
+                } label: {
+                    SettingRow(title) {
+                        HStack(spacing: 8) {
+                            if let summary { Text(summary).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(1) }
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.tertiary)
+                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(isExpanded ? "Collapse" : "Expand")
+            }
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) { content }
+                    .padding(.top, 8)
+                    .transition(.opacity)
+            }
+        }
+        .padding(.top, 12)
+    }
+}
+
 // MARK: - Buttons
 
 /// Press feedback without any chrome.

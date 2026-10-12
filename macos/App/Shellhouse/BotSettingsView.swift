@@ -51,7 +51,7 @@ struct BotSettingsView: View {
                 BotSettingsTab(bot: bot, groupChats: groupChats)
 
                 if case .edit = mode {
-                    SectionLabel("Danger zone")
+                    CollapsibleSection("Danger zone", summary: "Delete or reset", storageKey: "bot.dangerZone") {
                     Card {
                         Button { showingDeleteConversationConfirm = true } label: {
                             SettingRow("Delete conversation…", titleColor: Theme.destructive)
@@ -78,6 +78,7 @@ struct BotSettingsView: View {
                         .buttonStyle(.plain)
                         .disabled(bot.isBusy)
                         .opacity(bot.isBusy ? 0.4 : 1)
+                    }
                     }
                 }
             }
@@ -512,7 +513,7 @@ struct BotSettingsTab: View {
                     }
                 }
 
-                SectionLabel("Model")
+                CollapsibleSection("Model", summary: bot.selectedModel.isEmpty ? "Not chosen" : bot.selectedModel, storageKey: "bot.model") {
                 Card {
                     PickerRow(
                         title: "Provider",
@@ -591,6 +592,7 @@ struct BotSettingsTab: View {
                     ? "Locked while this bot is working."
                     : "Raise this if you've selected several skills — the whole system prompt resends every turn, "
                     + "so a large one burns through the token budget in a handful of turns.")
+                }
             }
             .padding(.bottom, 8)
         }
@@ -648,11 +650,12 @@ struct BotSettingsTab: View {
                 }
             }
 
-            SectionLabel("Avatar shape")
-            Card {
-                AvatarPicker(colorHex: bot.colorHex, selection: $bot.avatarStyle)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            CollapsibleSection("Avatar shape", summary: AvatarStyle(rawValue: bot.avatarStyle)?.label, storageKey: "bot.avatarShape") {
+                Card {
+                    AvatarPicker(colorHex: bot.colorHex, selection: $bot.avatarStyle)
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
     }

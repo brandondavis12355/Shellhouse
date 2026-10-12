@@ -8,8 +8,7 @@ struct ModelTiersSettingsSection: View {
     @State private var installed: [String] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionLabel("Fast model")
+        CollapsibleSection("Fast model", summary: fastModel.isEmpty ? "Same as each bot" : fastModel, storageKey: "fastModel") {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("A small model for the quick decisions around each reply (does this need an answer, is it small talk) "

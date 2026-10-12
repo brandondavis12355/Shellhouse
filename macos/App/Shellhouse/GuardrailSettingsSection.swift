@@ -12,8 +12,7 @@ struct GuardrailSettingsSection: View {
     @State private var verification: AuditLog.Verification?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionLabel("Guardrails")
+        CollapsibleSection("Guardrails", summary: yolo ? "YOLO on" : "Approvals on", storageKey: "guardrails") {
             Card {
                 ToggleRow(
                     title: "YOLO mode — don't ask for approval",

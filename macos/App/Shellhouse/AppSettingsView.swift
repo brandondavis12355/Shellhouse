@@ -47,7 +47,7 @@ struct AppSettingsView: View {
 
                 HostSettingsSection(onChanged: onHostChanged)
 
-                SectionLabel("Sandbox manager token")
+                CollapsibleSection("Sandbox manager token", summary: tokenInfo == nil ? "Not set" : "Set", storageKey: "managerToken") {
                 Card {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("The shared secret `sandbox-manager` requires on every call (X-Manager-Token). "
@@ -92,6 +92,7 @@ struct AppSettingsView: View {
                     }
                     .padding(16)
                 }
+                }
 
                 SectionLabel("Debug")
                 Card {
@@ -108,7 +109,7 @@ struct AppSettingsView: View {
 
                 SkillsSettingsSection(onChanged: onSkillsChanged)
 
-                SectionLabel("Defaults for new bots")
+                CollapsibleSection("Defaults for new bots", summary: "\(defaultMaxIterations) steps · \(defaultMaxTokens) tokens", storageKey: "botDefaults") {
                 Card {
                     SettingRow("Max tokens") {
                         TextField("200000", text: $defaultMaxTokens).themedField().frame(width: 120)
@@ -119,9 +120,10 @@ struct AppSettingsView: View {
                     }
                 }
                 SectionFooter("Applied when a bot is created; each bot can still change its own after, in that bot's own settings.")
+                }
 
+                CollapsibleSection("Resource stats", storageKey: "resourceStats") {
                 HStack {
-                    SectionLabel("Resource stats")
                     Spacer()
                     if isRefreshingStats {
                         ProgressView().controlSize(.small)
@@ -137,6 +139,7 @@ struct AppSettingsView: View {
                         MachineStatsView(title: "Linux host (\(RemoteHost.host))", stats: remoteStats)
                     }
                     .padding(16)
+                }
                 }
             }
         } footer: {
