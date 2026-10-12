@@ -87,7 +87,7 @@ class ObservedModel(Model):
         content = msg.content
         if isinstance(content, list):
             content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
-        content = content or ""
+        content = strip_echoed_tool_calls(content or "")
         if self._is_plan(stop_sequences):
             self.ctx.events.emit("message", role="assistant", content=content, kind="plan")
             self.ctx.events.emit("status", state="executing")
@@ -200,6 +200,61 @@ def coerce_args(inputs: dict, arguments: dict) -> dict:
             if isinstance(val, str) and val.lower() in ("true", "false"):
                 out[key] = val.lower() == "true"
     return out
+
+
+def strip_echoed_tool_calls(text: str) -> str:
+    """Remove `Calling tools: [...]` blocks from assistant text.
+
+    smolagents writes earlier tool calls back into the history as that plain
+    text, and local models sometimes copy the format into their reply. The
+    real calls travel separately as tool_calls; the copied text is noise the
+    user should never see.
+    """
+    marker = "Calling tools:"
+    out, i = [], 0
+    while True:
+        j = text.find(marker, i)
+        if j < 0:
+            out.append(text[i:])
+            break
+        k = j + len(marker)
+        while k < len(text) and text[k] in " \t\r\n":
+            k += 1
+        if k >= len(text) or text[k] != "[":
+            out.append(text[i:k])
+            i = k
+            continue
+        depth, quote, esc, end = 0, None, False, None
+        for p in range(k, len(text)):
+            c = text[p]
+            if quote:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == quote:
+                    quote = None
+            elif c in "'\"":
+                quote = c
+            elif c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    end = p + 1
+                    break
+        if end is None:  # unbalanced: drop the rest rather than show half a call
+            out.append(text[i:j])
+            break
+        out.append(text[i:j])
+        # Don't leave a blank line where the block was.
+        if text[i:j].endswith("\n") and text[end:end + 1] == "\n":
+            end += 1
+        i = end
+    cleaned = "".join(out)
+    while "\n\n\n" in cleaned:
+        cleaned = cleaned.replace("\n\n\n", "\n\n")
+    return cleaned.strip()
 
 
 class ShellhouseAgent(ToolCallingAgent):

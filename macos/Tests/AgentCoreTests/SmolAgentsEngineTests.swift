@@ -556,6 +556,13 @@ final class SmolAgentsEngineTests: XCTestCase {
     }
 
     func testToolCallTextDetection() {
+        XCTAssertEqual(SmolAgentsEngine.stripToolCallText(
+            "Let me view the screenshot.\nCalling tools:\n[{'id': 'call_0', 'function': {'name': 'screenshot', 'arguments': {}}}]\nThe page loaded."),
+            "Let me view the screenshot.\nThe page loaded.")
+        XCTAssertEqual(SmolAgentsEngine.stripToolCallText(
+            "Now let me run it.\nCalling tools:\n[{'function': {'name': 'run_shell', 'arguments': {'command': \"echo '[x]' ]\"}}}]"),
+            "Now let me run it.")
+        XCTAssertEqual(SmolAgentsEngine.stripToolCallText("Calling tools: is just a phrase here"), "Calling tools: is just a phrase here")
         XCTAssertEqual(SmolAgentsEngine.stripToolCallText("{\"name\":\"x\",\"arguments\":{}}"), "")
         XCTAssertEqual(SmolAgentsEngine.stripToolCallText("```json\n{\"name\":\"x\",\"arguments\":{}}\n```"), "")
         XCTAssertEqual(SmolAgentsEngine.stripToolCallText("<tool_call>{\"name\":\"x\"}</tool_call>"), "")

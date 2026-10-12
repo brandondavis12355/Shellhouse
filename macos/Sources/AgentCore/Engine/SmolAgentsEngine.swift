@@ -563,8 +563,43 @@ public actor SmolAgentsEngine: AgentEngine {
 
     /// Removes a tool call that a model wrote out as text, keeping any prose before it.
     /// `Action:\n{"name": …, "arguments": …}`, a bare JSON call, a fenced block, or a `<tool_call>` tag.
+    /// Removes `Calling tools: [...]` blocks: smolagents writes earlier tool calls into the
+    /// history in that form and local models copy it into replies. Same rule as the runner's
+    /// `strip_echoed_tool_calls`, repeated here because the runner is untrusted.
+    static func stripEchoedCallBlocks(_ text: String) -> String {
+        let chars = Array(text)
+        let marker = Array("Calling tools:")
+        var out = ""
+        var i = 0
+        func matchesMarker(at j: Int) -> Bool {
+            j + marker.count <= chars.count && Array(chars[j..<(j + marker.count)]) == marker
+        }
+        while i < chars.count {
+            guard let j = (i..<chars.count).first(where: matchesMarker) else { out += String(chars[i...]); break }
+            var k = j + marker.count
+            while k < chars.count, chars[k].isWhitespace { k += 1 }
+            guard k < chars.count, chars[k] == "[" else { out += String(chars[i..<k]); i = k; continue }
+            var depth = 0, quote: Character?, escaped = false, end: Int?
+            for p in k..<chars.count {
+                let c = chars[p]
+                if let q = quote {
+                    if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == q { quote = nil }
+                } else if c == "'" || c == "\"" { quote = c }
+                else if c == "[" { depth += 1 }
+                else if c == "]" { depth -= 1; if depth == 0 { end = p + 1; break } }
+            }
+            let before = String(chars[i..<j])
+            out += before
+            guard var stop = end else { break }  // unbalanced: drop the rest rather than show half a call
+            if before.hasSuffix("\n"), stop < chars.count, chars[stop] == "\n" { stop += 1 }
+            i = stop
+        }
+        while out.contains("\n\n\n") { out = out.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func stripToolCallText(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = stripEchoedCallBlocks(text)
         guard !trimmed.isEmpty else { return "" }
 
         func isCallJSON(_ s: String) -> Bool {
@@ -592,7 +627,8 @@ public actor SmolAgentsEngine: AgentEngine {
                 return String(trimmed[..<open.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        return text
+        // Unchanged text keeps its original form; only an echoed call block is cut.
+        return trimmed == text.trimmingCharacters(in: .whitespacesAndNewlines) ? text : trimmed
     }
 
     static func isSafeID(_ id: String) -> Bool {
