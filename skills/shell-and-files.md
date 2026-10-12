@@ -14,6 +14,7 @@ is still there next time. Your user can see it too.
 ## Files: prefer the file tools
 None of these need approval; shell commands do. Use them whenever they can
 do the job. Paths are relative to `/workspace`.
+- `list_files(path)`: what's in one folder.
 - `find_files(pattern, path)`: files whose name matches a glob, e.g.
   `"*.csv"`.
 - `search_files(pattern, path, file_glob)`: lines matching a regular

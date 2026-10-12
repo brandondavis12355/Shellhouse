@@ -56,7 +56,7 @@ Everything you do there is visible, so act deliberately.
 
 ## The browser
 - To go to a page: `open_app("browser", url)` for a new window, or focus
-  the existing one, `press_key("ctrl+l")`, `type_text(url)`,
+  the existing one, `press_key("ctrl+l")`, `type_text("<the url>")`,
   `press_key("Return")`.
 - Pages take time to load. If the screenshot shows a blank or half-drawn
   page, take another screenshot before acting.
