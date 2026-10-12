@@ -245,7 +245,8 @@ enum WorkspaceTools {
             guard let path = args["path"]?.asString, let content = args["content"]?.asString else {
                 return ["error": "write_file requires 'path' and 'content'"]
             }
-            let existing = try? await readText(sandbox, sandboxID, path)
+            // The old version is only needed to judge a syntax check; don't read it otherwise.
+            let existing = SyntaxCheck.kind(of: path) == nil ? nil : try? await readText(sandbox, sandboxID, path)
             let (reject, warning) = await validated(content, replacing: existing, path: path, sandboxID: sandboxID, sandbox: sandbox)
             if let reject { return ["error": reject] }
             do {
@@ -345,7 +346,7 @@ enum WorkspaceTools {
             let waitLoop = wait > 0 ? "i=0; while [ $i -lt \(wait) ] && [ ! -f \(dir)/exit ] && kill -0 \"$(cat \(dir)/pid 2>/dev/null)\" 2>/dev/null; do sleep 1; i=$((i+1)); done; " : ""
             let command = "test -d \(dir) || { echo NOJOB; exit 0; }; " + waitLoop
                 + "if [ -f \(dir)/exit ]; then echo \"EXIT $(cat \(dir)/exit)\"; "
-                + "elif kill -0 \"$(cat \(dir)/pid 2>/dev/null)\" 2>/dev/null; then echo RUNNING; else echo GONE; fi; "
+                + "elif [ ! -s \(dir)/pid ] || kill -0 \"$(cat \(dir)/pid)\" 2>/dev/null; then echo RUNNING; else echo GONE; fi; "
                 + "tail -n \(lines) \(dir)/log 2>/dev/null"
             guard let result = try? await sandbox.exec(sandboxID, command: command, timeout: TimeInterval(wait + 20), env: nil) else { return ["error": "could not read the job"] }
             let parts = result.stdout.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
@@ -380,7 +381,9 @@ enum WorkspaceTools {
     static func backgroundCommand(_ command: String, jobID: String) -> String {
         let dir = "/workspace/.shellhouse/jobs/\(jobID)"
         let inner = "cd /workspace && { \(command)\n}; echo $? > \(dir)/exit"
-        return "mkdir -p \(dir) && setsid nohup bash -c \(shellQuote(inner)) > \(dir)/log 2>&1 < /dev/null & echo $! > \(dir)/pid; echo started"
+        // `mkdir` is its own statement: in `a && b & c`, the `&` backgrounds `a && b`, so the pid
+        // file could be written before its folder existed.
+        return "mkdir -p \(dir) || exit 1; setsid nohup bash -c \(shellQuote(inner)) > \(dir)/log 2>&1 < /dev/null & echo $! > \(dir)/pid; echo started"
     }
 
     static func newJobID() -> String {

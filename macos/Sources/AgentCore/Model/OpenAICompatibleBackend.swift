@@ -77,7 +77,7 @@ public actor OpenAICompatibleBackend: ModelBackend {
             tools: tools.isEmpty ? nil : tools.map(Tool.init),
             temperature: temperature
         )
-        request.httpBody = try JSONEncoder().encode(body)
+        request.httpBody = try ModelRequestEncoding.encode(body)
         return try await session.data(for: request)
     }
 

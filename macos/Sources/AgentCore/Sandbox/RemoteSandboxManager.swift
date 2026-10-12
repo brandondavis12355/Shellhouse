@@ -26,9 +26,14 @@ public final class RemoteSandboxManager: SandboxProvider, Sendable {
 
     // MARK: - Transport
 
-    private func call(_ path: String, body: [String: Any] = [:]) async throws -> [String: Any] {
+    static let safeToRetry: Set<String> = ["v1/read_file", "v1/write_file", "v1/health", "v1/list"]
+
+    /// `timeout`: how long the manager may take to answer. A command's own timeout plus headroom
+    /// for exec; otherwise URLSession's 60 s default would fail every command longer than a minute.
+    private func call(_ path: String, body: [String: Any] = [:], timeout: TimeInterval = 60) async throws -> [String: Any] {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = "POST"
+        request.timeoutInterval = max(timeout, 60)
         request.setValue(token, forHTTPHeaderField: "X-Manager-Token")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -36,7 +41,13 @@ public final class RemoteSandboxManager: SandboxProvider, Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            do {
+                (data, response) = try await session.data(for: request)
+            } catch let error as URLError where error.code == .networkConnectionLost && Self.safeToRetry.contains(path) {
+                // A reused keep-alive connection the server (or the tunnel) already closed. Reading or
+                // writing a file is safe to repeat; running a command is not, so exec is never retried.
+                (data, response) = try await session.data(for: request)
+            }
         } catch {
             // The tunnel being down looks like any other network failure to
             // URLSession, so say so rather than leaking a generic POSIX error.
@@ -93,7 +104,7 @@ public final class RemoteSandboxManager: SandboxProvider, Sendable {
     ) async throws -> ExecResult {
         var body: [String: Any] = ["sandbox_id": sandboxID, "command": command, "timeout": Int(timeout)]
         if let env { body["env"] = env }
-        let json = try await call("v1/exec", body: body)
+        let json = try await call("v1/exec", body: body, timeout: timeout + 30)
         return ExecResult(
             exitCode: Int32(json["exit_code"] as? Int ?? 1),
             stdout: json["stdout"] as? String ?? "",

@@ -196,7 +196,7 @@ public actor OllamaBackend: ModelBackend {
             options: Self.requestOptions(temperature: temperature),
             think: thinking
         )
-        request.httpBody = try JSONEncoder().encode(body)
+        request.httpBody = try ModelRequestEncoding.encode(body)
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
@@ -244,7 +244,7 @@ public actor OllamaBackend: ModelBackend {
             think: false,
             format: AnyCodable(schema)
         )
-        request.httpBody = try JSONEncoder().encode(body)
+        request.httpBody = try ModelRequestEncoding.encode(body)
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw ModelError.requestFailed(status: (response as? HTTPURLResponse)?.statusCode ?? -1, detail: String(data: data, encoding: .utf8) ?? "")
@@ -272,7 +272,7 @@ public actor OllamaBackend: ModelBackend {
             options: Self.requestOptions(temperature: temperature),
             think: thinking
         )
-        request.httpBody = try JSONEncoder().encode(body)
+        request.httpBody = try ModelRequestEncoding.encode(body)
 
         // Ollama's streaming response is NDJSON: one JSON object per line,
         // each carrying the next slice of `message.content` plus `done`;
@@ -445,5 +445,17 @@ public struct AnyCodable: @unchecked Sendable, Codable {
         case let dict as [String: Any]: try container.encode(dict.mapValues(AnyCodable.init))
         default: try container.encodeNil()
         }
+    }
+}
+
+/// Request bodies are encoded with sorted keys. Swift dictionaries have no fixed order, so without
+/// this the same tools and messages serialized differently on every call; the model server renders
+/// tool definitions in the order given, so each call produced a different prompt and its prompt
+/// cache could only reuse what came before the tools (measured: ~600 of ~6,000 tokens reused).
+enum ModelRequestEncoding {
+    static func encode<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
     }
 }

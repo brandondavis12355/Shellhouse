@@ -56,8 +56,9 @@ public enum ObservationPolicy {
         if exit != 0 || shown != nil {
             if let hint = recoveryHint(for: combined) { out["hint"] = hint }
         }
-        if exit == 0, shown == nil, combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            out["note"] = "No output. For a search or lookup that means 'nothing found'; for a lookup that should print something (apt-cache, dpkg, which) it can mean the data is not loaded or the thing is absent."
+        if exit == 0, shown == nil, observation["job_id"] == nil, combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            out["note"] = "No output, exit code 0. A command that only changes things (writes a file, copies, sleeps, installs quietly) "
+                + "normally prints nothing, so this usually means it worked; don't run it again. For a search or lookup it means nothing was found."
         }
         return out
     }
