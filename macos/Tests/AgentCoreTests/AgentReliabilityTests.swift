@@ -362,6 +362,47 @@ final class RuntimeRoundTwoTests: XCTestCase {
         return ToolCall(name: "run_shell", arguments: args)
     }
 
+    private final class Counting: ModelBackend, @unchecked Sendable {
+        let name = "counting"
+        private let lock = NSLock(); private var turns: [ChatMessage]; private(set) var calls = 0
+        init(_ turns: [ChatMessage]) { self.turns = turns }
+        func supportsVision(model: String?) async -> Bool { false }
+        func availableModels() async throws -> [String] { [] }
+        func chat(messages: [ChatMessage], tools: [ToolSchema], model: String?, temperature: Double) async throws -> ModelReply {
+            lock.lock(); defer { lock.unlock() }
+            calls += 1
+            let next = turns.isEmpty ? ChatMessage(role: .assistant, content: "", toolCalls: [ToolCall(name: "finish_task", arguments: ["summary": AnyCodable("done via finish_task"), "outcome": AnyCodable("done")])]) : turns.removeFirst()
+            return ModelReply(message: next, usage: nil)
+        }
+    }
+
+    func testAPlainAnswerAfterToolWorkEndsTheTurn() async {
+        let model = Counting([
+            ChatMessage(role: .assistant, content: "", toolCalls: [call("uname -r")]),
+            ChatMessage(role: .assistant, content: "The kernel is 6.17.0 and the distribution is Debian 13."),
+        ])
+        let runtime = AgentRuntime(model: model, sandbox: Box(), sandboxID: "t", requestApproval: { _ in .approve }, answerEndsTurnAfterTools: true)
+        await runtime.start(systemPrompt: "x", goal: "Which kernel?")
+        XCTAssertEqual(model.calls, 2, "no extra round trip through finish_task")
+    }
+
+    func testAnAnnouncementAfterToolsDoesNotEndTheTurn() async {
+        let model = Counting([
+            ChatMessage(role: .assistant, content: "", toolCalls: [call("ls /workspace")]),
+            ChatMessage(role: .assistant, content: "Let me check the other folder as well before I answer."),
+        ])
+        let runtime = AgentRuntime(model: model, sandbox: Box(), sandboxID: "t", requestApproval: { _ in .approve }, answerEndsTurnAfterTools: true)
+        await runtime.start(systemPrompt: "x", goal: "List files")
+        XCTAssertEqual(model.calls, 3, "narration is nudged on to finish_task")
+    }
+
+    func testAPlainReplyWithoutToolWorkStillNeedsFinishTask() async {
+        let model = Counting([ChatMessage(role: .assistant, content: "Sure, the answer is that there are four files here.")])
+        let runtime = AgentRuntime(model: model, sandbox: Box(), sandboxID: "t", requestApproval: { _ in .approve }, answerEndsTurnAfterTools: true)
+        await runtime.start(systemPrompt: "x", goal: "How many files?")
+        XCTAssertEqual(model.calls, 2)
+    }
+
     func testAToolCallWrittenAsTextIsExecuted() async {
         let model = Script([ChatMessage(role: .assistant, content: "Action: {\"name\": \"run_shell\", \"arguments\": {\"command\": \"mkdir /workspace/from_text\"}}")])
         let box = Box()

@@ -2211,7 +2211,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                     : [],
                 audit: AuditLog.shared,
                 inbox: PendingInboxStore.standard,
-                plainReplyEndsTurn: plainReplyEndsTurn
+                plainReplyEndsTurn: plainReplyEndsTurn,
+                // Goal work must still record its steps, so only without a goal.
+                answerEndsTurnAfterTools: goalHandler == nil
             )
 
             await runtime.start(systemPrompt: fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract, goal: await withRelevantMemoryContext(goal))
@@ -2758,7 +2760,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                         onEvent: eventHandler,
                         requestApproval: approvalHandler,
                         audit: AuditLog.shared,
-                        inbox: PendingInboxStore.standard
+                        inbox: PendingInboxStore.standard,
+                        answerEndsTurnAfterTools: true
                     )
                 }
                 runtime = newRuntime

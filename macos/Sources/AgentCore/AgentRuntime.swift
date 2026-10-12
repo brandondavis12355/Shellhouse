@@ -134,6 +134,12 @@ public actor AgentRuntime {
     /// Chat-style turns (a group reply with no goal work): a substantial plain-text answer IS the
     /// answer, so skip the "you did not call a tool" nudge round trip that makes models repeat themselves.
     private let plainReplyEndsTurn: Bool
+    /// A plain-text reply also ends the turn once tools have already run in it and the reply is a
+    /// real answer, not an announcement ("I'll check that now"). Saves the extra model call that
+    /// re-sending the same answer through finish_task costs. Off for goal work, where the bot must
+    /// still record steps.
+    private let answerEndsTurnAfterTools: Bool
+    private var toolCallsThisTurn = 0
     static let plainReplyMinLength = 25
     private static let loopRepeatThreshold = 3
     private var lastResultKey = ""
@@ -215,9 +221,11 @@ public actor AgentRuntime {
         audit: AuditLog? = nil,
         inbox: PendingInboxStore? = nil,
         initialTaint: [TaintSource] = [],
-        plainReplyEndsTurn: Bool = false
+        plainReplyEndsTurn: Bool = false,
+        answerEndsTurnAfterTools: Bool = false
     ) {
         self.plainReplyEndsTurn = plainReplyEndsTurn
+        self.answerEndsTurnAfterTools = answerEndsTurnAfterTools
         self.alwaysRequireApproval = alwaysRequireApproval
         // A friend's message in context is the strongest taint (a live human).
         var sources = initialTaint
@@ -273,6 +281,7 @@ public actor AgentRuntime {
             ChatMessage(role: .user, content: goal),
         ]
         currentGoal = goal
+        toolCallsThisTurn = 0
         budgetWarningsSent = []
         await loop()
     }
@@ -285,6 +294,7 @@ public actor AgentRuntime {
     public func send(_ userMessage: String, images: [String] = []) async {
         messages.append(ChatMessage(role: .user, content: userMessage, images: images.isEmpty ? nil : images))
         currentGoal = userMessage
+        toolCallsThisTurn = 0
         // Loop-detection is meant to catch a model stuck repeating the
         // SAME call within one reasoning task, not across entirely
         // separate turns — without this reset, `callFingerprints`
@@ -373,7 +383,9 @@ public actor AgentRuntime {
 
             guard let calls = reply.message.toolCalls, !calls.isEmpty else {
                 let plain = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                if plainReplyEndsTurn, plain.count >= Self.plainReplyMinLength, !plain.hasSuffix(":") {
+                let isAnswer = plain.count >= Self.plainReplyMinLength && !plain.hasSuffix(":")
+                let answeredAfterWork = answerEndsTurnAfterTools && toolCallsThisTurn > 0 && !ReplyQuality.looksLikeNarration(plain)
+                if isAnswer, plainReplyEndsTurn || answeredAfterWork {
                     onEvent(.message(ChatMessage(role: .assistant, content: plain, isTaskSummary: true)))
                     onEvent(.status(.completed))
                     return
@@ -430,6 +442,7 @@ public actor AgentRuntime {
             }
 
             var seenThisTurn = Set<String>()
+            toolCallsThisTurn += calls.count
             for call in calls {
                 // The same call twice in one assistant turn runs once; the second still gets an answer.
                 let key = Self.repeatFingerprint(for: call)

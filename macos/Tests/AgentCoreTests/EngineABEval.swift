@@ -122,7 +122,8 @@ final class EngineABEval: XCTestCase {
                     } else {
                         engine = AgentRuntime(
                             model: OllamaBackend(defaultModel: model), sandbox: sandbox, sandboxID: sandboxID, tools: tools,
-                            budgets: budgets, modelName: model, onEvent: onEvent, requestApproval: approve
+                            budgets: budgets, modelName: model, onEvent: onEvent, requestApproval: approve,
+                            answerEndsTurnAfterTools: true  // as the app's 1:1 chats run it
                         )
                     }
                     await engine.seed(systemPrompt: systemPrompt, history: [])
