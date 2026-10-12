@@ -1373,6 +1373,21 @@ final class Bot: Identifiable, @unchecked Sendable {
             }
             return
         }
+        deliverRoutine(routine)
+
+        if case .once = routine.schedule {
+            logRoutine("\(routineLabel(routine)) was one-time — removed after firing")
+            routines.remove(at: index)
+            routineTimers.removeValue(forKey: routineID)?.invalidate()
+        } else {
+            routines[index].lastFiredAt = Date()
+            scheduleTimer(for: routines[index])
+        }
+        RoutineStore.save(id: id, routines)
+    }
+
+    /// Sends a routine's instruction where it goes: its target group, or this bot's own chat.
+    private func deliverRoutine(_ routine: Routine) {
         if let groupID = routine.targetGroupID, let group = botDirectory.group(id: groupID) {
             logRoutine("FIRED \(routineLabel(routine)) → group \"\(group.name)\"")
             Task { await group.fireRoutine(for: self, instruction: routine.instruction) }
@@ -1386,16 +1401,13 @@ final class Bot: Identifiable, @unchecked Sendable {
             // routine's instruction.
             queueMessage(routine.instruction)
         }
+    }
 
-        if case .once = routine.schedule {
-            logRoutine("\(routineLabel(routine)) was one-time — removed after firing")
-            routines.remove(at: index)
-            routineTimers.removeValue(forKey: routineID)?.invalidate()
-        } else {
-            routines[index].lastFiredAt = Date()
-            scheduleTimer(for: routines[index])
-        }
-        RoutineStore.save(id: id, routines)
+    /// The settings "Run now" button: delivers the routine once without touching its schedule.
+    func runRoutineNow(id routineID: String) {
+        guard let routine = routines.first(where: { $0.id == routineID }), sandbox != nil else { return }
+        logRoutine("Run now: \(routineLabel(routine))")
+        deliverRoutine(routine)
     }
 
     // MARK: - Bot-to-bot messaging

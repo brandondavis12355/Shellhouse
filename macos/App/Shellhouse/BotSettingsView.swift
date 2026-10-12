@@ -418,6 +418,15 @@ struct BotSettingsTab: View {
                                 }
                                 Spacer()
                                 Button {
+                                    bot.runRoutineNow(id: routine.id)
+                                } label: {
+                                    Image(systemName: "play.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .help("Run now (doesn't change its schedule)")
+                                .disabled(bot.sandbox == nil)
+                                Button {
                                     beginEditingRoutine(routine)
                                 } label: {
                                     Image(systemName: "pencil.circle.fill")
