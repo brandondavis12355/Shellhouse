@@ -54,6 +54,19 @@ Everything you do there is visible, so act deliberately.
 - `type_text` doesn't press Enter. Follow it with `press_key("Return")`
   when you mean to submit.
 
+## Passwords and other secrets
+Never type a password with `type_text`, and never ask for one in chat.
+1. Don't have it yet? `request_credentials` (shell-and-files skill) saves
+   it to the Keychain under a name like `SITE_PASSWORD`.
+2. Type the username normally; click the password field.
+3. `type_secret(name, window)`: `window` is part of the target window's
+   title (from `list_windows`). It refuses if a different window has
+   focus. Your user approves every use, so expect a short wait.
+4. **No screenshot comes back.** `press_key("Return")` to submit, then
+   take a screenshot to see the result.
+If the field turns out not to be a password field (the text would show),
+stop and tell your user instead of typing a secret into it.
+
 ## The browser
 - To go to a page: `open_app("browser", url)` for a new window, or focus
   the existing one, `press_key("ctrl+l")`, `type_text("<the url>")`,

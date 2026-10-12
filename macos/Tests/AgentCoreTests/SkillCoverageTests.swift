@@ -17,7 +17,7 @@ final class SkillCoverageTests: XCTestCase {
             onCreateRoutine: { _ in [:] }, onEditRoutine: { _ in [:] }, onRemoveRoutine: { _ in [:] }, onListRoutines: { [] },
             onGetProfile: { [:] }, onListBots: { [] }, onMessageBot: { _, _ in [:] }, onCreateBot: { _, _, _ in [:] },
             onAddBotToGroup: { _, _ in [:] }, onPostToGroup: { _, _ in [:] }, onUpdateUser: { _ in [:] },
-            onAskHelpers: { _ in [:] }, onGoalTool: { _, _ in [:] }
+            onAskHelpers: { _ in [:] }, onRequestCredentials: { _ in [:] }, onGoalTool: { _, _ in [:] }
         )
         // finish_task / update_plan live in AgentRuntime; final_answer is the smolagents runner's finish tool.
         let tools = Set(registry.schemas.map(\.name)).union(["finish_task", "update_plan", "final_answer"])

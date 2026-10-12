@@ -4,6 +4,82 @@ import UniformTypeIdentifiers
 import AgentCore
 import AgentUI
 
+/// A bot asking for credentials (`request_credentials`). Secret fields are secure text fields whose
+/// values go straight to the Keychain; the bot only ever learns their names.
+struct CredentialRequestCard: View {
+    let botName: String
+    let pending: PendingCredentialRequest
+    let onAnswer: ([String: String]?) -> Void
+    @State private var values: [String: String] = [:]
+
+    private var fields: [CredentialRequest.Field] { pending.request.fields }
+
+    private func isSaved(_ field: CredentialRequest.Field) -> Bool { field.secret && pending.savedNames.contains(field.name) }
+
+    private var canSubmit: Bool {
+        fields.allSatisfy { !(values[$0.name] ?? "").isEmpty || isSaved($0) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "key.fill")
+                    .imageScale(.large)
+                    .foregroundStyle(Theme.accent)
+                Text("\(botName) needs credentials").font(.system(size: 17, weight: .semibold))
+            }
+            Text(pending.request.reason)
+                .font(.system(size: 14))
+                .textSelection(.enabled)
+            if pending.untrusted {
+                Label("This chat has read untrusted content (a web page or someone else's message). Make sure this request is what you expect before filling it in.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.warning)
+            }
+            ForEach(fields) { field in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(field.label).font(.system(size: 13, weight: .medium))
+                        Text(field.name).font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
+                    }
+                    let binding = Binding(get: { values[field.name] ?? "" }, set: { values[field.name] = $0 })
+                    let prompt = isSaved(field) ? "Saved — leave blank to keep it" : field.label
+                    Group {
+                        if field.secret {
+                            SecureField(prompt, text: binding)
+                        } else {
+                            TextField(prompt, text: binding)
+                        }
+                    }
+                    .textContentType(field.secret ? .password : .username)
+                    .themedField()
+                    .onSubmit { if canSubmit { submit() } }
+                }
+            }
+            Label("Secrets are saved to this Mac's Keychain. \(botName) can use them but never sees them.", systemImage: "lock.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Decline") { onAnswer(nil) }
+                Button("Save and continue") { submit() }
+                    .buttonStyle(.primaryPill)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSubmit)
+            }
+        }
+        .padding(16)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+    }
+
+    private func submit() {
+        let answer = values
+        values = [:]
+        onAnswer(answer)
+    }
+}
+
 /// Sits inline in the chat flow — right after the transcript, right before
 /// the input box — instead of a modal `.alert`. The agent is genuinely
 /// paused (blocked on the continuation `onDecide` resumes) the whole time
@@ -190,6 +266,13 @@ struct BotDetailView: View {
                                     Task { await bot.refreshPermissions() }
                                 }
                             }
+                        }
+
+                        if let pending = bot.pendingCredentialRequest {
+                            CredentialRequestCard(botName: bot.name, pending: pending) { values in
+                                bot.answerCredentialRequest(values)
+                            }
+                            .id(pending.id)
                         }
 
                         if !bot.pendingReview.isEmpty {

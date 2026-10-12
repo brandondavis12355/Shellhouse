@@ -140,7 +140,7 @@ struct ContentView: View {
     /// turn (see `Bot.runIsolatedTask`) on a bot you're not currently
     /// looking at would hang silently forever.
     private var botsAwaitingApproval: [Bot] {
-        bots.filter { $0.pendingApproval != nil }
+        bots.filter { $0.pendingApproval != nil || $0.pendingCredentialRequest != nil }
     }
 
     /// The bot the banner should surface, if any — skips whichever bot is
@@ -680,9 +680,10 @@ private struct ApprovalBannerView: View {
             HStack(spacing: 10) {
                 BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 26)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("\(bot.name) needs your approval")
+                    Text(bot.pendingApproval == nil && bot.pendingCredentialRequest != nil
+                         ? "\(bot.name) needs credentials" : "\(bot.name) needs your approval")
                         .font(.system(size: 13, weight: .semibold))
-                    if let toolName = bot.pendingApproval?.approval.toolName {
+                    if let toolName = bot.pendingApproval?.approval.toolName ?? bot.pendingCredentialRequest.map({ _ in "request_credentials" }) {
                         Text(extraCount > 0 ? "\(toolName) — +\(extraCount) more waiting" : toolName)
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)

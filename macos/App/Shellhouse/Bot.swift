@@ -60,6 +60,24 @@ struct PendingApproval: Identifiable {
     var id: String { approval.id }
 }
 
+/// Lets a tool closure built before its `AgentRuntime` ask that runtime about itself later.
+final class RuntimeProbe: @unchecked Sendable {
+    weak var runtime: AgentRuntime?
+}
+
+/// A bot waiting on its user for credentials (`request_credentials`). Shown as a form card in the
+/// bot's 1:1 chat; `continuation` gets the typed values (nil = declined), which go straight to the
+/// Keychain and never back to the model.
+struct PendingCredentialRequest: Identifiable {
+    let id = UUID()
+    let request: CredentialRequest
+    /// Secret names already in the Keychain, which the user can keep instead of retyping.
+    let savedNames: Set<String>
+    /// The run had read untrusted content (a web page, a friend's message) when it asked.
+    let untrusted: Bool
+    let continuation: CheckedContinuation<[String: String]?, Never>
+}
+
 /// One independent chat: its own sandbox (own persistent Linux container —
 /// see `docker_backend.py`'s per-task-container support), own model/vision/
 /// skills/budgets, own transcript, own `AgentRuntime`. The sidebar in
@@ -179,6 +197,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     var messageQueue: [QueuedMessage] = []
     var hasStarted = false
     var pendingApproval: PendingApproval?
+    var pendingCredentialRequest: PendingCredentialRequest?
     /// Durable changes (memories, routines) the agent tried to make after
     /// reading untrusted content, held until the user approves them — see
     /// `GuardrailPolicy` / `PendingInboxStore`.
@@ -2132,6 +2151,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 guard let onDraft else { return }
                 Task { @MainActor in onDraft(text) }
             }
+            let taintProbe = RuntimeProbe()
             let runtime = AgentRuntime(
                 model: await makeModelBackend(),
                 sandbox: sandbox,
@@ -2209,6 +2229,11 @@ final class Bot: Identifiable, @unchecked Sendable {
                     onAskHelpers: { [weak self] tasks in
                         await self?.runHelpers(tasks) ?? ["error": "bot no longer available"]
                     },
+                    onRequestCredentials: { [weak self] arguments in
+                        let tainted = await taintProbe.runtime?.isTainted ?? false
+                        return await self?.requestCredentialsFromTool(arguments, untrusted: untrustedInput || tainted)
+                            ?? ["error": "bot no longer available"]
+                    },
                     onGoalTool: goalHandler.map { handler in
                         { name, arguments in
                             var arguments = arguments
@@ -2283,6 +2308,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 answerEndsTurnAfterTools: goalHandler == nil
             )
 
+            taintProbe.runtime = runtime
             await runtime.start(systemPrompt: fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract, goal: await withRelevantMemoryContext(goal))
             @MainActor func currentResult() async -> IsolatedResult {
                 let runTainted = await runtime.isTainted
@@ -2667,6 +2693,59 @@ final class Bot: Identifiable, @unchecked Sendable {
             pendingApproval = nil
             pending.continuation.resume(returning: .deny)
         }
+        answerCredentialRequest(nil)
+    }
+
+    // MARK: - Credentials
+
+    /// The `request_credentials` tool: shows a form in this bot's 1:1 chat and waits. Secret values go
+    /// to the Keychain; the model gets back only their names (and any non-secret values).
+    func requestCredentialsFromTool(_ arguments: [String: AnyCodable], untrusted: Bool) async -> [String: Any] {
+        let request: CredentialRequest
+        switch CredentialRequest.parse(arguments) {
+        case .success(let parsed): request = parsed
+        case .failure(let error): return ["error": error.message]
+        }
+        guard pendingCredentialRequest == nil else {
+            return ["error": "another credentials request is already waiting for your user; wait for it to be answered"]
+        }
+        let store = SecretStore()
+        let savedNames = Set(((try? await store.list()) ?? []).map(\.name))
+        let answer: [String: String]? = await withCheckedContinuation { continuation in
+            let pending = PendingCredentialRequest(request: request, savedNames: savedNames, untrusted: untrusted, continuation: continuation)
+            pendingCredentialRequest = pending
+            // Nobody may be watching (a group turn or routine): give up after 15 minutes, like approvals.
+            let pendingID = pending.id
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 15 * 60 * 1_000_000_000)
+                if self?.pendingCredentialRequest?.id == pendingID { self?.answerCredentialRequest(nil) }
+            }
+        }
+        guard let answer else {
+            return ["cancelled": true, "note": "Your user declined or didn't answer. Don't ask again for the same thing; tell them what you couldn't do without it."]
+        }
+        var saved: [String] = [], kept: [String] = [], missing: [String] = [], failed: [String] = []
+        var plain: [String: String] = [:]
+        for field in request.fields {
+            let value = answer[field.name] ?? ""
+            if !field.secret {
+                if value.isEmpty { missing.append(field.name) } else { plain[field.name] = value }
+            } else if value.isEmpty {
+                if savedNames.contains(field.name) { kept.append(field.name) } else { missing.append(field.name) }
+            } else if (try? await store.put(name: field.name, value: value, notes: request.reason)) != nil {
+                saved.append(field.name)
+            } else {
+                failed.append(field.name)
+            }
+        }
+        return CredentialRequest.result(saved: saved, kept: kept, missing: missing, plain: plain, failed: failed)
+    }
+
+    /// Resolves the waiting credentials card: the typed values, or nil when declined (or the run stopped).
+    func answerCredentialRequest(_ values: [String: String]?) {
+        guard let pending = pendingCredentialRequest else { return }
+        pendingCredentialRequest = nil
+        pending.continuation.resume(returning: values)
     }
 
     /// Feeds queued messages to the runtime one at a time until the queue is
@@ -2781,6 +2860,11 @@ final class Bot: Identifiable, @unchecked Sendable {
                         },
                         onAskHelpers: { [weak self] tasks in
                             await self?.runHelpers(tasks) ?? ["error": "bot no longer available"]
+                        },
+                        onRequestCredentials: { [weak self] arguments in
+                            guard let self else { return ["error": "bot no longer available"] }
+                            let tainted = await self.runtime?.isTainted ?? false
+                            return await self.requestCredentialsFromTool(arguments, untrusted: tainted)
                         }
                     )
                 let eventHandler: @Sendable (AgentRuntime.Event) -> Void = { [weak self] event in

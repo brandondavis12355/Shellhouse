@@ -2,8 +2,8 @@
 name: shell-and-files
 description: >-
   When you need to run commands, install software, or read, write, move or
-  delete files in your Linux sandbox, or use a stored secret (API key,
-  token) in a command.
+  delete files in your Linux sandbox, or need a password, API key or token:
+  asking your user for one securely, or using a stored one in a command.
 ---
 # Shell and files
 
@@ -48,9 +48,16 @@ do the job. Paths are relative to `/workspace`.
   command that times out in the foreground may still be running, but its
   output is lost.
 - To check whether a program exists: `command -v <name>`.
-- Already installed: Chromium, Python 3 (pip, venv), Node.js and npm,
-  git, curl, wget, jq, unzip, ImageMagick, xdotool. Check with
-  `command -v` before installing anything.
+- Already installed (check with `command -v` before installing anything):
+  - languages: Python 3 (pip, venv; requests, beautifulsoup4, pandas,
+    openpyxl), Node.js and npm, gcc/make (`build-essential`), pkg-config;
+  - code and remote: git, gh, ssh, scp, rsync, gpg;
+  - files: rg (ripgrep), fd, tree, file, less, nano, vim, sqlite3,
+    pdftotext, bc, patch;
+  - archives: zip, unzip, xz, bzip2, zstd, 7z;
+  - network and processes: curl, wget, jq, ping, dig, nc, ip,
+    traceroute, lsof, htop, tmux;
+  - desktop: Chromium, ImageMagick, xdotool.
 - `sudo` only works if your user has enabled it for sandboxes, and every
   `sudo` command needs a strict approval. It's blocked entirely once the
   run is untrusted, so do anything needing root first. Test once with
@@ -76,9 +83,17 @@ do the job. Paths are relative to `/workspace`.
   prefer, or find another way.
 
 ## Secrets
-- Your user stores secrets in Settings, under names like `GITHUB_TOKEN`
-  (capital letters, digits and `_`). You can't list them, so ask your user
-  for the name if you don't know it.
+- Secrets live in the Mac's Keychain under names like `GITHUB_TOKEN`
+  (capital letters, digits and `_`). You never see their values.
+- **Need a password, key or token you don't have? Call
+  `request_credentials(reason, fields)`**. Never ask for one in chat text.
+  It opens a secure form in your 1:1 chat and waits. Each field has a
+  `name` (`SITE_PASSWORD`), a `label` your user reads, and `secret`
+  (true by default; false for a username, which then comes back to you as
+  plain text). The result lists the secret names you can now use. If it
+  says `cancelled`, don't ask again; tell your user what's blocked.
+- Name things clearly and reuse names: if a secret is already saved, your
+  user can keep it without retyping.
 - Use one with `run_shell(command, use_secrets: ["GITHUB_TOKEN"])`. It's
   available to that one command as the environment variable
   `$GITHUB_TOKEN`.
@@ -86,6 +101,8 @@ do the job. Paths are relative to `/workspace`.
   Never try to print it, write it to a file, or put it in a URL you show.
 - A name that doesn't exist is simply not set. If `$NAME` comes out empty,
   the name is wrong. Ask, don't guess.
+- To enter a password into a login page or app on the desktop, use
+  `type_secret` (see the desktop-control skill), never `type_text`.
 
 ## Deleting and overwriting
 - Before a delete or overwrite inside `/workspace` runs, a copy of the

@@ -26,8 +26,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # the actual toolchain the agent uses
     python3 python3-pip python3-venv nodejs npm git \
     curl wget jq unzip ca-certificates bash procps \
+    # remote access and file transfer
+    openssh-client rsync gnupg gh \
+    # building native packages (pip/npm extensions), patching
+    build-essential pkg-config patch \
+    # archives
+    zip xz-utils bzip2 zstd p7zip-full \
+    # finding and reading files
+    ripgrep fd-find tree file less nano vim-tiny sqlite3 poppler-utils bc \
+    # network and process debugging
+    iputils-ping dnsutils netcat-openbsd iproute2 traceroute lsof htop tmux \
     supervisor sudo \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # Debian names these fdfind / vim.tiny; give them their usual names.
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && ln -s /usr/bin/vim.tiny /usr/local/bin/vim
 
 # Python libs commonly needed for agent work (PEP 668 on trixie needs the flag)
 RUN pip3 install --no-cache-dir --break-system-packages \

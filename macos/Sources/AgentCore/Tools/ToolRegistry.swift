@@ -88,6 +88,7 @@ public struct ToolRegistry: Sendable {
         onPostToGroup: (@Sendable (String, String) async -> [String: Any])? = nil,
         onUpdateUser: (@Sendable (String) async -> [String: Any])? = nil,
         onAskHelpers: (@Sendable ([String]) async -> [String: Any])? = nil,
+        onRequestCredentials: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
         onGoalTool: (@Sendable (String, [String: AnyCodable]) async -> [String: Any])? = nil
     ) {
         var schemas = Self.buildSchemas()
@@ -170,6 +171,10 @@ public struct ToolRegistry: Sendable {
         if let onListRoutines {
             schemas.append(Self.listRoutinesSchema)
             executors["list_routines"] = { _, _, _, _ in ["routines": await onListRoutines()] }
+        }
+        if let onRequestCredentials {
+            schemas.append(Self.requestCredentialsSchema)
+            executors["request_credentials"] = { _, _, arguments, _ in await onRequestCredentials(arguments) }
         }
         if let onGetProfile {
             schemas.append(Self.getProfileSchema)
@@ -449,6 +454,38 @@ public struct ToolRegistry: Sendable {
                 + "you're looking for, means it doesn't exist — that's your answer, so call create_routine "
                 + "right then. Calling this again to double-check the same thing won't change the answer.",
             parameters: ["type": "object", "properties": [:] as [String: Any]]
+        )
+    }
+
+    private static var requestCredentialsSchema: ToolSchema {
+        ToolSchema(
+            name: "request_credentials",
+            description: "Ask your user for credentials you need (a password, API key, token, or a username to go "
+                + "with it). Opens a secure form card in your 1:1 chat and waits for them. Secret fields are saved "
+                + "to the Mac's Keychain under the name you give and are NEVER shown to you: use them with "
+                + "run_shell's use_secrets (as $NAME) or type_secret. Non-secret fields (a username, an account "
+                + "ID) come back as plain text. If a secret is already saved, your user can keep it without "
+                + "retyping. Only ask for what the task needs.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "reason": ["type": "string", "description": "One line your user reads: what the credentials are for."],
+                    "fields": [
+                        "type": "array",
+                        "description": "1-5 fields to ask for.",
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "name": ["type": "string", "description": "Env-var style, e.g. GITHUB_TOKEN or SITE_PASSWORD (capital letters, digits, _)."],
+                                "label": ["type": "string", "description": "What your user sees, e.g. \"GitHub personal access token\"."],
+                                "secret": ["type": "boolean", "description": "true (default) for passwords, keys and tokens; false for a username or other non-secret."],
+                            ],
+                            "required": ["name", "label"],
+                        ] as [String: Any],
+                    ] as [String: Any],
+                ],
+                "required": ["reason", "fields"],
+            ]
         )
     }
 
@@ -802,6 +839,21 @@ public struct ToolRegistry: Sendable {
                 ]
             ),
             ToolSchema(
+                name: "type_secret",
+                description: "Type a saved secret (e.g. a password from request_credentials) into a desktop window "
+                    + "without you ever seeing it. Focuses the window whose title contains `window` first, then "
+                    + "types into its focused field. Click the password field before calling this. No screenshot "
+                    + "comes back; follow with press_key('Return') to submit. Always asks your user to approve.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "name": ["type": "string", "description": "The secret's name, e.g. SITE_PASSWORD."],
+                        "window": ["type": "string", "description": "Part of the target window's title, e.g. 'Sign in - Chromium'."],
+                    ],
+                    "required": ["name", "window"],
+                ]
+            ),
+            ToolSchema(
                 name: "press_key",
                 description: "Press a key or key combo (xdotool syntax, e.g. 'Return', 'ctrl+l').",
                 parameters: [
@@ -1083,6 +1135,31 @@ public struct ToolRegistry: Sendable {
                         return ["ok": true, "screenshot_error": "type_text succeeded but the verification screenshot failed"]
                     }
                     return ["ok": true, "screenshot": shot.filename, "_base64": shot.base64]
+                } catch {
+                    return ["error": error.localizedDescription]
+                }
+            },
+
+            "type_secret": { sandboxID, sandbox, args, secretStore in
+                guard let name = args["name"]?.asString, let window = args["window"]?.asString, !window.isEmpty else {
+                    return ["error": "type_secret requires 'name' and 'window'"]
+                }
+                guard let value = (try? await secretStore.resolveForExecution(names: [name]))?[name] else {
+                    return ["error": "no saved secret named '\(name)'. Ask for it with request_credentials."]
+                }
+                // The value reaches xdotool on stdin from an env var: never in a command line, a file, or this result.
+                let command = "wmctrl -a \(shellQuote(window)) || { echo 'no window matching that title' >&2; exit 3; }; "
+                    + "sleep 0.3; active=$(xdotool getactivewindow getwindowname 2>/dev/null); shopt -s nocasematch; "
+                    + "case \"$active\" in *\(shellQuote(window))*) ;; "
+                    + "*) echo \"focused window is '$active', not the one asked for\" >&2; exit 4;; esac; "
+                    + "printf %s \"$SHELLHOUSE_SECRET_VALUE\" | xdotool type --clearmodifiers --delay 25 --file -"
+                do {
+                    let result = try await sandbox.exec(sandboxID, command: command, timeout: 30, env: ["SHELLHOUSE_SECRET_VALUE": value])
+                    guard result.exitCode == 0 else {
+                        return ["error": secretStore.mask(result.stderr, values: [value]).trimmingCharacters(in: .whitespacesAndNewlines)]
+                    }
+                    return ["ok": true, "typed": name,
+                            "note": "Typed. No screenshot is returned so the value can't be seen; press_key('Return') to submit, then take a screenshot."]
                 } catch {
                     return ["error": error.localizedDescription]
                 }

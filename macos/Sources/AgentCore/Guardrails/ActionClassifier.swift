@@ -297,6 +297,16 @@ public enum ActionClassifier {
             return Classification(findings: typed + [Finding(.ui, "tool.type_text", long ? "types a long text block into the desktop" : "types into the desktop",
                                                      clean: .allow, tainted: long ? .ask : .allow)])
 
+        case "type_secret":
+            // Even after the web has been read: typing a password into a page is the point, so the user
+            // checks the target window each time instead of it being blocked outright.
+            return Classification(findings: [Finding(.credential, "tool.type_secret", "types a saved secret into a desktop window",
+                                                     clean: .askStrict, tainted: .askStrict)])
+
+        case "request_credentials":
+            return Classification(findings: [Finding(.observe, "tool.request_credentials", "asks the user for credentials in their own chat",
+                                                     clean: .allow, tainted: .allow)])
+
         case "open_app":
             let app = arguments["app"]?.asString ?? ""
             if app == "browser", let url = arguments["url"]?.asString, !url.isEmpty {

@@ -57,6 +57,8 @@ public enum Policy: Sendable {
         "open_app": .allow,
         "click": .allow,
         "type_text": .allow,
+        // Types a Keychain secret into the desktop: the model never sees it, but the user OKs each use.
+        "type_secret": .requireApproval,
         "press_key": .allow,
         "scroll": .allow,
 
@@ -126,6 +128,8 @@ public enum Policy: Sendable {
 
         // Credential NAMES are safe to reveal; no tool returns a value.
         "list_secrets": .allow,
+        // Opens a form in the user's own chat; what they type there is their consent.
+        "request_credentials": .allow,
 
         // Arbitrary command execution pauses for a human by default; the
         // approval card offers per-binary and blanket ("allow all shell
