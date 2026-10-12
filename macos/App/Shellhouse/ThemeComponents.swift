@@ -197,6 +197,39 @@ struct ExpandableCard<Content: View>: View {
     }
 }
 
+// MARK: - Message arrival
+
+extension AnyTransition {
+    /// How a new chat message enters: fades in while rising and settling into place.
+    static var messageArrival: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: 14)).combined(with: .scale(scale: 0.97, anchor: .bottom)),
+            removal: .opacity
+        )
+    }
+}
+
+/// Animates rows that arrive after a chat is already showing, not the initial load of its
+/// history. With Reduce Motion on, a short fade only.
+struct MessageArrivalAnimation<Value: Equatable>: ViewModifier {
+    let value: Value
+    @State private var ready = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .animation(ready ? (reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.86)) : nil, value: value)
+            .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { ready = true } }
+    }
+}
+
+extension View {
+    /// See `MessageArrivalAnimation`. `value` changes when a message is added (e.g. the count).
+    func animatesMessageArrival<Value: Equatable>(_ value: Value) -> some View {
+        modifier(MessageArrivalAnimation(value: value))
+    }
+}
+
 /// A whole settings section that folds into one row: its title, a short live summary and a chevron.
 /// Expanded, the section's own cards show below that row. Remembers per section whether it was
 /// left open.

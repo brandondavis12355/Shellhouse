@@ -55,9 +55,11 @@ struct TranscriptView: View {
                                         onOpenInterBotThread: onOpenInterBotThread
                                     )
                                     .id(message.id)
+                                    .transition(.messageArrival)
                                 }
                             }
                         }
+                        .animatesMessageArrival(messages.count)
                         .padding(.vertical, 12)
                         .frame(maxWidth: Theme.chatColumnWidth)
                         .frame(maxWidth: .infinity)

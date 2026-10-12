@@ -39,6 +39,7 @@ struct GroupChatTranscriptView: View {
                                     mentionColors: mentionColors
                                 )
                                 .id(message.id)
+                                .transition(.messageArrival)
                             }
                             ForEach(drafts) { draft in
                                 GroupMessageBubble(
@@ -49,9 +50,10 @@ struct GroupChatTranscriptView: View {
                                     isDraft: true
                                 )
                                 .id(draft.id)
-                                .transition(.opacity)
+                                .transition(.messageArrival)
                             }
                         }
+                        .animatesMessageArrival(messages.count * 100 + drafts.count)
                         .padding(.vertical, 12)
                         .frame(maxWidth: Theme.chatColumnWidth)
                         .frame(maxWidth: .infinity)

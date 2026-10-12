@@ -213,8 +213,10 @@ struct JoinedGroupView: View {
                     ForEach(session.messages) { message in
                         JoinedMessageRow(message: message, isMine: message.kind == .human && message.speakerUserId == session.myUserID, mentionColors: mentionColors)
                             .id(message.seq)
+                            .transition(.messageArrival)
                     }
                 }
+                .animatesMessageArrival(session.messages.count)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
                 .frame(maxWidth: Theme.chatColumnWidth)
