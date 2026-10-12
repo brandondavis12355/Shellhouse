@@ -547,7 +547,7 @@ public struct ToolRegistry: Sendable {
                     "assignee": str("Optional: who is on it (usually you).")],
                    required: ["step_id", "status"]),
             schema("propose_goal_complete",
-                   "Goal owner only: when every step is done (or blocked with a reason), propose the goal as complete. The user must confirm. Give a short summary of the outcome.",
+                   "Goal owner only: wrap up the goal with a short summary of the outcome. When every step is done, the goal closes at once (it also closes by itself when the last step is validated). When some steps are blocked, the user confirms the partial finish.",
                    ["summary": str("What was accomplished, and any blocked items.")], required: ["summary"]),
         ]
     }

@@ -741,7 +741,8 @@ final class GroupChatSession: Identifiable {
             text += " You own this goal and are the ONLY one who can mark steps done. Steps marked [?] were submitted by a member: "
                 + "VALIDATE each yourself with your own tools (re-run the check, read the output) before update_goal_step → done with what "
                 + "you saw; if it doesn't hold up, set it back to inProgress and say what's wrong. Never accept a submission on trust. "
-                + "add_goal_step adjusts the plan; when every step is done or blocked, call propose_goal_complete (the user confirms). "
+                + "add_goal_step adjusts the plan. The goal closes by itself once every step is validated done; if some steps "
+                + "end blocked, call propose_goal_complete with a summary and the user confirms. "
                 + "Use update_user at milestones."
         } else {
             text += " You can claim steps and submit them as done with evidence, but only the owner (\(ownerName)) validates them and "
@@ -889,6 +890,10 @@ final class GroupChatSession: Identifiable {
             case .progress:
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
                 postSystem("✅ Step \(index) done by \(bot.name) — \(g.doneCount)/\(g.steps.count).")
+                if closeGoalIfComplete(by: bot) {
+                    return ["ok": true, "counted_as_progress": true, "goal_complete": true,
+                            "note": "That was the last step: the goal is complete and closed. Post a short wrap-up if useful; no more goal work is needed."]
+                }
                 return ["ok": true, "counted_as_progress": true, "goal": goalBlockText(g)]
             case .memberCheckedIn(let remaining):
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
@@ -917,6 +922,10 @@ final class GroupChatSession: Identifiable {
             let result = g.proposeComplete(summary: arguments["summary"]?.asString ?? "")
             if case .rejected(let reason) = result { return ["error": reason] }
             goal = g; persistGoal()
+            if g.status == .done {
+                announceGoalClosed(g, by: bot)
+                return ["ok": true, "status": "done"]
+            }
             postSystem("🏁 \(bot.name) proposes “\(g.title)” is complete. Confirm to close it, or reply to continue.")
             _ = bot.postUpdateToUser("Goal “\(g.title)” looks complete — confirm it in “\(name)”. \(g.completionSummary ?? "")", source: "group: \(name)")
             scheduleConfirmTimer()
@@ -997,6 +1006,24 @@ final class GroupChatSession: Identifiable {
     }
 
     /// Auto-closes a completion proposal the user never answered.
+    /// Closes the live goal if every step is now done, and says so. Returns whether it closed.
+    @discardableResult
+    private func closeGoalIfComplete(by bot: Bot) -> Bool {
+        guard var g = goal, g.closeIfComplete() else { return false }
+        goal = g
+        persistGoal()
+        announceGoalClosed(g, by: bot)
+        return true
+    }
+
+    private func announceGoalClosed(_ g: GroupGoal, by bot: Bot) {
+        confirmTimerTask?.cancel()
+        postSystem("🎉 Goal complete: “\(g.title)” — all \(g.steps.count) steps done.")
+        let owner = members.first(where: { $0.id == g.ownerBotID }) ?? bot
+        _ = owner.postUpdateToUser("Goal “\(g.title)” in “\(name)” is complete: all \(g.steps.count) steps done. \(g.completionSummary ?? "")",
+                                   source: "group: \(name)")
+    }
+
     private func scheduleConfirmTimer() {
         confirmTimerTask?.cancel()
         guard let g = goal, g.status == .awaitingConfirmation, let requested = g.confirmationRequestedAt else { return }

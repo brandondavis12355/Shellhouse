@@ -251,6 +251,20 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         if status == .paused { status = .active }
     }
 
+    /// Every step is done (validated); none open or blocked.
+    public var allStepsDone: Bool { !steps.isEmpty && steps.allSatisfy { $0.status == .done } }
+
+    /// Closes the goal once every step is done: nothing is left to confirm. A goal with blocked
+    /// steps still goes through `proposeComplete` and the user's confirmation. Returns whether it closed.
+    @discardableResult
+    public mutating func closeIfComplete(summary: String? = nil) -> Bool {
+        guard status == .active, allStepsDone else { return false }
+        let trimmed = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        completionSummary = trimmed.isEmpty ? "All \(steps.count) steps done." : trimmed
+        status = .done
+        return true
+    }
+
     public mutating func proposeComplete(summary: String, now: Date = Date()) -> StepUpdateResult {
         guard status == .active else { return .rejected("The goal is \(status.rawValue).") }
         let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -259,6 +273,8 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         guard stillOpen == 0 else {
             return .rejected("\(stillOpen) step(s) are still open. Finish them, or mark them blocked with a reason, first.")
         }
+        // Everything verified: close it now. Only a partial finish (blocked steps) waits for the user.
+        if closeIfComplete(summary: trimmed) { return .recorded }
         completionSummary = trimmed
         confirmationRequestedAt = now
         status = .awaitingConfirmation
