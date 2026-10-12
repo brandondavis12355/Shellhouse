@@ -24,13 +24,19 @@ work.
 ## Getting the code
 - New project: `mkdir -p /workspace/<name> && cd /workspace/<name> && git init`.
 - Public repository: `git clone <url> /workspace/<name>`.
-- Private repository: use `gh`, which reads the token from the environment
-  and never stores it. Your user keeps it as a secret, usually
-  `GITHUB_TOKEN`: `run_shell("gh repo clone owner/repo /workspace/repo",
-  use_secrets: ["GITHUB_TOKEN"])`. Do this first, before anything else in
-  the run, because secret commands are blocked once a run is untrusted. If
-  `command -v gh` finds nothing, install it with `sudo apt-get install -y gh`
-  (only if sudo is enabled), or ask your user.
+- Private repository (or a clone that fails with "could not read
+  Username", "Authentication failed" or "Permission denied (publickey)"):
+  1. Don't retry it, and don't switch to ssh: the VM has no keys. It
+     needs a token.
+  2. No `GITHUB_TOKEN` saved yet? Call `request_credentials` with a
+     `GITHUB_TOKEN` field ("GitHub personal access token").
+  3. `run_shell("gh repo clone owner/repo /workspace/repo",
+     use_secrets: ["GITHUB_TOKEN"])`. `gh` reads the token from the
+     environment and never stores it.
+  Do this before browsing or downloading anything else in the run, because
+  secret commands are blocked once a run is untrusted.
+- In a group, only the member doing the clone asks for the token; the
+  others wait for its result instead of trying the same clone.
 - Never put a token in a URL, a file or a commit, and never print it.
 
 ## Work in small, checked steps

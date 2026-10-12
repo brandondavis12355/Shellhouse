@@ -64,6 +64,7 @@ public enum ObservationPolicy {
     }
 
     static func recoveryHint(for text: String) -> String? {
+        if AuthFailure.matches(text) { return AuthFailure.hint }
         let t = text.lowercased()
         if t.contains("command not found") { return "That program is not installed on this VM. Check with `command -v <name>`; install with `sudo apt-get update && sudo apt-get install -y <package>` if appropriate, or use another tool." }
         if t.contains("unable to locate package") { return "Package lists may be empty: run `sudo apt-get update` first, then retry." }
@@ -106,6 +107,30 @@ public enum ObservationPolicy {
 }
 
 // MARK: - 4/5. stuck patterns (OpenHands detector: alternating, monologue)
+
+/// How a tool result went, for the "stop and tell your user" rule (see `AgentRuntime`).
+public enum FailureCheck {
+    public enum Kind: Equatable { case ok, failed, hard }
+
+    /// `hard`: blocked, denied or missing credentials: nothing to retry. `failed`: an error, a non-zero
+    /// exit, or exit 0 with failure text in the output (the warning `ObservationPolicy.annotate` adds).
+    public static func kind(_ shown: [String: Any]) -> Kind {
+        let text = ((shown["error"] as? String) ?? "") + "\n" + ((shown["stdout"] as? String) ?? "") + "\n" + ((shown["stderr"] as? String) ?? "")
+        if let error = shown["error"] as? String, error.hasPrefix("blocked by guardrails") || error.hasPrefix("denied by user") { return .hard }
+        let exit = (shown["exit_code"] as? Int) ?? (shown["exit_code"] as? NSNumber)?.intValue ?? 0
+        let failed = shown["error"] != nil || exit != 0 || shown["warning"] != nil
+        if failed, AuthFailure.matches(text) { return .hard }
+        return failed ? .failed : .ok
+    }
+
+    public static let stopNotice = "[problem] That didn't work. Unless you know the specific fix (a typo you can see, a "
+        + "package to install, a path to correct), stop here: finish_task with outcome \"blocked\", telling your user what "
+        + "failed, what you tried, and what you need from them. Don't probe with more commands or try workarounds first. "
+        + "(Missing credentials: request_credentials.)"
+
+    /// Consecutive failed actions after which the run stops and reports instead.
+    public static let stopAfter = 3
+}
 
 public struct StuckDetector: Sendable {
     public enum Verdict: Equatable, Sendable {

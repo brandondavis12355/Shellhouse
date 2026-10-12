@@ -42,6 +42,14 @@ call it on a stated intent ("I'll check X") or a partial result.
 
 \(toolVerification)
 
+When something goes wrong (a command fails, an action is blocked or \
+denied, a login or credential is missing, the result isn't what you \
+expected), retry only if you know the specific fix: a typo you can see, a \
+missing package you can install, a path you can correct. Otherwise stop \
+and tell your user first: what failed, what you tried, and what you need \
+from them. Don't probe with more commands or try workarounds before they \
+answer. Missing credentials have their own path: request_credentials.
+
 Proactively use the remember tool for any fact, preference, or detail \
 that's durable and worth carrying forward — don't wait to be explicitly \
 asked to remember something. This matters most for anything you might \

@@ -53,7 +53,9 @@ public enum TaintRules {
         case "screenshot":
             if browserEngaged { out.append(.browser) }
         case "run_shell":
-            if shellDownloads(arguments["command"]?.asString ?? "", ruleHint: rules) { out.append(.download) }
+            if shellDownloads(arguments["command"]?.asString ?? "", ruleHint: rules), !failedBeforeAnyRemoteContent(observation) {
+                out.append(.download)
+            }
         default:
             if tool.hasPrefix("mcp__") { out.append(.mcp) }
         }
@@ -77,6 +79,16 @@ public enum TaintRules {
             if findings.contains(where: { $0.rule.hasPrefix("network.") || $0.rule.hasPrefix("supply_chain.") }) { return true }
         }
         return false
+    }
+
+    /// A download that failed locally on authentication, before the remote sent anything: nothing outside
+    /// came in, so the run stays trusted and can still use a secret to retry. Any `remote:` line (text the
+    /// server chose) or other output keeps the usual taint.
+    static func failedBeforeAnyRemoteContent(_ observation: [String: Any]) -> Bool {
+        let output = ((observation["stdout"] as? String) ?? "") + "\n" + ((observation["stderr"] as? String) ?? "")
+        guard AuthFailure.matches(output), !output.contains("remote:") else { return false }
+        // Only git/ssh/gh boilerplate around the failure, and nothing long enough to carry a payload.
+        return output.count < 600
     }
 
     /// Whether this call means the desktop browser is now showing outside content.

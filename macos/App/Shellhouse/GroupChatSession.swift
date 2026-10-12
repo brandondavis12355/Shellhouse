@@ -66,8 +66,16 @@ final class GroupChatSession: Identifiable {
     /// other members hold off — otherwise they'd start working before the
     /// plan exists. Released the moment the plan does (a successful
     /// `propose_goal`), when the owner decides the message isn't a request,
-    /// when its worker exits, or after `intakeHoldLimit` at most.
-    static let intakeHoldLimit: Double = 30
+    /// when its worker exits, or after `intakeHoldLimit` of the owner's own working time at most. Time
+    /// the owner spends waiting on the user (an approval or credentials card) doesn't count: otherwise
+    /// everyone else starts the same job in parallel while the owner waits.
+    static let intakeHoldLimit: Double = 45
+
+    /// Whether the intake owner is paused on the user, so the hold clock shouldn't run.
+    private func intakeOwnerWaitingOnUser() -> Bool {
+        guard let ownerID = intakeOwnerID, let owner = members.first(where: { $0.id == ownerID }) else { return false }
+        return owner.pendingApproval != nil || owner.pendingCredentialRequest != nil
+    }
     private var intakeOwnerID: String?
     private var intakeGeneration = 0
     // Friends sharing (see FriendsView / group-relay). nil = a private, local group.
@@ -181,7 +189,15 @@ final class GroupChatSession: Identifiable {
             // on the generation so an older message's valve can't release a newer gate.
             let generation = intakeGeneration
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(Self.intakeHoldLimit * 1_000_000_000))
+                var worked = 0.0
+                // Hard cap of 15 minutes overall, the same as an unanswered approval.
+                var total = 0.0
+                while worked < Self.intakeHoldLimit, total < 15 * 60 {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    total += 0.5
+                    guard let self, self.intakeGeneration == generation, self.intakeOwnerID != nil else { return }
+                    if !self.intakeOwnerWaitingOnUser() { worked += 0.5 }
+                }
                 if self?.intakeGeneration == generation { self?.intakeOwnerID = nil }
             }
         }
@@ -468,8 +484,9 @@ final class GroupChatSession: Identifiable {
             }
 
             if let owner = intakeOwnerID, owner != botID {
+                // The valve above releases the hold; this only guards against it never firing.
                 var waited = 0.0
-                while intakeOwnerID != nil, waited < Self.intakeHoldLimit, !Task.isCancelled {
+                while intakeOwnerID != nil, waited < 15 * 60, !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 300_000_000)
                     waited += 0.3
                 }

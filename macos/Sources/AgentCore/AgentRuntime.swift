@@ -162,6 +162,9 @@ public actor AgentRuntime {
     static let sameResultNudgeAt = 3
     static let sameResultAbortAt = 5
     private var abortForSameResults = false
+    /// Failed actions in a row (see `FailureCheck`); any success resets it.
+    private var failureStreak = 0
+    private var abortForFailures = false
     private var stuck = StuckDetector()
     private var currentGoal = ""
     private var budgetWarningsSent: Set<Int> = []
@@ -361,6 +364,7 @@ public actor AgentRuntime {
         plan = []
         finishGuardUsed = false
         errorCounts = [:]
+        failureStreak = 0; abortForFailures = false; abortForSameResults = false; sameResultStreak = 0
         budgetWarningsSent = []
         await loop()
     }
@@ -377,6 +381,7 @@ public actor AgentRuntime {
         plan = []
         finishGuardUsed = false
         errorCounts = [:]
+        failureStreak = 0; abortForFailures = false; abortForSameResults = false; sameResultStreak = 0
         // Loop-detection is meant to catch a model stuck repeating the
         // SAME call within one reasoning task, not across entirely
         // separate turns — without this reset, `callFingerprints`
@@ -608,6 +613,8 @@ public actor AgentRuntime {
             return false
         case .refuse(let message):
             appendToolResult(name: call.name, observation: ["error": message])
+            noteFailure(FailureCheck.kind(["error": message]))
+            if abortForFailures { return stopForFailures() }
             return true
         case .held(let note, let stored):
             onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
@@ -630,6 +637,7 @@ public actor AgentRuntime {
                 onEvent(.status(.aborted("\(error)")))
                 return false
             }
+            if abortForFailures { return stopForFailures() }
             if abortForSameResults {
                 let error = RuntimeError.repeated("'\(call.name)' kept returning the same result; the run was going in circles")
                 emitAbortMessage(for: error)
@@ -661,6 +669,7 @@ public actor AgentRuntime {
             stuck.reset()
         }
         noteError(call, observation: observation)
+        noteFailure(FailureCheck.kind(shown))
         let streak = noteResult(call, observation: observation)
         if !Reliability.isOn(.loopGuards) {
             // same-result guard switched off
@@ -949,6 +958,26 @@ public actor AgentRuntime {
 
     /// The third identical error from one tool this turn gets a single message naming it, before the
     /// loop guards would stop the run.
+    /// The user wants to hear about a problem before the bot takes more actions on it: a hard failure,
+    /// or two failures in a row, tell it to stop and report; a third in a row ends the run.
+    private func noteFailure(_ kind: FailureCheck.Kind) {
+        guard Reliability.isOn(.loopGuards) else { return }
+        guard kind != .ok else { failureStreak = 0; return }
+        failureStreak += 1
+        if failureStreak >= FailureCheck.stopAfter {
+            abortForFailures = true
+        } else if kind == .hard || failureStreak == 2 {
+            messages.append(ChatMessage(role: .user, content: FailureCheck.stopNotice))
+        }
+    }
+
+    private func stopForFailures() -> Bool {
+        let error = RuntimeError.repeated("\(FailureCheck.stopAfter) actions in a row failed, so it stopped to check with you before trying anything else")
+        emitAbortMessage(for: error)
+        onEvent(.status(.aborted("\(error)")))
+        return false
+    }
+
     private func noteError(_ call: ToolCall, observation: [String: Any]) {
         guard Reliability.isOn(.loopGuards) else { return }
         var error = observation["error"] as? String ?? ""
