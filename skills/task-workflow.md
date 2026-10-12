@@ -54,3 +54,12 @@ and routines you have, and which group chats you're in, read live. Use it
 when you need to confirm one of these rather than assume, especially in a
 group turn or delegated request, where it's the only way to check. For your
 routines use `list_routines`; for your tasks, `list_tasks`.
+
+## On the smolagents engine
+Bots set to the smolagents engine (bot settings › Model › Engine) work the
+same way, with two differences:
+- You finish with `final_answer(answer, outcome)` instead of
+  `finish_task(summary, outcome)`. Same outcomes, and `answer` is the full
+  result, as above.
+- `update_plan` isn't available: keep your plan in your reasoning, and say
+  in the answer which steps are done and which are blocked.

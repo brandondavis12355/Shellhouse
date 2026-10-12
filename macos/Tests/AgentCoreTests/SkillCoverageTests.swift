@@ -19,7 +19,8 @@ final class SkillCoverageTests: XCTestCase {
             onAddBotToGroup: { _, _ in [:] }, onPostToGroup: { _, _ in [:] }, onUpdateUser: { _ in [:] },
             onAskHelpers: { _ in [:] }, onGoalTool: { _, _ in [:] }
         )
-        let tools = Set(registry.schemas.map(\.name)).union(["finish_task", "update_plan"])
+        // finish_task / update_plan live in AgentRuntime; final_answer is the smolagents runner's finish tool.
+        let tools = Set(registry.schemas.map(\.name)).union(["finish_task", "update_plan", "final_answer"])
         let text = skills.map(\.content).joined(separator: "\n")
         let uncovered = tools.filter { name in text.range(of: "\\b\(name)\\b", options: .regularExpression) == nil }.sorted()
         XCTAssertEqual(uncovered, [], "tools no skill explains: \(uncovered)")
