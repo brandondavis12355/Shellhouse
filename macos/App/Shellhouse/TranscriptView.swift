@@ -90,7 +90,7 @@ struct TranscriptView: View {
                 .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
                     if let last = messages.last?.id {
-                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
+                        proxy.scrollTo(last, anchor: .bottom)
                     }
                 }
             }
@@ -240,8 +240,10 @@ private struct MessageBubble: View {
     /// something `Text` can render. Falls back to the plain string on a
     /// bridging failure rather than showing nothing.
     private var highlightedText: AttributedString {
-        let ns = TranscriptHighlighter.highlight(message.text, baseFont: .systemFont(ofSize: Self.bodyFontSize))
-        return (try? AttributedString(ns, including: \.appKit)) ?? AttributedString(message.text)
+        StyledTextCache.value(for: "h|\(Self.bodyFontSize)|" + message.text) {
+            let ns = TranscriptHighlighter.highlight(message.text, baseFont: .systemFont(ofSize: Self.bodyFontSize))
+            return (try? AttributedString(ns, including: \.appKit)) ?? AttributedString(message.text)
+        }
     }
 
     private func isImageFilename(_ filename: String) -> Bool {

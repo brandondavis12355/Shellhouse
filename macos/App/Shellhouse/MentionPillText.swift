@@ -43,6 +43,11 @@ struct MentionPillText: View {
     /// `AttributedString` can express), but it still reads as visually
     /// distinct, colored and bold.
     private var attributedText: AttributedString {
+        let colorKey = mentionColors.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+        return StyledTextCache.value(for: "m|\(fontSize)|\(colorKey)|" + text) { build() }
+    }
+
+    private func build() -> AttributedString {
         let segments = MentionScanner.segments(for: text, knownNames: Set(mentionColors.keys))
         var result = AttributedString()
         for (index, segment) in segments.enumerated() {

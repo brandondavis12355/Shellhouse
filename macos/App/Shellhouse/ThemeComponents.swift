@@ -209,6 +209,24 @@ extension AnyTransition {
     }
 }
 
+/// Styled bubble text, built once per distinct string instead of on every redraw while
+/// scrolling (the highlighter is a regex pass over the whole message).
+enum StyledTextCache {
+    private final class Box { let value: AttributedString; init(_ value: AttributedString) { self.value = value } }
+    nonisolated(unsafe) private static let cache: NSCache<NSString, Box> = {
+        let cache = NSCache<NSString, Box>()
+        cache.countLimit = 600
+        return cache
+    }()
+
+    static func value(for key: String, make: () -> AttributedString) -> AttributedString {
+        if let hit = cache.object(forKey: key as NSString) { return hit.value }
+        let value = make()
+        cache.setObject(Box(value), forKey: key as NSString)
+        return value
+    }
+}
+
 /// Animates rows that arrive after a chat is already showing, not the initial load of its
 /// history. With Reduce Motion on, a short fade only.
 struct MessageArrivalAnimation<Value: Equatable>: ViewModifier {

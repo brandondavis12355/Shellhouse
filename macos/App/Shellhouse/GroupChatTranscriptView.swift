@@ -15,6 +15,7 @@ struct GroupChatTranscriptView: View {
     /// `speakerBotID` -> avatar style index, for the small avatar beside a
     /// member's bubble.
     var memberStyles: [String: Int] = [:]
+    @State private var lastDraftScroll = Date.distantPast
     /// Lowercased member name -> hex, for rendering an `@Name` token
     /// inside a message as a colored pill instead of plain text (see
     /// `MentionPillText`). Separate map from `memberColors` (keyed by id)
@@ -69,12 +70,15 @@ struct GroupChatTranscriptView: View {
                 .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
                     if let last = messages.last?.id {
-                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
+                        proxy.scrollTo(last, anchor: .bottom)
                     }
                 }
-                // Keep a growing draft in view while it streams.
+                // Keep a growing draft in view while it streams, at most a few
+                // times a second: a jump on every chunk made scrolling stutter.
                 .onChange(of: drafts.map(\.text.count).reduce(0, +)) { _, _ in
-                    if let last = drafts.last?.id { proxy.scrollTo(last, anchor: .bottom) }
+                    guard let last = drafts.last?.id, Date().timeIntervalSince(lastDraftScroll) > 0.25 else { return }
+                    lastDraftScroll = Date()
+                    proxy.scrollTo(last, anchor: .bottom)
                 }
             }
         }

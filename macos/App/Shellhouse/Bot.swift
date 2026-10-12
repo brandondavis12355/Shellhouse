@@ -1300,7 +1300,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// (Re)schedules the in-process `Timer` for one routine — cancels any
     /// existing timer for its id first, so this is safe to call again after
     /// a routine fires (to pick up its next occurrence) or after editing it.
-    private func scheduleTimer(for routine: Routine) {
+    private func scheduleTimer(for routine: Routine, quiet: Bool = false) {
         routineTimers.removeValue(forKey: routine.id)?.invalidate()
         guard routine.isEnabled, let next = routine.schedule.nextFireDate(lastFiredAt: routine.lastFiredAt) else { return }
         // `next` can already be `<= now` — a missed occurrence
@@ -1309,13 +1309,31 @@ final class Bot: Identifiable, @unchecked Sendable {
         // to the next regular occurrence.
         let interval = max(1, next.timeIntervalSinceNow)
         let missed = next.timeIntervalSinceNow <= 0
-        logRoutine(
-            missed
-                ? "\(routineLabel(routine)) was missed — catching up, firing in ~1s"
-                : "\(routineLabel(routine)) scheduled for \(next.formatted(date: .abbreviated, time: .standard)) (in \(Int(interval))s)"
-        )
-        routineTimers[routine.id] = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.fireRoutine(id: routine.id) }
+        if !quiet {
+            logRoutine(
+                missed
+                    ? "\(routineLabel(routine)) was missed — catching up, firing in ~1s"
+                    : "\(routineLabel(routine)) scheduled for \(next.formatted(date: .abbreviated, time: .standard)) (in \(Int(interval))s)"
+            )
+        }
+        // A `Timer`'s clock stops while the Mac sleeps, so a day-long wait would come due hours late
+        // (a daily stand-up that seemed to run only once). Wait at most a few minutes, then check the
+        // wall clock again.
+        let wait = min(interval, Self.routineRecheckInterval)
+        routineTimers[routine.id] = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.routineTimerFired(id: routine.id) }
+        }
+    }
+
+    static let routineRecheckInterval: TimeInterval = 300
+
+    private func routineTimerFired(id routineID: String) {
+        guard let routine = routines.first(where: { $0.id == routineID }), routine.isEnabled,
+              let next = routine.schedule.nextFireDate(lastFiredAt: routine.lastFiredAt) else { return }
+        if next.timeIntervalSinceNow > 1 {
+            scheduleTimer(for: routine, quiet: true)
+        } else {
+            fireRoutine(id: routineID)
         }
     }
 
@@ -1690,7 +1708,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// caller falls back to the full agent turn.
     func quickReplyInGroup(
         groupName: String, otherMembers: [String], transcript: String, instruction: String,
-        extraContext: String = "", style: String = "warm, natural, 1-3 short sentences"
+        extraContext: String = "", style: String = "warm, natural, 1-3 short sentences", includeMemory: Bool = true
     ) async -> String? {
         let span = BotActivity.shared.begin(bot: self, kind: .running, detail: "quick reply · \(groupName)")
         defer { BotActivity.shared.end(span) }
@@ -1698,6 +1716,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         var system = "You are \(name)" + (tagline.isEmpty ? "" : ", \(tagline)")
         system += ", in the group chat \"\(groupName)\" with \(otherMembers.joined(separator: ", ")). "
         if !persona.isEmpty { system += "Your persona:\n\(persona)\n\n" }
+        let remembered = includeMemory ? memoryBook.core(limit: 6).map(\.text) : []
+        if !remembered.isEmpty { system += "Things you remember:\n- " + remembered.joined(separator: "\n- ") + "\n\n" }
         system += "Reply in character as a chat message: \(style). Messages are labeled by sender. "
         system += "Never prefix your reply with your own name. Do not repeat what others already said."
         let messages = [
@@ -1860,7 +1880,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 instruction: "Your work was stopped early (\(reason)). In at most 5 short lines: what you VERIFIED (only from the tool output "
                     + "below), what is still open, and what you need. Do not invent results.",
                 extraContext: "WHAT YOUR TOOLS RETURNED SO FAR:\n" + EvidenceDigest.digest(lastTurnObservations, limit: 1_500),
-                style: "an honest, concise status report"
+                style: "an honest, concise status report", includeMemory: !untrustedInput
             ) {
                 outcome = IsolatedResult(text: "⚠ \(reason.prefix(1).uppercased() + reason.dropFirst()). " + salvage, failed: false, tainted: outcome.tainted)
             }

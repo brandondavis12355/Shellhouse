@@ -225,7 +225,7 @@ struct JoinedGroupView: View {
             .defaultScrollAnchor(.bottom)
             .topFade()
             .onChange(of: session.messages.last?.seq) { _, last in
-                if let last { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) } }
+                if let last { proxy.scrollTo(last, anchor: .bottom) }
             }
         }
     }

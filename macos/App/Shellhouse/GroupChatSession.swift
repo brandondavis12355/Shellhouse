@@ -626,7 +626,8 @@ final class GroupChatSession: Identifiable {
             if reply == nil, mustAnswer, owes == .mustReply, bot.lastTurnFailure == nil, !Task.isCancelled, let humanMessage {
                 reply = await bot.quickReplyInGroup(
                     groupName: name, otherMembers: others, transcript: formatRecentTranscript(limit: 8, clipTo: 400),
-                    instruction: "The latest message from \(humanMessage.speakerName) is addressed to you: \"\(String(humanMessage.text.prefix(500)))\". Answer it directly and briefly."
+                    instruction: "The latest message from \(humanMessage.speakerName) is addressed to you: \"\(String(humanMessage.text.prefix(500)))\". Answer it directly and briefly.",
+                    includeMemory: !untrusted
                 )
             }
             guard let reply, !Task.isCancelled else {
