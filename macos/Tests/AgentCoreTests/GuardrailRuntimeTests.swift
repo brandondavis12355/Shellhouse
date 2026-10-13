@@ -438,7 +438,7 @@ final class YoloScopeTests: XCTestCase {
         let d = GuardrailPolicy.evaluate(tool: "run_shell", arguments: call.arguments, baseline: .requireApproval, taint: state, config: GuardrailConfig(), friendSafeTools: [])
         let v = await g.yoloVerdict(for: call, d)
         XCTAssertFalse(v.applies)
-        XCTAssertTrue(v.reason?.contains("looks dangerous") == true, v.reason ?? "nil")
+        XCTAssertTrue(v.reason?.hasPrefix("YOLO is on, but") == true, v.reason ?? "nil")
         let off = self.gate(yolo: false)
         let offV = await off.yoloVerdict(for: call, d)
         XCTAssertNil(offV.reason, "no explanation when YOLO is off")

@@ -3248,8 +3248,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         case .toolCompleted(let name, let resultJSON):
             status = "Finished \(name)"
             lastOwnChatToolOutput = String((lastOwnChatToolOutput + "\n" + name + ": " + resultJSON).suffix(8_000))
-        case .approvalNeeded:
-            break  // surfaced via the `requestApproval` closure/card, not here
+        case .approvalNeeded, .guardrailDecision:
+            break  // surfaced via the card / the debug console, not here
         case .contextCompacted(let summary):
             // Only this bot's own chat persists a cache — a delegation
             // or group turn's isolated runtime (`runIsolatedTask`) has
@@ -3296,6 +3296,14 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// that are otherwise a black box in the normal UI. A no-op unless
     /// debug mode is on, checked fresh on every event rather than
     /// cached, so toggling it mid-run starts/stops logging immediately.
+    static func decisionLabel(_ outcome: String) -> String {
+        [
+            "approved": "you approved", "denied_by_user": "you denied", "blocked": "blocked",
+            "yolo_auto": "ran (YOLO)", "yolo_vetted": "ran (YOLO, vetted by the fast model)", "reviewer_auto": "approved by the reviewer",
+            "granted_binary": "ran (standing grant)", "granted_blanket": "ran (allow all shell)",
+        ][outcome] ?? outcome
+    }
+
     private func logToDebugConsole(_ event: AgentRuntime.Event, context: String? = nil) {
         guard DebugSettings.shared.isEnabled else { return }
         switch event {
@@ -3330,7 +3338,14 @@ final class Bot: Identifiable, @unchecked Sendable {
             if resultJSON.contains("held_for_review") { refreshPendingReview() }
             DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .tool, context: context, text: "← \(toolName): \(resultJSON)")
         case .approvalNeeded(let approval):
-            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: context, text: "waiting for approval: \(approval.toolName)")
+            let flags = [approval.strict ? "strict" : nil, approval.untrusted ? "untrusted run" : nil].compactMap { $0 }
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: context,
+                                text: "approval prompt: \(approval.toolName)" + (flags.isEmpty ? "" : " (\(flags.joined(separator: ", ")))")
+                                    + (approval.reasons.isEmpty ? "" : " — " + approval.reasons.prefix(4).joined(separator: "; "))
+                                    + " · " + String(approval.argumentsSummary.prefix(240)))
+        case .guardrailDecision(let tool, let outcome, let detail):
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: outcome.hasPrefix("blocked") || outcome.hasPrefix("denied") ? .error : .status,
+                                context: context, text: "approval decision: \(tool) — \(Self.decisionLabel(outcome))" + (detail.isEmpty ? "" : " · \(detail)"))
         case .contextCompacted(let summary):
             DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: context, text: "context compacted: \(summary)")
         }
@@ -3486,7 +3501,7 @@ extension Bot {
     private func review(_ request: ActionReviewRequest) async -> ActionReview? {
         let (backend, model) = await reviewerBackend()
         let messages = [
-            ChatMessage(role: .system, content: ActionReviewPrompt.system),
+            ChatMessage(role: .system, content: ActionReviewPrompt.systemPrompt(for: request)),
             ChatMessage(role: .user, content: ActionReviewPrompt.user(request)),
         ]
         let raw: String?

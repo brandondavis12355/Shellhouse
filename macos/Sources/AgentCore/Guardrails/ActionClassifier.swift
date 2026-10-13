@@ -482,8 +482,10 @@ public enum ActionClassifier {
     static func pathFindings(_ raw: String, mode: PathMode, dynamic: Bool = false, config: GuardrailConfig) -> [Finding] {
         var out: [Finding] = []
         var dynamic = dynamic
-        if raw.contains("\0") || raw.utf8.count > 4096 || raw.contains("\n") {
-            out.append(Finding(.credential, "path.malformed", "path contains control characters or is excessively long", clean: .askStrict, tainted: .deny))
+        // Only real control characters (a NUL byte, escape codes) are suspicious. Line breaks and length aren't:
+        // most "paths" that have them are really code or text arguments (`python3 -c "…"`, a commit message).
+        if raw.unicodeScalars.contains(where: { $0.value < 0x20 && $0 != "\n" && $0 != "\t" && $0 != "\r" || $0.value == 0x7F }) {
+            out.append(Finding(.credential, "path.malformed", "path contains control characters", clean: .askStrict, tainted: .deny))
         }
         if raw.contains("$") || raw.contains("`") { dynamic = true }
         let hasGlob = raw.contains("*") || raw.contains("?") || raw.contains("[")

@@ -187,3 +187,75 @@ final class GitHubPullTests: XCTestCase {
         TaintRules.fromTrustedGitHubOwner(args["command"]!.asString!, observation: output, trusted: trusted)
     }
 }
+
+final class YoloVettingTests: XCTestCase {
+    private final class Recorder: @unchecked Sendable { var vetted = 0; var asked = 0 }
+
+    private func gate(vetApproves: Bool, recorder: Recorder) -> ToolGate {
+        var config = GuardrailConfig(); config.yolo = true
+        return ToolGate(sandboxID: "t", sandbox: NullBox(), permissions: RunShellPermissions(), config: config, limits: RunLimits(),
+                        audit: nil, inbox: nil, initialTaint: [.download], friendSafeTools: [],
+                        reviewer: { request in
+                            if request.yoloVetting { recorder.vetted += 1 }
+                            return ActionReview(approve: vetApproves, reason: vetApproves ? "builds the project" : "prints secrets")
+                        },
+                        requestApproval: { _ in recorder.asked += 1; return .deny }, onEvent: { _ in })
+    }
+
+    func testMultiLinePythonIsNotAMalformedPath() {
+        let code = "cd /workspace/r && python3 -c \"\nfrom game import check_winner\nprint(check_winner([None]*9))\n\""
+        let d = GuardrailPolicy.evaluate(tool: "run_shell", arguments: ["command": AnyCodable(code)], baseline: .requireApproval, taint: TaintState(), config: GuardrailConfig())
+        XCTAssertFalse(d.rules.contains("path.malformed"), "\(d.rules)")
+        XCTAssertLessThanOrEqual(d.verdict, .askStrict)
+    }
+
+    func testFlaggedActionsAreVettedAndRunWhenConstructive() async {
+        let recorder = Recorder()
+        let outcome = await gate(vetApproves: true, recorder: recorder).evaluate(ToolCall(name: "run_shell", arguments: ["command": AnyCodable("env")]))
+        guard case .run(_, let asked) = outcome else { return XCTFail("expected run, got \(outcome)") }
+        XCTAssertFalse(asked)
+        XCTAssertEqual(recorder.vetted, 1)
+    }
+
+    func testFlaggedActionsTheVetterDoubtsGoToTheUser() async {
+        let recorder = Recorder()
+        _ = await gate(vetApproves: false, recorder: recorder).evaluate(ToolCall(name: "run_shell", arguments: ["command": AnyCodable("env")]))
+        XCTAssertEqual(recorder.vetted, 1)
+        XCTAssertEqual(recorder.asked, 1)
+    }
+
+    func testDecisionsAreReportedForTheDebugConsole() async {
+        final class Events: @unchecked Sendable { var outcomes: [String] = [] }
+        let events = Events()
+        var config = GuardrailConfig(); config.yolo = true
+        let gate = ToolGate(sandboxID: "t", sandbox: NullBox(), permissions: RunShellPermissions(), config: config, limits: RunLimits(),
+                            audit: nil, inbox: nil, initialTaint: [.download], friendSafeTools: [],
+                            reviewer: { _ in ActionReview(approve: true, reason: "ok") }, requestApproval: { _ in .deny },
+                            onEvent: { if case .guardrailDecision(_, let outcome, _) = $0 { events.outcomes.append(outcome) } })
+        _ = await gate.evaluate(ToolCall(name: "run_shell", arguments: ["command": AnyCodable("env")]))
+        _ = await gate.evaluate(ToolCall(name: "run_shell", arguments: ["command": AnyCodable("rm -rf /")]))
+        _ = await gate.evaluate(ToolCall(name: "run_shell", arguments: ["command": AnyCodable("pip install pandas")]))
+        XCTAssertEqual(events.outcomes, ["yolo_vetted", "blocked", "yolo_auto"])
+    }
+
+    func testHardBlocksAreNeverVetted() async {
+        let recorder = Recorder()
+        _ = await gate(vetApproves: true, recorder: recorder).evaluate(ToolCall(name: "run_shell", arguments: ["command": AnyCodable("rm -rf /")]))
+        XCTAssertEqual(recorder.vetted, 0)
+    }
+
+    private final class NullBox: SandboxProvider, @unchecked Sendable {
+        let name = "null"
+        func exec(_ sandboxID: String, command: String, timeout: TimeInterval, env: [String: String]?) async throws -> ExecResult { ExecResult(exitCode: 0, stdout: "", stderr: "") }
+        func create(taskID: String, persistent: Bool) async throws -> SandboxHandle { SandboxHandle(id: taskID, provider: name, persistent: persistent) }
+        func start(_ sandboxID: String) async throws -> SandboxHandle { SandboxHandle(id: sandboxID, provider: name, persistent: true) }
+        func readFile(_ sandboxID: String, path: String, maxBytes: Int) async throws -> Data { Data() }
+        func writeFile(_ sandboxID: String, path: String, contents: Data) async throws {}
+        func pause(_ sandboxID: String) async throws {}
+        func resume(_ sandboxID: String) async throws {}
+        func destroy(_ sandboxID: String) async throws {}
+        func health(_ sandboxID: String) async -> Bool { true }
+        func reconcile() async throws -> [SandboxHandle] { [] }
+        func listSandboxes() async throws -> [SandboxHandle] { [] }
+    }
+}

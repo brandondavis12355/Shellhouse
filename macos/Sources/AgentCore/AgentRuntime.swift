@@ -65,6 +65,8 @@ public actor AgentRuntime {
         case toolStarted(name: String, argumentsJSON: String)
         case toolCompleted(name: String, resultJSON: String)
         case approvalNeeded(Approval)
+        /// How the guardrails settled a call that wasn't a plain automatic allow (for the debug console).
+        case guardrailDecision(tool: String, outcome: String, detail: String)
         /// Fired once per `compact()` — the summary text that just
         /// replaced the older stretch of `messages`. A caller seeding
         /// this same conversation again later (`Bot`, specifically —

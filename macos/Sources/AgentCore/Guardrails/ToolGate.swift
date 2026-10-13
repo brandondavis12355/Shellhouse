@@ -114,17 +114,34 @@ public actor ToolGate {
     /// escalated because the run read untrusted content. Hard blocks that apply in any run stay blocked, and a
     /// friend in the chat still means everything asks.
     func yoloVerdict(for call: ToolCall, _ decision: GuardrailDecision) -> (applies: Bool, reason: String?) {
-        guard yoloOn else { return (false, nil) }
-        if taint.hasFriend { return (false, "YOLO is on, but a friend's message is in this chat, so everything beyond bookkeeping asks.") }
-        guard !decision.tripwire else { return (false, nil) }
+        let verdict = yoloDecision(for: call, decision)
+        return (verdict.applies, verdict.reason)
+    }
+
+    /// `vettable`: YOLO declined only because a pattern rule flagged it, so the fast model may vet it.
+    func yoloDecision(for call: ToolCall, _ decision: GuardrailDecision) -> (applies: Bool, vettable: Bool, reason: String?) {
+        guard yoloOn else { return (false, false, nil) }
+        if taint.hasFriend { return (false, false, "YOLO is on, but a friend's message is in this chat, so everything beyond bookkeeping asks.") }
+        guard !decision.tripwire else { return (false, false, nil) }
         let classification = ActionClassifier.classify(tool: call.name, arguments: call.arguments, config: config)
+        // Blocked in every run (rm -rf /, reverse shells, miners...): never lifted, never vetted.
+        if let hard = classification.findings.first(where: { $0.clean == .deny }) {
+            return (false, false, "YOLO is on, but this is blocked in every run (\(hard.reason)).")
+        }
         let untrusted = decision.tainted || taint.isTainted
         if let flagged = classification.findings.first(where: { YoloPolicy.looksMalicious($0, untrusted: untrusted) }) {
-            return (false, "YOLO is on, but this looks dangerous (\(flagged.reason)), so it still needs you.")
+            return (false, true, "YOLO is on, but this looks dangerous (\(flagged.reason)) and the vetting model didn't clear it.")
         }
-        // Blocked in every run (rm -rf /, reverse shells, miners...): never lifted.
-        if classification.findings.contains(where: { $0.clean == .deny }) { return (false, nil) }
-        return (true, nil)
+        return (true, false, nil)
+    }
+
+    /// YOLO's second opinion on a flagged action: constructive runs, destructive goes to the user.
+    private func yoloVet(_ call: ToolCall, _ decision: GuardrailDecision) async -> ActionReview? {
+        guard let reviewer else { return nil }
+        return await reviewer(ActionReviewRequest(
+            tool: call.name, arguments: Self.json(call.arguments), reasons: decision.reasons,
+            untrustedSources: taint.isTainted ? taint.sources.map(\.rawValue) : [], task: task, yoloVetting: true
+        ))
     }
 
     // MARK: judging a call
@@ -145,9 +162,18 @@ public actor ToolGate {
 
         switch decision.verdict {
         case .deny:
-            // YOLO: a deny that only comes from untrusted content (ordinary work in a clean run) runs.
-            if !decision.tripwire, yoloVerdict(for: call, decision).applies {
-                return await prepareToRun(call, decision, outcome: "yolo_auto", askedHuman: false)
+            // YOLO: a deny that only comes from untrusted content (ordinary work in a clean run) runs; one a
+            // pattern rule flagged is vetted first.
+            if !decision.tripwire {
+                let yolo = yoloDecision(for: call, decision)
+                if yolo.applies { return await prepareToRun(call, decision, outcome: "yolo_auto", askedHuman: false, detail: "untrusted-run block lifted by YOLO") }
+                if yolo.vettable, let vet = await yoloVet(call, decision) {
+                    if vet.approve { return await prepareToRun(call, decision, outcome: "yolo_vetted", askedHuman: false, detail: vet.reason) }
+                    // Under YOLO a flagged action the vetter doubts is the user's call, not a silent block.
+                    var strict = decision
+                    strict.verdict = .askStrict
+                    return await askHuman(call, strict, binary: nil, notes: ["Vetting model: \(vet.reason)", yolo.reason ?? ""].filter { !$0.isEmpty })
+                }
             }
             await record(call, decision, outcome: decision.tripwire ? "tripwire" : "denied")
             if decision.tripwire {
@@ -156,12 +182,14 @@ public actor ToolGate {
             // A token pasted into a URL is a known mistake with a known fix: hand over the corrected commands,
             // and don't count it toward the freeze (it isn't probing the boundary).
             if decision.rules.contains("url.secret_in_url"), call.name == "run_shell", let command = call.arguments["command"]?.asString {
+                emitDecision(call, "blocked", "token in a URL → corrected command returned")
                 return .refuse(Self.secretInURLCorrection(command))
             }
             do { try runGuard.recordBlocked(kind: call.name + "|" + decision.rules.sorted().joined(separator: ",")) } catch {
                 return await freeze(call, "\(error)", decision: decision)
             }
             let instead = BlockAlternatives.suggestion(for: decision.rules, tainted: decision.tainted)
+            emitDecision(call, "blocked", decision.reasons.joined(separator: "; ") + (instead.map { " → instead: \($0)" } ?? ""))
             return .refuse("blocked by guardrails: \(decision.reasons.joined(separator: "; ")). "
                 + (instead.map { "Instead: \($0) " } ?? "")
                 + "Don't retry this or a reworded version of it. Take an allowed route to the same result, or carry on with the "
@@ -188,10 +216,16 @@ public actor ToolGate {
 
             // YOLO mode: a plain ask on a clean run is approved without a prompt. Hard denials never reach
             // here, and anything strict, tainted by untrusted content, or tied to a friend still asks.
-            let yolo = yoloVerdict(for: call, decision)
-            if yolo.applies {
+            let yoloCheck = yoloDecision(for: call, decision)
+            if yoloCheck.applies {
                 return await prepareToRun(call, decision, outcome: "yolo_auto", askedHuman: false)
             }
+            var yoloVetNote: String?
+            if yoloCheck.vettable, let vet = await yoloVet(call, decision) {
+                if vet.approve { return await prepareToRun(call, decision, outcome: "yolo_vetted", askedHuman: false, detail: vet.reason) }
+                yoloVetNote = vet.reason.isEmpty ? nil : "Vetting model: \(vet.reason)"
+            }
+            let yolo = (applies: false, reason: yoloCheck.reason ?? (yoloOn ? nil : "YOLO is off."))
 
             // The fast model settles routine asks so bots can work on their own; anything it isn't sure of
             // comes to the user with its reason.
@@ -203,73 +237,14 @@ public actor ToolGate {
                 )
                 if let review = await reviewer(request) {
                     if review.approve {
-                        return await prepareToRun(call, decision, outcome: "reviewer_auto", askedHuman: false)
+                        return await prepareToRun(call, decision, outcome: "reviewer_auto", askedHuman: false, detail: review.reason)
                     }
                     reviewNote = "Fast-model reviewer wants your OK" + (review.reason.isEmpty ? "." : ": \(review.reason)")
                 }
             }
 
-            onEvent(.status(.waitingForApproval))
-            let shownAt = Date()
-            let versionAtPrompt = taintVersion
-            let approval = Approval(
-                taskID: sandboxID,
-                toolName: call.name,
-                argumentsSummary: Self.json(call.arguments),
-                alwaysAllowCandidate: decision.grantable ? binary : nil,
-                untrusted: decision.tainted,
-                effect: decision.effect.rawValue,
-                reasons: (reviewNote.map { [$0] } ?? []) + decision.reasons + (yolo.reason.map { [$0] } ?? []),
-                strict: decision.isStrict,
-                argsDigest: ArgsDigest.digest(tool: call.name, arguments: call.arguments),
-                sources: taint.sources.map(\.rawValue),
-                expiresAt: decision.isStrict ? shownAt.addingTimeInterval(Self.strictApprovalTTL) : nil
-            )
-            onEvent(.approvalNeeded(approval))
-            let answer = await requestApproval(approval)
-
-            // A strict approval that sat unanswered past its TTL is void.
-            if let expiry = approval.expiresAt, Date() > expiry, answer != .deny {
-                await record(call, decision, outcome: "approval_expired")
-                return .refuse("approval expired; ask again if this is still needed")
-            }
-
-            // The run may have read untrusted content while the card was open. If
-            // that makes this action stricter than what the person approved, the
-            // approval no longer applies.
-            if answer != .deny, taintVersion != versionAtPrompt {
-                let now = GuardrailPolicy.evaluate(
-                    tool: call.name, arguments: call.arguments, baseline: Policy.evaluate(tool: call.name),
-                    taint: taint, config: config, friendSafeTools: friendSafeTools
-                )
-                if now.verdict > decision.verdict {
-                    await record(call, now, outcome: "approval_stale")
-                    return .refuse("the situation changed while this was waiting for approval (untrusted content was read); ask again")
-                }
-            }
-
-            switch answer {
-            case .deny:
-                await record(call, decision, outcome: "denied_by_user")
-                do { try runGuard.recordBlocked(kind: "denied|" + call.name + "|" + decision.rules.sorted().joined(separator: ",")) } catch {
-                    return await freeze(call, "\(error)", decision: decision)
-                }
-                return .refuse("denied by user")
-            case .approveAlwaysSession where decision.grantable:
-                if let binary { await permissions.allow(binary, scope: .session) }
-            case .approveAlwaysGlobal where decision.grantable:
-                if let binary { await permissions.allow(binary, scope: .global) }
-            case .approveAllShellThisBotSession where decision.grantable:
-                await permissions.allowAll(botID: sandboxID, scope: .botSession)
-            case .approveAllShellThisBotAlways where decision.grantable:
-                await permissions.allowAll(botID: sandboxID, scope: .botAlways)
-            case .approve, .approveAlwaysSession, .approveAlwaysGlobal, .approveAllShellThisBotSession,
-                 .approveAllShellThisBotAlways, .approveAllShellEveryBot:
-                // Strict / untrusted cases land here: approve this ONE call and
-                // record nothing. (The global "every bot" grant is retired.)
-                break
-            }
-            return await prepareToRun(call, decision, outcome: "approved", askedHuman: true)
+            return await askHuman(call, decision, binary: binary,
+                                  notes: (reviewNote.map { [$0] } ?? []) + (yoloVetNote.map { [$0] } ?? []) + (yolo.reason.map { [$0] } ?? []))
         }
     }
 
@@ -296,7 +271,81 @@ public actor ToolGate {
 
     // MARK: pieces
 
-    private func prepareToRun(_ call: ToolCall, _ decision: GuardrailDecision, outcome: String, askedHuman: Bool) async -> Outcome {
+    /// One line for the debug console: what was decided, why, and the call.
+    private func emitDecision(_ call: ToolCall, _ outcome: String, _ detail: String) {
+        let args = Self.json(call.arguments)
+        onEvent(.guardrailDecision(tool: call.name, outcome: outcome,
+                                   detail: (detail.isEmpty ? "" : detail + " · ") + String(args.prefix(240))))
+    }
+
+    /// Shows the approval card and applies the answer.
+    private func askHuman(_ call: ToolCall, _ decision: GuardrailDecision, binary: String?, notes: [String]) async -> Outcome {
+        onEvent(.status(.waitingForApproval))
+        let shownAt = Date()
+        let versionAtPrompt = taintVersion
+        let approval = Approval(
+            taskID: sandboxID,
+            toolName: call.name,
+            argumentsSummary: Self.json(call.arguments),
+            alwaysAllowCandidate: decision.grantable ? binary : nil,
+            untrusted: decision.tainted,
+            effect: decision.effect.rawValue,
+            reasons: notes.prefix(2) + decision.reasons + notes.dropFirst(2),
+            strict: decision.isStrict,
+            argsDigest: ArgsDigest.digest(tool: call.name, arguments: call.arguments),
+            sources: taint.sources.map(\.rawValue),
+            expiresAt: decision.isStrict ? shownAt.addingTimeInterval(Self.strictApprovalTTL) : nil
+        )
+        onEvent(.approvalNeeded(approval))
+        let answer = await requestApproval(approval)
+
+        // A strict approval that sat unanswered past its TTL is void.
+        if let expiry = approval.expiresAt, Date() > expiry, answer != .deny {
+            await record(call, decision, outcome: "approval_expired")
+            return .refuse("approval expired; ask again if this is still needed")
+        }
+
+        // The run may have read untrusted content while the card was open. If
+        // that makes this action stricter than what the person approved, the
+        // approval no longer applies.
+        if answer != .deny, taintVersion != versionAtPrompt {
+            let now = GuardrailPolicy.evaluate(
+                tool: call.name, arguments: call.arguments, baseline: Policy.evaluate(tool: call.name),
+                taint: taint, config: config, friendSafeTools: friendSafeTools
+            )
+            if now.verdict > decision.verdict {
+                await record(call, now, outcome: "approval_stale")
+                return .refuse("the situation changed while this was waiting for approval (untrusted content was read); ask again")
+            }
+        }
+
+        switch answer {
+        case .deny:
+            await record(call, decision, outcome: "denied_by_user")
+            do { try runGuard.recordBlocked(kind: "denied|" + call.name + "|" + decision.rules.sorted().joined(separator: ",")) } catch {
+                return await freeze(call, "\(error)", decision: decision)
+            }
+            emitDecision(call, "denied_by_user", "")
+            return .refuse("denied by user")
+        case .approveAlwaysSession where decision.grantable:
+            if let binary { await permissions.allow(binary, scope: .session) }
+        case .approveAlwaysGlobal where decision.grantable:
+            if let binary { await permissions.allow(binary, scope: .global) }
+        case .approveAllShellThisBotSession where decision.grantable:
+            await permissions.allowAll(botID: sandboxID, scope: .botSession)
+        case .approveAllShellThisBotAlways where decision.grantable:
+            await permissions.allowAll(botID: sandboxID, scope: .botAlways)
+        case .approve, .approveAlwaysSession, .approveAlwaysGlobal, .approveAllShellThisBotSession,
+             .approveAllShellThisBotAlways, .approveAllShellEveryBot:
+            // Strict / untrusted cases land here: approve this ONE call and
+            // record nothing. (The global "every bot" grant is retired.)
+            break
+        }
+        return await prepareToRun(call, decision, outcome: "approved", askedHuman: true)
+    }
+
+    private func prepareToRun(_ call: ToolCall, _ decision: GuardrailDecision, outcome: String, askedHuman: Bool, detail: String = "") async -> Outcome {
+        if outcome != "auto" { emitDecision(call, outcome, detail.isEmpty ? decision.reasons.prefix(2).joined(separator: "; ") : detail) }
         if call.name == "write_file" {
             do { try runGuard.recordWrite(bytes: call.arguments["content"]?.asString?.utf8.count ?? 0) } catch {
                 return await freeze(call, "\(error)", decision: decision)
