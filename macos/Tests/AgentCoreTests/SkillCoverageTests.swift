@@ -27,3 +27,21 @@ final class SkillCoverageTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(tools.count, 40, "registry should expose the full tool set here")
     }
 }
+
+final class ProgrammingSkillsTests: XCTestCase {
+    func testProgrammingSkillsLoadWithDescriptionsAndAttribution() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let skills = Dictionary(uniqueKeysWithValues: SkillLibrary.loadDirectory(repoRoot.appendingPathComponent("skills")).map { ($0.id, $0) })
+        let adapted = ["planning-code-work", "test-driven-development", "systematic-debugging", "verification-before-completion",
+                       "incremental-implementation", "code-review", "clean-and-secure-code", "git-teamwork"]
+        for id in adapted {
+            let skill = try XCTUnwrap(skills[id], id)
+            XCTAssertFalse(skill.description.isEmpty, id)
+            XCTAssertTrue(skill.content.contains("Adapted from") && skill.content.contains("MIT"), "\(id) must keep its license attribution")
+        }
+        let notices = try String(contentsOf: repoRoot.appendingPathComponent("skills/THIRD-PARTY-NOTICES.txt"), encoding: .utf8)
+        XCTAssertTrue(notices.contains("Copyright (c) 2025 Jesse Vincent") && notices.contains("Copyright (c) 2025 Addy Osmani"))
+        XCTAssertNil(skills["THIRD-PARTY-NOTICES"], "the notices file must not load as a skill")
+    }
+}

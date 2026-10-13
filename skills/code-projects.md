@@ -45,16 +45,19 @@ work.
   others wait for its result instead of trying the same clone.
 - Never put a token in a URL, a file or a commit, and never print it.
 
-## When a test fails
-- Check the test's own expectation before calling it a bug: print the
-  input and the value you expected, and work it out by hand. (A
-  "draw" board of X O X / O X O / X O X is not a draw: X has both
-  diagonals.)
-- Only report a bug in someone else's code once you've shown the code is
-  wrong, not just that a test disagrees with it.
-- Put tests in a file (`test_*.py`) and run the file, instead of pasting a
-  long `python3 -c "…"` again and again. Edit the file to change a case.
-- Git commits need an identity; every VM has one set (your bot's name).
+## Doing the work well
+For anything beyond a one-line fix, load the skill for the stage you're in:
+- `planning-code-work`: read first, decide files and interfaces, break the
+  work into small checked tasks (and goal steps in a group).
+- `incremental-implementation`: build in small working slices, commit each.
+- `test-driven-development`: failing test first; check the test's own
+  expectation before calling something a bug.
+- `systematic-debugging`: root cause before fixes, one hypothesis at a time.
+- `verification-before-completion`: run and quote the check before saying
+  it's done.
+- `code-review`: reviewing a teammate's change, or answering review.
+- `clean-and-secure-code`: readable code, untrusted input, secrets.
+- `git-teamwork`: branches, pull before push, merging with other bots.
 
 ## Work in small, checked steps
 For anything with several steps, keep a plan with `update_plan` and mark
