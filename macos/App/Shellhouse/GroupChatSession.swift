@@ -654,15 +654,9 @@ final class GroupChatSession: Identifiable {
                     goalHandler: handler,
                     untrustedInput: untrusted,
                     // No goal work this turn: a substantial plain-text answer is the answer.
-                    plainReplyEndsTurn: goal?.isLive != true && !isIntakeTurn,
-                    onDraft: { [weak self] text in
-                        guard let self, self.draftTurns[botID] == draftTurn else { return }
-                        if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            self.liveDrafts[botID] = text
-                        } else {
-                            self.liveDrafts[botID] = nil
-                        }
-                    }
+                    // No live streaming in group chats: each member's message appears once it's finished
+                    // (the status strip shows who is responding). Streaming is for 1:1 chats only.
+                    plainReplyEndsTurn: goal?.isLive != true && !isIntakeTurn
                 )
                 // The real message (or nothing) replaces the draft from here on.
                 endDraft(botID)
