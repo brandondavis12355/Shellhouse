@@ -49,3 +49,27 @@ final class GoalDependencyTests: XCTestCase {
         XCTAssertEqual(g.steps[4].dependsOn?.count, 3)
     }
 }
+
+final class OwnerReviewTests: XCTestCase {
+    func testOwnerIsToldWhatToValidateUnblockOrClose() {
+        var g = GroupGoal(title: "t", ownerBotID: "owner", steps: [.init(text: "Write game.py", assigneeName: "Bugbot"), .init(text: "Write tests")], stallLimit: 40)
+        XCTAssertNil(g.ownerReviewWork(), "nothing submitted yet")
+        _ = g.updateStep(id: g.steps[0].id, status: .done, evidence: "pytest: 12 passed in game_test.py", assigneeName: nil,
+                         turnHadToolCalls: true, byOwner: false, actorName: "Bugbot")
+        let work = g.ownerReviewWork()
+        XCTAssertTrue(work?.contains("Waiting for your validation: step 1") == true, work ?? "nil")
+        XCTAssertTrue(work?.contains("12 passed") == true)
+        let before = g.reviewSignature
+        _ = g.updateStep(id: g.steps[1].id, status: .blocked, evidence: "pytest missing", assigneeName: nil, turnHadToolCalls: true, byOwner: false, actorName: "Prism")
+        XCTAssertNotEqual(g.reviewSignature, before)
+        XCTAssertTrue(g.ownerReviewWork()?.contains("Blocked: step 2") == true)
+    }
+
+    func testAFinishedGoalAsksTheOwnerToClose() {
+        var g = GroupGoal(title: "t", ownerBotID: "owner", steps: [.init(text: "only step")], stallLimit: 40)
+        _ = g.updateStep(id: g.steps[0].id, status: .done, evidence: "ran it: output 'ok' printed", assigneeName: nil, turnHadToolCalls: true)
+        if g.status == .active {
+            XCTAssertTrue(g.ownerReviewWork()?.contains("propose_goal_complete") == true)
+        }
+    }
+}

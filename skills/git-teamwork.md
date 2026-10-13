@@ -11,6 +11,9 @@ Every bot has its own VM and its own clone. You only see a teammate's work
 after they **push** and you **pull**. "It's done on my VM" means nobody
 else has it yet.
 
+For the exact commands, connection setup and error fixes, load
+`git-essentials`.
+
 ## Branches and commits
 - Work on your own branch: `git checkout -b <your-name>/<task>` (e.g.
   `prism/tests`). Push that branch, not `main`, unless your user says so.

@@ -388,6 +388,34 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     }
 
     /// Prompt text shown to every member each turn.
+    /// What the goal owner needs to look at (submissions to validate, blocked steps, a finished goal to close),
+    /// as an instruction for its review turn, or nil if nothing does.
+    public func ownerReviewWork() -> String? {
+        var lines: [String] = []
+        for (index, step) in steps.enumerated() where step.status == .review {
+            let evidence = (step.evidence ?? "").prefix(300)
+            lines.append("- Waiting for your validation: step \(index + 1) \"\(Self.displayText(step.text))\""
+                + (step.assigneeName.map { ", submitted by \($0)" } ?? "") + (evidence.isEmpty ? "" : ". Their evidence: \(evidence)"))
+        }
+        for (index, step) in steps.enumerated() where step.status == .blocked {
+            lines.append("- Blocked: step \(index + 1) \"\(Self.displayText(step.text))\"" + (step.evidence.map { " (\($0.prefix(200)))" } ?? ""))
+        }
+        if status == .active, allStepsDone {
+            lines.append("- Every step is done: call propose_goal_complete with a short summary of the result.")
+        }
+        guard !lines.isEmpty else { return nil }
+        return "GOAL REVIEW (you are the goal owner, and this is your regular check):\n" + lines.joined(separator: "\n")
+            + "\nFor each submitted step: get the work onto your VM (git pull, or fetch their branch), run the check yourself, then "
+            + "update_goal_step done quoting what YOU saw, or set it back to inProgress with what's missing and @mention the member. "
+            + "For a blocked step, choose a way forward or ask the user. If, on checking, nothing needs you, finish silently."
+    }
+
+    /// Changes whenever a step moves between statuses, so a periodic owner check only repeats when something new
+    /// is waiting.
+    public var reviewSignature: String {
+        steps.map { "\($0.id):\($0.status.rawValue)" }.joined(separator: ",") + ":\(status.rawValue)"
+    }
+
     /// Step text without credentials pasted into URLs (`https://x-access-token:$GITHUB_TOKEN@github.com/...`),
     /// so a plan written that way doesn't keep teaching every member the blocked pattern.
     public static func displayText(_ text: String) -> String {

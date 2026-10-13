@@ -86,6 +86,13 @@ final class GroupChatSession: Identifiable {
     private var mirrorGeneration = 0
     private var goalPersistTask: Task<Void, Never>?
     private var confirmTimerTask: Task<Void, Never>?
+    /// The goal owner owes a review turn: something was submitted, checked in or blocked, or the periodic
+    /// check found steps waiting for validation (see `startOwnerReviewLoop`).
+    private var ownerReviewDue = false
+    private var ownerReviewTask: Task<Void, Never>?
+    private var lastOwnerReview = Date.distantPast
+    private var lastReviewedSignature = ""
+    static let ownerReviewInterval: TimeInterval = 240
 
     private let botDirectory: BotDirectory
 
@@ -107,6 +114,7 @@ final class GroupChatSession: Identifiable {
         // Existing history is not "new" to anyone on launch.
         for memberID in self.memberBotIDs { seenCount[memberID] = displayMessages.count }
         scheduleConfirmTimer()
+        startOwnerReviewLoop()
     }
 
     var config: GroupChat {
@@ -228,6 +236,7 @@ final class GroupChatSession: Identifiable {
     /// Stops all member workers (group deleted).
     func shutdown() {
         confirmTimerTask?.cancel()
+        ownerReviewTask?.cancel()
         goalPersistTask?.cancel()
         stopRelay()
         workers.values.forEach { $0.cancel() }
@@ -466,6 +475,17 @@ final class GroupChatSession: Identifiable {
                     maxBotMessages: stallLimit, goalStatus: goal?.status
                 )
             }
+            // The goal owner's review turn: validate submissions, unblock, or close the goal. It may stay
+            // silent if, on looking, nothing needs it.
+            var ownerReviewTurn = false
+            if ownerReviewDue, let live = goal, live.isLive, live.ownerBotID == botID, live.ownerReviewWork() != nil {
+                ownerReviewDue = false
+                ownerReviewTurn = true
+                lastOwnerReview = Date()
+                lastReviewedSignature = live.reviewSignature
+                if decision == .none || decision == .optional { decision = .mentionedByBot }
+                debugLog(bot, "goal review turn for the owner")
+            }
             let snapshot = displayMessages.count
             seenCount[botID] = snapshot
 
@@ -550,6 +570,7 @@ final class GroupChatSession: Identifiable {
             }
             if !isIntakeTurn, let live = goal, live.isLive {
                 extraSuffix = goalPrompt(for: live, botID: botID)
+                if ownerReviewTurn, let work = live.ownerReviewWork() { extraSuffix += "\n\n" + work }
             }
 
             // During a goal, a member nobody @mentioned with no step of its own has nothing to do
@@ -824,6 +845,30 @@ final class GroupChatSession: Identifiable {
         }
     }
 
+    /// Asks the owner to review now (or right after its current turn).
+    private func requestOwnerReview() {
+        guard let live = goal, live.isLive, live.ownerReviewWork() != nil,
+              let owner = members.first(where: { $0.id == live.ownerBotID }) else { return }
+        ownerReviewDue = true
+        wake(owner)
+    }
+
+    /// Every minute: if work is waiting for the owner and it's idle, give it a review turn. Repeats for the same
+    /// waiting work at most every 10 minutes; new submissions trigger one right away (`requestOwnerReview`).
+    private func startOwnerReviewLoop() {
+        ownerReviewTask?.cancel()
+        ownerReviewTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                guard let self, let live = self.goal, live.isLive, live.status == .active,
+                      live.ownerReviewWork() != nil, self.workers[live.ownerBotID] == nil else { continue }
+                let quiet = Date().timeIntervalSince(self.lastOwnerReview)
+                let changed = live.reviewSignature != self.lastReviewedSignature
+                if (changed && quiet > Self.ownerReviewInterval) || quiet > 600 { self.requestOwnerReview() }
+            }
+        }
+    }
+
     private func postSystem(_ text: String) {
         displayMessages.append(GroupMessage(speakerBotID: nil, speakerName: "Goal", text: text, isSystem: true))
         persist()
@@ -950,12 +995,14 @@ final class GroupChatSession: Identifiable {
             case .memberCheckedIn(let remaining):
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
                 postSystem("☑️ \(bot.name) checked in on step \(index) — waiting on \(remaining.joined(separator: ", ")).")
+                requestOwnerReview()
                 return ["ok": true, "counted_as_progress": true,
                         "note": "Your part is recorded. The step completes once \(remaining.joined(separator: ", ")) check in on their own VMs. @mention them if they haven't started; don't check in again.",
                         "goal": goalBlockText(g)]
             case .submitted:
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
                 postSystem("🔎 Step \(index) submitted by \(bot.name) — waiting for \(ownerName) to validate.")
+                requestOwnerReview()
                 return ["ok": true, "counted_as_progress": false,
                         "note": "Submitted for validation. Only \(ownerName) (the goal owner) can mark it done after re-checking it. @mention \(ownerName) with what to verify; do not mark it done again.",
                         "goal": goalBlockText(g)]
@@ -965,6 +1012,8 @@ final class GroupChatSession: Identifiable {
                         ? "Recorded, but NOT counted as progress: your evidence does not match anything the tools returned this turn. Quote the real output (a version, a path, a line) from a command you ran, then update again."
                         : "Recorded, but NOT counted as progress: no tool was run in this turn to back it up. Run a check and update again.")
                     : "Recorded."
+                // A member reporting a block needs the owner's decision.
+                if status == .blocked, !isOwner { requestOwnerReview() }
                 return ["ok": true, "counted_as_progress": false, "note": note, "goal": goalBlockText(g)]
             }
 

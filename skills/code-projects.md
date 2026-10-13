@@ -57,6 +57,8 @@ For anything beyond a one-line fix, load the skill for the stage you're in:
   it's done.
 - `code-review`: reviewing a teammate's change, or answering review.
 - `clean-and-secure-code`: readable code, untrusted input, secrets.
+- `git-essentials`: how to connect to GitHub, exact git commands, and what
+  git errors mean.
 - `git-teamwork`: branches, pull before push, merging with other bots.
 
 ## Work in small, checked steps

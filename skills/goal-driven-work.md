@@ -47,6 +47,13 @@ A step marked `[⏸] WAITING on step N` can't start until step N is done.
 - `update_goal_step` refuses to start or finish a waiting step.
 
 ## If you are the owner
+- You'll get a **goal review turn** whenever a member submits a step,
+  checks in or reports a block, and again every few minutes while
+  something is waiting. In it: pull the work onto your VM, run the check
+  yourself, then mark the step done (quoting what you saw) or send it
+  back with what's missing. Unblock blocked steps or ask the user. When
+  every step is done, call `propose_goal_complete`. If nothing needs you,
+  finish silently.
 - Mark which steps need others with `depends_on` (by step number), e.g.
   tests and the CLI both need the game logic in step 2:
   `depends_on: [{"step": 3, "after": [2]}, {"step": 4, "after": [2]}]`.
