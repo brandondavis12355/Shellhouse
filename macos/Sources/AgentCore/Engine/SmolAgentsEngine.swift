@@ -84,6 +84,7 @@ public actor SmolAgentsEngine: AgentEngine {
         onEvent: @escaping @Sendable (AgentRuntime.Event) -> Void = { _ in },
         requestApproval: @escaping @Sendable (Approval) async -> AgentRuntime.ApprovalDecision = { _ in .deny },
         alwaysRequireApproval: Bool = false,
+        actionReviewer: ActionReviewer? = nil,
         guardrails: GuardrailConfig = .standard,
         limits: RunLimits = RunLimits(),
         audit: AuditLog? = nil,
@@ -104,6 +105,7 @@ public actor SmolAgentsEngine: AgentEngine {
         self.gate = ToolGate(
             sandboxID: sandboxID, sandbox: sandbox, permissions: permissions, config: guardrails, limits: limits,
             audit: audit, inbox: inbox, initialTaint: sources, friendSafeTools: AgentRuntime.untrustedSafeTools,
+            reviewer: actionReviewer,
             requestApproval: requestApproval, onEvent: onEvent
         )
     }
@@ -123,6 +125,7 @@ public actor SmolAgentsEngine: AgentEngine {
     public func send(_ userMessage: String, images: [String] = []) async {
         let history = messages
         messages.append(ChatMessage(role: .user, content: userMessage, images: images.isEmpty ? nil : images))
+        await gate.setTask(userMessage)
         await runTurn(task: userMessage, history: history)
     }
 

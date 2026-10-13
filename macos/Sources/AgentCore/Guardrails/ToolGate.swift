@@ -25,6 +25,9 @@ public actor ToolGate {
     private let requestApproval: @Sendable (Approval) async -> AgentRuntime.ApprovalDecision
     private let onEvent: @Sendable (AgentRuntime.Event) -> Void
     private let friendSafeTools: Set<String>
+    private let reviewer: ActionReviewer?
+    /// The user's current request, for the reviewer.
+    private var task = ""
 
     private var taint: TaintState
     private var runGuard: RunGuard
@@ -45,9 +48,11 @@ public actor ToolGate {
         inbox: PendingInboxStore?,
         initialTaint: [TaintSource],
         friendSafeTools: Set<String>,
+        reviewer: ActionReviewer? = nil,
         requestApproval: @escaping @Sendable (Approval) async -> AgentRuntime.ApprovalDecision,
         onEvent: @escaping @Sendable (AgentRuntime.Event) -> Void
     ) {
+        self.reviewer = reviewer
         self.sandboxID = sandboxID
         self.sandbox = sandbox
         self.permissions = permissions
@@ -73,6 +78,8 @@ public actor ToolGate {
         browserEngaged = false
         taintVersion += 1
     }
+
+    public func setTask(_ text: String) { task = text }
 
     public func mark(_ source: TaintSource) {
         if taint.mark(source) { taintVersion += 1 }
@@ -169,6 +176,22 @@ public actor ToolGate {
                 return await prepareToRun(call, decision, outcome: "yolo_auto", askedHuman: false)
             }
 
+            // The fast model settles routine asks so bots can work on their own; anything it isn't sure of
+            // comes to the user with its reason.
+            var reviewNote: String?
+            if let reviewer, ActionReviewPrompt.isOn, ActionReviewPrompt.eligible(decision, friendInChat: taint.hasFriend) {
+                let request = ActionReviewRequest(
+                    tool: call.name, arguments: Self.json(call.arguments), reasons: decision.reasons,
+                    untrustedSources: taint.isTainted ? taint.sources.map(\.rawValue) : [], task: task
+                )
+                if let review = await reviewer(request) {
+                    if review.approve {
+                        return await prepareToRun(call, decision, outcome: "reviewer_auto", askedHuman: false)
+                    }
+                    reviewNote = "Fast-model reviewer wants your OK" + (review.reason.isEmpty ? "." : ": \(review.reason)")
+                }
+            }
+
             onEvent(.status(.waitingForApproval))
             let shownAt = Date()
             let versionAtPrompt = taintVersion
@@ -179,7 +202,7 @@ public actor ToolGate {
                 alwaysAllowCandidate: decision.grantable ? binary : nil,
                 untrusted: decision.tainted,
                 effect: decision.effect.rawValue,
-                reasons: decision.reasons + (yolo.reason.map { [$0] } ?? []),
+                reasons: (reviewNote.map { [$0] } ?? []) + decision.reasons + (yolo.reason.map { [$0] } ?? []),
                 strict: decision.isStrict,
                 argsDigest: ArgsDigest.digest(tool: call.name, arguments: call.arguments),
                 sources: taint.sources.map(\.rawValue),

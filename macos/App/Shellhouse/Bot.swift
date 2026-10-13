@@ -2295,6 +2295,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 }
             ,
                 alwaysRequireApproval: untrustedInput,
+                actionReviewer: makeActionReviewer(),
                 // A friend's text is in context: nothing that writes durable
                 // state is offered, so injected text can't plant a lasting
                 // instruction (memory, tasks, routines).
@@ -2910,6 +2911,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                         modelName: model,
                         onEvent: eventHandler,
                         requestApproval: approvalHandler,
+                        actionReviewer: makeActionReviewer(),
                         audit: AuditLog.shared,
                         inbox: PendingInboxStore.standard,
                         answerEndsTurnAfterTools: true
@@ -3294,7 +3296,42 @@ extension Bot {
         return SmolAgentsEngine(
             proxy: service.proxy, settings: settings, sandbox: sandbox, sandboxID: sandboxID, tools: tools,
             permissions: permissions, budgets: budgets, modelName: model, onEvent: onEvent,
-            requestApproval: requestApproval, audit: AuditLog.shared, inbox: PendingInboxStore.standard
+            requestApproval: requestApproval, actionReviewer: makeActionReviewer(), audit: AuditLog.shared,
+            inbox: PendingInboxStore.standard
         )
+    }
+
+    /// The fast-model approval reviewer (`ActionReviewPrompt`): settles routine approval asks so bots can
+    /// work on their own. nil from the closure (model down, unparsable reply) means the user is asked.
+    func makeActionReviewer() -> ActionReviewer {
+        { [weak self] request in
+            guard let self else { return nil }
+            let (backend, model) = await self.reviewerBackend()
+            let messages = [
+                ChatMessage(role: .system, content: ActionReviewPrompt.system),
+                ChatMessage(role: .user, content: ActionReviewPrompt.user(request)),
+            ]
+            let raw: String?
+            if let ollama = backend as? OllamaBackend {
+                raw = try? await ollama.chatStructured(messages: messages, model: model, schema: ActionReviewPrompt.schema)
+            } else {
+                raw = try? await backend.chat(messages: messages, tools: [], model: model, temperature: 0).message.content
+            }
+            let review = raw.flatMap(ActionReviewPrompt.parse)
+            await MainActor.run {
+                guard DebugSettings.shared.isEnabled else { return }
+                let verdict = review.map { $0.approve ? "auto-approved" : "asks you" } ?? "unavailable — asks you"
+                DebugLog.shared.log(bot: self.name, colorHex: self.colorHex, kind: .status, context: "guardrails",
+                                    text: "reviewer \(verdict): \(request.tool)" + (review.map { " — \($0.reason)" } ?? ""))
+            }
+            return review
+        }
+    }
+
+    /// The fast tier with a short timeout: a slow review would stall the bot more than a prompt does.
+    private func reviewerBackend() async -> (backend: any ModelBackend, model: String) {
+        guard modelProvider == .ollama else { return (await makeModelBackend(), selectedModel) }
+        let model = ModelTiers.cheapModel(main: selectedModel)
+        return (OllamaBackend(defaultModel: model, timeout: 30), model)
     }
 }

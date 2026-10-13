@@ -7,13 +7,23 @@ import AgentCore
 struct GuardrailSettingsSection: View {
     @AppStorage("guardrails.autoAllowReadOnlyShell") private var autoAllowReadOnlyShell = false
     @AppStorage("guardrails.yolo") private var yolo = false
+    @AppStorage(ActionReviewPrompt.settingKey) private var autoReview = true
     @State private var confirmingYolo = false
     @State private var entries: [AuditLog.Entry] = []
     @State private var verification: AuditLog.Verification?
 
     var body: some View {
-        CollapsibleSection("Guardrails", summary: yolo ? "YOLO on" : "Approvals on", storageKey: "guardrails") {
+        CollapsibleSection("Guardrails", summary: yolo ? "YOLO on" : (autoReview ? "Fast-model review on" : "Approvals on"), storageKey: "guardrails") {
             Card {
+                ToggleRow(
+                    title: "Let the fast model approve routine actions",
+                    subtitle: "Before an action asks you, the bot's fast model checks it against your request. Ordinary work (running and "
+                        + "testing code, installs, file changes in the workspace, cloning the repo you asked about) runs on its own; anything "
+                        + "that sends data out, publishes, deletes outside the workspace or looks unrelated still asks you, with the reason. "
+                        + "Hard blocks, strict approvals (secrets, sudo, typing passwords) and chats with friends always ask. On by default.",
+                    isOn: $autoReview
+                )
+                CardDivider()
                 ToggleRow(
                     title: "YOLO mode — don't ask for approval",
                     subtitle: "Bots run ordinary actions without a prompt: shell commands, file changes, installs. Still blocked or still asking: "
@@ -74,7 +84,7 @@ struct GuardrailSettingsSection: View {
         switch outcome {
         case "denied", "tripwire", "run_frozen", "denied_by_user", "approval_expired": return Theme.destructive
         case "quarantined": return Theme.warning
-        case "approved", "auto", "granted_binary", "granted_blanket", "yolo_auto": return Theme.positive
+        case "approved", "auto", "granted_binary", "granted_blanket", "yolo_auto", "reviewer_auto": return Theme.positive
         default: return .secondary
         }
     }

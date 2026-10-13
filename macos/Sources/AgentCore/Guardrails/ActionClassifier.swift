@@ -338,15 +338,19 @@ public enum ActionClassifier {
         case "create_bot":
             return Classification(findings: [Finding(.external, "tool.create_bot", "creates a new bot with its own sandbox", clean: .ask, tainted: .askStrict)])
 
-        case "update_user", "remember_task":
+        case "remember_task":
             return Classification(findings: [Finding(.state, "tool.\(tool)", "changes this bot's durable state", clean: .allow, tainted: .askStrict)])
 
-        case "propose_goal":
-            // Exempt from taint by the user's choice: a plan only lists steps inside this app, where
-            // everyone sees it, and each step's real action is still checked when it runs.
-            return Classification(findings: [Finding(.state, "tool.propose_goal", "proposes a goal plan", clean: .allow, tainted: .allow)])
+        case "update_user":
+            // Exempt from taint by the user's choice: a note into the user's own chat, which they read.
+            return Classification(findings: [Finding(.state, "tool.update_user", "posts a note to the user's own chat", clean: .allow, tainted: .allow)])
 
-        case "add_goal_step", "update_goal_step", "propose_goal_complete", "complete_task":
+        case "propose_goal", "add_goal_step", "update_goal_step", "propose_goal_complete":
+            // Exempt from taint by the user's choice: the goal checklist lives inside this app, where everyone
+            // sees it, and each step's real work is still checked when it runs.
+            return Classification(findings: [Finding(.state, "tool.\(tool)", "updates the group goal", clean: .allow, tainted: .allow)])
+
+        case "complete_task":
             return Classification(findings: [Finding(.state, "tool.\(tool)", "changes goals or tasks", clean: .allow, tainted: .ask)])
 
         case "list_bots", "list_tasks", "list_routines", "get_profile",

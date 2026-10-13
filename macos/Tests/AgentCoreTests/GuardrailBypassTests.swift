@@ -261,15 +261,15 @@ final class GuardrailBypassTests: XCTestCase {
     }
 
     func testBookkeepingWritesAreGatedWhenTainted() {
-        for tool in ["update_user", "remember_task", "remove_routine"] {
+        for tool in ["remember_task", "remove_routine"] {
             XCTAssertEqual(decide(tool, [:]).verdict, .allow, tool)
             XCTAssertEqual(decide(tool, [:], tainted: true).verdict, .askStrict, tool)
         }
-        for tool in ["add_goal_step", "update_goal_step", "propose_goal_complete", "complete_task"] {
-            XCTAssertGreaterThanOrEqual(decide(tool, [:], tainted: true).verdict, .ask, tool)
+        XCTAssertGreaterThanOrEqual(decide("complete_task", [:], tainted: true).verdict, .ask)
+        // Exempt by the user's choice: notes to the user and the goal checklist stay inside the app.
+        for tool in ["update_user", "propose_goal", "add_goal_step", "update_goal_step", "propose_goal_complete", "get_goal"] {
+            XCTAssertEqual(decide(tool, [:], tainted: true).verdict, .allow, tool)
         }
-        // Exempt by the user's choice: a plan only, and each step's action is still checked.
-        XCTAssertEqual(decide("propose_goal", [:], tainted: true).verdict, .allow)
     }
 
     func testZReportAttemptCount() {

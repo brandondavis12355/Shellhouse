@@ -294,6 +294,7 @@ public actor AgentRuntime {
         onEvent: @escaping @Sendable (Event) -> Void = { _ in },
         requestApproval: @escaping @Sendable (Approval) async -> ApprovalDecision = { _ in .deny },
         alwaysRequireApproval: Bool = false,
+        actionReviewer: ActionReviewer? = nil,
         excludedTools: Set<String> = [],
         guardrails: GuardrailConfig = .standard,
         limits: RunLimits = RunLimits(),
@@ -312,6 +313,7 @@ public actor AgentRuntime {
         self.gate = ToolGate(
             sandboxID: sandboxID, sandbox: sandbox, permissions: permissions, config: guardrails, limits: limits,
             audit: audit, inbox: inbox, initialTaint: sources, friendSafeTools: Self.untrustedSafeTools,
+            reviewer: actionReviewer,
             requestApproval: requestApproval, onEvent: onEvent
         )
         self.model = model
@@ -360,6 +362,7 @@ public actor AgentRuntime {
             ChatMessage(role: .user, content: goal),
         ]
         currentGoal = goal
+        await gate.setTask(goal)
         toolCallsThisTurn = 0
         plan = []
         finishGuardUsed = false
@@ -377,6 +380,7 @@ public actor AgentRuntime {
     public func send(_ userMessage: String, images: [String] = []) async {
         messages.append(ChatMessage(role: .user, content: userMessage, images: images.isEmpty ? nil : images))
         currentGoal = userMessage
+        await gate.setTask(userMessage)
         toolCallsThisTurn = 0
         plan = []
         finishGuardUsed = false
