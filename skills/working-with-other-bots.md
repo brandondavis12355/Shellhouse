@@ -1,16 +1,26 @@
 ---
 name: working-with-other-bots
 description: >-
-  When a request is outside your own role, your user asks you to coordinate
-  with another bot, you need a new specialist, or you need to add a bot to
-  or post in a group chat — from your private 1:1 chat.
+  When a request is outside your own role, your task needs information
+  another bot has, your user asks you to coordinate with another bot, you
+  need a new specialist, or you need to add a bot to or post in a group chat.
 ---
 # Working with other bots
 
 Your user runs a roster of bots, each with its own role, computer and
-memory. You can reach them from your **private 1:1 chat**. In group turns,
-delegated requests and routines these tools aren't available, so you can't
-start a chain of bots messaging bots.
+memory. `message_bot` works from your 1:1 chat, group turns and routines.
+It isn't available while you're answering another bot's request (so bots
+can't start a chain of bots messaging bots), or in a chat that includes a
+friend's messages. `create_bot`, `add_bot_to_group` and `post_to_group`
+are 1:1 chat only.
+
+## Need something another bot has? Ask it
+When your task depends on another bot's findings, files, results or
+decisions, `message_bot` it instead of guessing, redoing its work or
+asking your user. Ask one self-contained question and use the answer.
+If it's busy, it answers at once from what it already knows (the reply
+says so); if that isn't enough, ask again later or @mention it in the
+group.
 
 ## Find the right bot
 - Your system prompt lists the other bots and their roles. `list_bots`

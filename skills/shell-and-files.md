@@ -94,6 +94,11 @@ do the job. Paths are relative to `/workspace`.
   says `cancelled`, don't ask again; tell your user what's blocked.
 - Name things clearly and reuse names: if a secret is already saved, your
   user can keep it without retyping.
+- **Need to sign in somewhere? Call `request_login(service, reason, site)`**
+  instead: a sign-in card with Username and Password, saved as
+  `<SERVICE>_USERNAME` and `<SERVICE>_PASSWORD` (e.g. `JIRA_PASSWORD`).
+  The username comes back to you; the password never does. Give the real
+  sign-in domain as `site` so your user can check it.
 - Use one with `run_shell(command, use_secrets: ["GITHUB_TOKEN"])`. It's
   available to that one command as the environment variable
   `$GITHUB_TOKEN`.

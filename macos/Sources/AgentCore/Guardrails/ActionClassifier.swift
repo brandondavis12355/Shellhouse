@@ -293,7 +293,7 @@ public enum ActionClassifier {
             // so it asks once untrusted content has been seen.
             let long = text.count > 256
             // Text typed into a terminal window is a command: judge it as one.
-            let typed = classifyShell(text, config: config).findings.filter { $0.clean >= .askStrict }
+            let typed = classifyShell(text, config: config, viaShellTool: false).findings.filter { $0.clean >= .askStrict }
             return Classification(findings: typed + [Finding(.ui, "tool.type_text", long ? "types a long text block into the desktop" : "types into the desktop",
                                                      clean: .allow, tainted: long ? .ask : .allow)])
 
@@ -303,8 +303,8 @@ public enum ActionClassifier {
             return Classification(findings: [Finding(.credential, "tool.type_secret", "types a saved secret into a desktop window",
                                                      clean: .askStrict, tainted: .askStrict)])
 
-        case "request_credentials":
-            return Classification(findings: [Finding(.observe, "tool.request_credentials", "asks the user for credentials in their own chat",
+        case "request_credentials", "request_login":
+            return Classification(findings: [Finding(.observe, "tool.\(tool)", "asks the user for credentials in their own chat",
                                                      clean: .allow, tainted: .allow)])
 
         case "open_app":
@@ -329,8 +329,9 @@ public enum ActionClassifier {
             return Classification(findings: [Finding(.state, "tool.remove_routine", "removes a routine", clean: .allow, tainted: .askStrict)])
 
         case "message_bot":
-            // Hands text to another agent: injected instructions would travel with it.
-            return Classification(findings: [Finding(.external, "tool.message_bot", "delegates text to another bot", clean: .allow, tainted: .askStrict)])
+            // Hands text to another agent: injected instructions could travel with it, so the recipient's run
+            // starts untrusted too (Bot.delegateToBot), and the reviewer checks the message in an untrusted run.
+            return Classification(findings: [Finding(.external, "tool.message_bot", "delegates text to another bot", clean: .allow, tainted: .ask)])
 
         case "post_to_group", "add_bot_to_group":
             return Classification(findings: [Finding(.external, "tool.\(tool)", "posts to or changes a group (may be shared with friends)", clean: .allow, tainted: .askStrict)])
@@ -624,7 +625,22 @@ public enum ActionClassifier {
     static let installers: Set<String> = ["pip", "pip3", "pipx", "npm", "yarn", "pnpm", "npx", "uvx", "bunx", "pnpx", "apt", "apt-get", "dpkg", "gem", "cargo", "go", "brew", "snap", "flatpak", "conda", "uv", "bun", "deno"]
     static let systemModifiers: Set<String> = ["mkfs", "mkfs.ext4", "mkfs.ext3", "mkfs.xfs", "mkfs.btrfs", "mkfs.vfat", "mkswap", "wipefs", "fdisk", "sfdisk", "cfdisk", "parted", "gdisk", "shred", "blkdiscard", "losetup", "cryptsetup"]
 
-    public static func classifyShell(_ command: String, usesSecrets: Bool = false, config: GuardrailConfig = .standard) -> Classification {
+    /// Printable ASCII, every `rm` visible as the literal word `rm`, and none of the constructs used to hide
+    /// a command (empty quotes, `$'...'`, backslash escapes, functions, heredocs, `time`).
+    static func isPlainlyTyped(_ command: String, analysis: ShellAnalysis) -> Bool {
+        guard command.unicodeScalars.allSatisfy({ ($0.value >= 0x20 && $0.value < 0x7F) || $0 == "\n" || $0 == "\t" }) else { return false }
+        guard !analysis.hasFunctionDefinition, !analysis.hasHeredoc else { return false }
+        for marker in ["''", "\"\"", "$'", "\\", "time ", "function "] where command.contains(marker) { return false }
+        let visibleRm = command.components(separatedBy: CharacterSet(charactersIn: ";&|\n(")).filter {
+            $0.trimmingCharacters(in: .whitespaces).hasPrefix("rm ")
+        }.count
+        let rmCommands = analysis.commands.filter { $0.program == "rm" }.count
+        return visibleRm == rmCommands
+    }
+
+    /// `viaShellTool` false: text typed into a terminal window, which skips the trash backup, so no delete is relaxed.
+    public static func classifyShell(_ command: String, usesSecrets: Bool = false, config: GuardrailConfig = .standard,
+                                     viaShellTool: Bool = true) -> Classification {
         var findings: [Finding] = []
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -687,6 +703,15 @@ public enum ActionClassifier {
         }
         for cmd in analysis.commands {
             findings += classifyCommand(cmd, analysis: analysis, config: config)
+        }
+        // The relaxed workspace delete is only for a delete written plainly. Quoting tricks, escapes, odd
+        // characters, functions and heredocs are how a delete gets disguised, so those stay strict.
+        if findings.contains(where: { $0.rule == "write.rm_workspace" }), !viaShellTool || !Self.isPlainlyTyped(trimmed, analysis: analysis) {
+            findings = findings.map { finding in
+                guard finding.rule == "write.rm_workspace" else { return finding }
+                return Finding(.destructive, "destroy.rm_recursive", "recursive delete", clean: .askStrict, tainted: .deny,
+                               checkpointPaths: finding.checkpointPaths)
+            }
         }
 
         if findings.isEmpty {
@@ -772,6 +797,18 @@ public enum ActionClassifier {
             out.append((a, i))
         }
         return out
+    }
+
+    /// `sudo apt-get install -y x`, `sudo apt update`: package work from the distro's own signed repositories.
+    static func isDistroPackageInstall(name: String, args: [String], wrapped: Bool) -> Bool {
+        let words = args.filter { !$0.hasPrefix("-") }
+        let apt: Set<String> = ["apt", "apt-get"]
+        let verbs: Set<String> = ["install", "update", "upgrade"]
+        if apt.contains(name) { return wrapped && words.first.map(verbs.contains) == true }
+        guard name == "sudo", words.count >= 2, apt.contains(words[0]) else { return false }
+        // Only plain sudo: no -u other user, -s shell, -E environment.
+        guard !args.contains(where: { ["-u", "-s", "-i", "-E", "--preserve-env"].contains($0) || $0.hasPrefix("--preserve-env=") }) else { return false }
+        return verbs.contains(words[1])
     }
 
     static func classifyCommand(_ cmd: ShellCommand, analysis: ShellAnalysis, config: GuardrailConfig) -> [Finding] {
@@ -869,7 +906,12 @@ public enum ActionClassifier {
 
         // Privilege.
         if privilege.contains(name) || cmd.wrappers.contains(where: privilege.contains) {
-            out.append(Finding(.credential, "exec.privilege", "elevates privileges (\(name))", clean: .askStrict, tainted: .deny))
+            if Self.isDistroPackageInstall(name: name, args: args, wrapped: !cmd.wrappers.isEmpty) {
+                // Debian's own signed repositories: routine for a coding VM, so the reviewer may settle it.
+                out.append(Finding(.exec, "exec.privilege_apt", "installs Debian packages as root", clean: .ask, tainted: .ask))
+            } else {
+                out.append(Finding(.credential, "exec.privilege", "elevates privileges (\(name))", clean: .askStrict, tainted: .deny))
+            }
         }
         if miners.contains(name) { out.append(Finding(.credential, "exec.miner", "cryptocurrency miner", clean: .deny, tainted: .deny)) }
         if hackTools.contains(name) { out.append(Finding(.credential, "exec.offensive_tool", "offensive security tool (\(name))", clean: .askStrict, tainted: .deny)) }
@@ -891,7 +933,8 @@ public enum ActionClassifier {
             out.append(Finding(.credential, "security.system", "\(name) runs commands indirectly or inspects other processes", clean: .askStrict, tainted: .deny))
 
         case "rm", "rmdir", "unlink":
-            out += classifyRemove(name: name, args: args, dyn: dyn, config: config)
+            out += classifyRemove(name: name, args: args, dyn: dyn, config: config,
+                                  direct: Self.isSimpleCommandLine(analysis) && cmd.wrappers.isEmpty && !cmd.viaXargs && !cmd.viaFindExec)
 
         case "dd":
             let of = args.first { $0.hasPrefix("of=") }
@@ -1009,8 +1052,8 @@ public enum ActionClassifier {
                 out.append(Finding(.observe, "read.gh_local", "GitHub CLI status or version", clean: .allow, tainted: .allow))
             } else if ["pr", "issue", "release", "repo", "workflow", "gist", "api", "secret", "variable"].contains(sub) {
                 let verbs = Set(operandList.map(\.0))
-                if !verbs.isDisjoint(with: ["list", "view", "status", "diff", "checks", "download", "get"]) && verbs.isDisjoint(with: ["create", "delete", "merge", "close", "edit", "comment", "set", "upload", "run", "-X"]) && sub != "api" {
-                    out.append(Finding(.network, "network.gh_read", "reads from GitHub", clean: .ask, tainted: .askStrict))
+                if !verbs.isDisjoint(with: ["list", "view", "status", "diff", "checks", "download", "get", "clone"]) && verbs.isDisjoint(with: ["create", "delete", "merge", "close", "edit", "comment", "set", "upload", "run", "-X"]) && sub != "api" {
+                    out.append(Finding(.network, "network.gh_read", "reads from GitHub", clean: .ask, tainted: .ask))
                 } else {
                     out.append(Finding(.external, "external.gh_write", "changes something on GitHub", clean: .askStrict, tainted: .deny))
                 }
@@ -1127,7 +1170,22 @@ public enum ActionClassifier {
 
     // MARK: rm
 
-    static func classifyRemove(name: String, args: [String], dyn: [Bool], config: GuardrailConfig) -> [Finding] {
+    /// Nothing in the whole command line is hidden or indirect: no shells or interpreters running a payload,
+    /// no wrappers, `xargs`, `find -exec`, `eval`, substitutions or anything unresolved.
+    static func isSimpleCommandLine(_ analysis: ShellAnalysis) -> Bool {
+        let indirect: Set<String> = ["sh", "bash", "zsh", "dash", "ksh", "fish", "busybox", "eval", "exec", "source", ".", "xargs",
+                                     "parallel", "find", "su", "sudo", "doas", "env", "nohup", "nice", "timeout", "watch", "trap",
+                                     "python", "python3", "perl", "ruby", "node", "awk", "systemd-run", "setsid", "strace", "time"]
+        guard analysis.unresolved.isEmpty, analysis.opaque.isEmpty, !analysis.hasCommandSubstitution else { return false }
+        return analysis.commands.allSatisfy { cmd in
+            guard let program = cmd.program, !cmd.programIsDynamic, cmd.wrappers.isEmpty, !cmd.viaXargs, !cmd.viaFindExec,
+                  !cmd.argsAreDynamic else { return false }
+            let name = (program as NSString).lastPathComponent
+            return !indirect.contains(name) && !program.contains("/")
+        }
+    }
+
+    static func classifyRemove(name: String, args: [String], dyn: [Bool], config: GuardrailConfig, direct: Bool = false) -> [Finding] {
         var out: [Finding] = []
         let recursive = hasFlag(args, short: ["r", "R"], long: ["recursive"]) || name == "rmdir" && false
         let targets = operands(args)
@@ -1145,7 +1203,21 @@ public enum ActionClassifier {
                 out.append(Finding(.destructive, "destroy.rm_outside", "deletes outside the workspace (\(n))", clean: .askStrict, tainted: .deny))
             }
         }
-        if wide {
+        // Everything inside the bot's own writable area, nothing computed at run time: a copy goes to the
+        // workspace trash before it runs, so it's recoverable and the reviewer may settle it.
+        // Plain `rm -rf build node_modules` typed directly: literal paths only (no globs or braces), nothing
+        // that rewrites history (.git) or the trash itself.
+        let contained = direct && !paths.isEmpty && paths.count == targets.count
+            && targets.allSatisfy { value, _ in !value.contains(where: { "*?[]{}$`".contains($0) }) }
+            && paths.allSatisfy { path in
+                path.hasPrefix(config.cwd + "/") && !path.hasPrefix(config.cwd + "/.shellhouse")
+                    && !path.split(separator: "/").contains(".git") && !path.split(separator: "/").contains("..")
+            }
+            && !out.contains(where: { $0.rule == "destroy.rm_dynamic" || $0.rule == "destroy.rm_protected" || $0.rule == "destroy.rm_outside" })
+        if (wide || targets.count > 3), contained {
+            out.append(Finding(.reversibleWrite, "write.rm_workspace", "deletes inside the workspace (backed up to the trash first)",
+                               clean: .ask, tainted: .ask, checkpointPaths: paths))
+        } else if wide {
             out.append(Finding(.destructive, "destroy.rm_recursive", recursive ? "recursive delete" : "delete with wildcards",
                                clean: .askStrict, tainted: .deny, checkpointPaths: paths))
         } else if targets.count > 3 {
@@ -1157,6 +1229,18 @@ public enum ActionClassifier {
     }
 
     // MARK: git
+
+    /// `git push origin feature/x`: an explicit branch that isn't main/master/HEAD. A bare `git push` might
+    /// publish to main, so it isn't one.
+    static func pushTargetsWorkingBranch(_ rest: [String]) -> Bool {
+        let words = rest.filter { !$0.hasPrefix("-") && $0 != "push" }
+        guard words.count >= 2 else { return false }
+        let protected: Set<String> = ["main", "master", "head", "trunk", "production", "prod", "release"]
+        return words.dropFirst().allSatisfy { ref in
+            let target = (ref.split(separator: ":").last.map(String.init) ?? ref).replacingOccurrences(of: "refs/heads/", with: "")
+            return !target.isEmpty && !protected.contains(target.lowercased()) && !target.contains("$")
+        }
+    }
 
     static func classifyGit(args: [String], dyn: [Bool], config: GuardrailConfig) -> [Finding] {
         let blob = args.joined(separator: " ")
@@ -1214,7 +1298,9 @@ public enum ActionClassifier {
             let force = rest.contains(where: { $0 == "-f" || $0.hasPrefix("--force") || $0 == "--mirror" || $0 == "--delete" || $0 == "-d" || $0.hasPrefix("+") || $0.hasPrefix(":") })
             return force
                 ? [Finding(.destructive, "destroy.git_push_force", "force-push / delete remote ref rewrites shared history", clean: .askStrict, tainted: .deny)]
-                : [Finding(.external, "external.git_push", "publishes commits to a remote", clean: .askStrict, tainted: .deny)]
+                : Self.pushTargetsWorkingBranch(rest)
+                    ? [Finding(.external, "external.git_push", "publishes commits to a remote branch", clean: .ask, tainted: .askStrict)]
+                    : [Finding(.external, "external.git_push_main", "publishes commits to main or the current branch", clean: .askStrict, tainted: .deny)]
         case "reset":
             return flagSet.contains("--hard") || flagSet.contains("--merge") || flagSet.contains("--keep")
                 ? [Finding(.destructive, "destroy.git_reset", "git reset --hard discards work", clean: .askStrict, tainted: .deny)]

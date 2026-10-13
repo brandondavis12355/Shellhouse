@@ -80,9 +80,18 @@ final class GuardrailTests: XCTestCase {
     // MARK: destructive
 
     func testRecursiveAndWildcardDeletesAreStrictAndDeniedWhenTainted() {
-        for cmd in ["rm -rf build", "rm -r dir", "rm -fr dir", "rm -Rf dir", "rm --recursive dir", "rm -rf *", "rm *.log", "rm -f a b c d e"] {
+        for cmd in ["rm -rf /srv/build", "rm -r /srv/dir", "rm -rf *", "rm *.log", "rm -rf ../other", "rm -rf /workspace/.git", "rm -rf .shellhouse"] {
             XCTAssertEqual(shell(cmd), .askStrict, cmd)
             XCTAssertEqual(shell(cmd, tainted: true), .deny, cmd)
+        }
+    }
+
+    /// A plainly typed delete of literal paths inside /workspace is backed up to the trash first, so the
+    /// fast-model reviewer may settle it, one call at a time (never a standing grant).
+    func testPlainWorkspaceDeletesGoToTheReviewer() {
+        for cmd in ["rm -rf build", "rm -r dir", "rm -fr dir", "rm -Rf dir", "rm --recursive dir", "rm -f a b c d e", "rm -rf node_modules dist"] {
+            XCTAssertEqual(shell(cmd), .ask, cmd)
+            XCTAssertEqual(shell(cmd, tainted: true), .ask, cmd)
         }
     }
 
@@ -100,7 +109,7 @@ final class GuardrailTests: XCTestCase {
 
     func testHiddenCommandsAreClassifiedByTheirPayload() {
         for cmd in [
-            "echo hi && rm -rf x", "ls; rm -rf x", "ls $(rm -rf x)", "ls `rm -rf x`", "sh -c 'rm -rf x'", "bash -lc \"rm -rf x\"",
+            "echo hi && rm -rf /srv/x", "ls; rm -rf /srv/x", "ls $(rm -rf x)", "ls `rm -rf x`", "sh -c 'rm -rf x'", "bash -lc \"rm -rf x\"",
             "sudo rm -rf x", "env A=1 rm -rf x", "nohup rm -rf x &", "find . -name '*.tmp' -exec rm -rf {} +", "ls | xargs rm -rf",
             "eval 'rm -rf x'", "echo x | sh -c 'rm -rf y'", "timeout 5 rm -rf x", "find . -delete",
         ] {
@@ -280,7 +289,8 @@ final class GuardrailTests: XCTestCase {
 
     func testDelegationAndGroupPostsAreStrictWhenTainted() {
         XCTAssertEqual(decide("message_bot", ["to": "b", "message": "m"]).verdict, .allow)
-        XCTAssertEqual(decide("message_bot", ["to": "b", "message": "m"], tainted: true).verdict, .askStrict)
+        // The recipient's run starts untrusted too, so the reviewer checks the message instead of the user.
+        XCTAssertEqual(decide("message_bot", ["to": "b", "message": "m"], tainted: true).verdict, .ask)
         XCTAssertEqual(decide("post_to_group", ["group_name": "g", "message": "m"], tainted: true).verdict, .askStrict)
     }
 

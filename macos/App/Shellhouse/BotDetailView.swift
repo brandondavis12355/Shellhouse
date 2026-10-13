@@ -1,38 +1,60 @@
 import SwiftUI
+import LocalAuthentication
 import AppKit
 import UniformTypeIdentifiers
 import AgentCore
 import AgentUI
 
-/// A bot asking for credentials (`request_credentials`). Secret fields are secure text fields whose
-/// values go straight to the Keychain; the bot only ever learns their names.
+/// A bot asking for credentials (`request_credentials`) or a sign-in (`request_login`). Secret fields are
+/// secure text fields (macOS turns on Secure Keyboard Entry while one has focus); values go straight to the
+/// Keychain, the bot only ever learns their names, and nothing is saved until the person at the Mac confirms
+/// with Touch ID or their password. Typed values are dropped whenever the card goes away.
 struct CredentialRequestCard: View {
     let botName: String
     let pending: PendingCredentialRequest
     let onAnswer: ([String: String]?) -> Void
     @State private var values: [String: String] = [:]
+    @State private var authError: String?
+    @State private var authenticating = false
 
     private var fields: [CredentialRequest.Field] { pending.request.fields }
 
-    private func isSaved(_ field: CredentialRequest.Field) -> Bool { field.secret && pending.savedNames.contains(field.name) }
+    private func isSaved(_ field: CredentialRequest.Field) -> Bool { pending.savedNames.contains(field.name) }
 
     private var canSubmit: Bool {
-        fields.allSatisfy { !(values[$0.name] ?? "").isEmpty || isSaved($0) }
+        !authenticating && fields.allSatisfy { !(values[$0.name] ?? "").isEmpty || isSaved($0) }
+    }
+
+    private var title: String {
+        if case .login(let service, _) = pending.request.kind { return "\(botName) wants to sign in to \(service)" }
+        return "\(botName) needs credentials"
+    }
+
+    private var site: String? {
+        if case .login(_, let site) = pending.request.kind { return site }
+        return nil
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "key.fill")
+                Image(systemName: site != nil || isLogin ? "person.badge.key.fill" : "key.fill")
                     .imageScale(.large)
                     .foregroundStyle(Theme.accent)
-                Text("\(botName) needs credentials").font(.system(size: 17, weight: .semibold))
+                Text(title).font(.system(size: 17, weight: .semibold))
             }
-            Text(pending.request.reason)
-                .font(.system(size: 14))
-                .textSelection(.enabled)
+            if let site {
+                Label(site, systemImage: "globe")
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    .textSelection(.enabled)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(botName) says:").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(pending.request.reason).font(.system(size: 14)).textSelection(.enabled)
+            }
             if pending.untrusted {
-                Label("This chat has read untrusted content (a web page or someone else's message). Make sure this request is what you expect before filling it in.",
+                Label("\(botName) has read untrusted content (a web page, a download or someone else's message), which could have "
+                      + "prompted this. Only continue if you asked it to do this.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.warning)
@@ -43,27 +65,33 @@ struct CredentialRequestCard: View {
                         Text(field.label).font(.system(size: 13, weight: .medium))
                         Text(field.name).font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
                     }
-                    let binding = Binding(get: { values[field.name] ?? "" }, set: { values[field.name] = $0 })
+                    let binding = Binding(get: { values[field.name] ?? "" }, set: { values[field.name] = $0; authError = nil })
                     let prompt = isSaved(field) ? "Saved — leave blank to keep it" : field.label
                     Group {
                         if field.secret {
                             SecureField(prompt, text: binding)
                         } else {
                             TextField(prompt, text: binding)
+                                .autocorrectionDisabled()
                         }
                     }
                     .textContentType(field.secret ? .password : .username)
                     .themedField()
-                    .onSubmit { if canSubmit { submit() } }
+                    .onSubmit { if canSubmit { authenticateThenSubmit() } }
                 }
             }
-            Label("Secrets are saved to this Mac's Keychain. \(botName) can use them but never sees them.", systemImage: "lock.fill")
+            Label("Saved only in this Mac's Keychain (not synced or backed up). \(botName) can use "
+                  + (isLogin ? "the password" : "secrets") + " but never sees them. You'll confirm with Touch ID or your password.",
+                  systemImage: "lock.fill")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
+            if let authError {
+                Text(authError).font(.system(size: 12)).foregroundStyle(Theme.destructive)
+            }
             HStack(spacing: 8) {
                 Spacer()
-                Button("Decline") { onAnswer(nil) }
-                Button("Save and continue") { submit() }
+                Button("Decline") { wipe(); onAnswer(nil) }
+                Button("Save and continue") { authenticateThenSubmit() }
                     .buttonStyle(.primaryPill)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canSubmit)
@@ -71,13 +99,41 @@ struct CredentialRequestCard: View {
         }
         .padding(16)
         .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+        .onDisappear { wipe() }
     }
 
-    private func submit() {
-        let answer = values
-        values = [:]
-        onAnswer(answer)
+    private var isLogin: Bool {
+        if case .login = pending.request.kind { return true }
+        return false
     }
+
+    /// Device-owner authentication first: whatever filled the form, a person at this Mac decides it's saved.
+    private func authenticateThenSubmit() {
+        guard canSubmit else { return }
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+            authError = "Couldn't confirm it's you (\(error?.localizedDescription ?? "no authentication available")), so nothing was saved."
+            return
+        }
+        authenticating = true
+        let what = site.map { "save sign-in details for \($0)" } ?? "save credentials for \(botName)"
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: what) { ok, failure in
+            DispatchQueue.main.async {
+                authenticating = false
+                guard ok else {
+                    authError = "Not saved: " + (failure?.localizedDescription ?? "authentication was cancelled") + "."
+                    return
+                }
+                let answer = values
+                wipe()
+                onAnswer(answer)
+            }
+        }
+    }
+
+    /// Drops the typed values from the view's state (Swift can't zero a String's memory; this keeps them from lingering).
+    private func wipe() { values = [:] }
 }
 
 /// Sits inline in the chat flow — right after the transcript, right before

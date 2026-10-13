@@ -1450,7 +1450,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// recipient's own chat is untouched by any of this.
     static let delegationBootWaitSeconds = 90
 
-    func delegateToBot(named name: String, message: String) async -> [String: Any] {
+    func delegateToBot(named name: String, message: String, quickIfBusy: Bool = false, senderTainted: Bool = false) async -> [String: Any] {
         guard let recipient = botDirectory.bot(named: name, excluding: id) else {
             return ["error": "No other bot named '\(name)'. Use list_bots to see who's available."]
         }
@@ -1476,7 +1476,13 @@ final class Bot: Identifiable, @unchecked Sendable {
         ))
         persistTranscript()
 
-        let (reply, replyTainted) = await recipient.handleDelegatedTask(fromBotName: self.name, message: message)
+        // From a group turn or routine, the sender is itself mid-run. If the recipient is busy too, waiting for
+        // its run could deadlock (two bots waiting on each other) or stall the group, so it answers right
+        // away from what it already knows instead.
+        let answeredQuickly = quickIfBusy && recipient.isBusy
+        let (reply, replyTainted) = answeredQuickly
+            ? await recipient.answerFromWhatIKnow(fromBotName: self.name, question: message, senderTainted: senderTainted)
+            : await recipient.handleDelegatedTask(fromBotName: self.name, message: message, senderTainted: senderTainted)
         InterBotStore.append(InterBotMessage(fromBotID: recipient.id, fromBotName: recipient.name, toBotID: id, toBotName: self.name, text: reply))
 
         // Written to BOTH sides' own durable memory (`remember`'s same
@@ -1501,7 +1507,12 @@ final class Bot: Identifiable, @unchecked Sendable {
             recipient.addMemory("\(self.name) asked me: \"\(Self.truncatedForMemory(message))\" — I answered: \"\(Self.truncatedForMemory(reply))\"", source: "delegation")
         }
 
-        return ["from": recipient.name, "reply": reply, "_tainted": replyTainted]
+        var result: [String: Any] = ["from": recipient.name, "reply": reply, "_tainted": replyTainted]
+        if answeredQuickly {
+            result["note"] = "\(recipient.name) was busy with another task, so this answer comes from what it already knew "
+                + "(no new commands were run). If you need it to check or do something, ask again once it's free, or @mention it in the group."
+        }
+        return result
     }
 
     private static func truncatedForMemory(_ text: String, limit: Int = 160) -> String {
@@ -1626,11 +1637,30 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// Waits behind whatever else this bot is currently doing (own chat,
     /// another delegation, a group turn) — see `runIsolatedTask`'s run
     /// lock — before it actually starts.
-    func handleDelegatedTask(fromBotName senderName: String, message: String) async -> (text: String, tainted: Bool) {
+    /// Answers another bot's question without a run (and without this bot's run lock): one fast-model call
+    /// over what it already knows — role, memory, tasks, routines and its latest tool results.
+    func answerFromWhatIKnow(fromBotName senderName: String, question: String, senderTainted: Bool = false) async -> (text: String, tainted: Bool) {
+        var context = standupContext()
+        if !lastTurnObservations.isEmpty {
+            context += "\n\nWHAT YOUR TOOLS RETURNED IN YOUR LATEST RUN:\n" + EvidenceDigest.digest(lastTurnObservations, limit: 2_500)
+        }
+        let instruction = "\(senderName), another bot, asks: \"\(String(question.prefix(1_500)))\". You're busy with another task, so "
+            + "answer from what you already know (below) in a few lines. Only state what the records show; if they don't "
+            + "cover it, say so plainly and suggest asking again when you're free."
+        let reply = await quickReplyInGroup(groupName: "a direct question", otherMembers: [senderName], transcript: "",
+                                            instruction: instruction, extraContext: context, style: "a short, factual answer")
+        let ownTaint = await runtime?.isTainted ?? false
+        let tainted = senderTainted || ownTaint
+        return (reply ?? "(\(name) is busy with another task and couldn't answer from what it knows; ask again shortly.)", tainted)
+    }
+
+    func handleDelegatedTask(fromBotName senderName: String, message: String, senderTainted: Bool = false) async -> (text: String, tainted: Bool) {
         let suffix = "You're handling this as a delegated request from another bot (\(senderName)), not a "
             + "direct message from your own user. Answer it directly and completely — \(senderName) will "
             + "relay your answer back to their user."
-        let result = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: message, debugContext: "delegated from \(senderName)")
+        // A request from a bot that has read untrusted content may carry injected instructions: this run starts untrusted too.
+        let result = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: message, debugContext: "delegated from \(senderName)",
+                                                 initialTaint: senderTainted ? [.peerBot] : [])
         return (result.text, result.tainted)
     }
 
@@ -1868,7 +1898,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         // tool results, instead of a fresh run that repeats all of the work.
         var outcome = await runIsolatedTaskResult(
             systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler,
-            untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn,
+            untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn, allowBotMessaging: true,
             onDraft: onDraft,
             followUp: { [weak self] result in
                 guard let self, !result.failed else { return nil }
@@ -1955,7 +1985,8 @@ final class Bot: Identifiable, @unchecked Sendable {
             + "a directed action you scheduled yourself, not a passive turn, so don't skip or stay silent."
         let goal = "Your scheduled instruction: \(instruction)"
             + (transcriptSoFar.isEmpty ? "" : "\n\n---\n\nRecent conversation in the group, for context:\n\(transcriptSoFar)")
-        let outcome = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: goal, debugContext: "routine → group: \(groupName)")
+        let outcome = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: goal, debugContext: "routine → group: \(groupName)",
+                                                  allowBotMessaging: true)
         if outcome.failed { return nil }
         let reply = outcome.text
         let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2092,6 +2123,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
         untrustedInput: Bool = false,
         plainReplyEndsTurn: Bool = false,
+        allowBotMessaging: Bool = false,
+        initialTaint: [TaintSource] = [],
         onDraft: (@MainActor (String?) -> Void)? = nil,
         followUp: (@MainActor (IsolatedResult) async -> String?)? = nil
     ) async -> IsolatedResult {
@@ -2152,6 +2185,21 @@ final class Bot: Identifiable, @unchecked Sendable {
                 Task { @MainActor in onDraft(text) }
             }
             let taintProbe = RuntimeProbe()
+            // Asking another bot for information mid-task. Not from a delegated request (no chains), and not
+            // with a friend's text in context. A busy recipient answers from what it already knows.
+            let messagingAllowed = allowBotMessaging && !untrustedInput
+            var listBotsForRun: (@Sendable () async -> [[String: Any]])?
+            var messageBotForRun: (@Sendable (String, String) async -> [String: Any])?
+            if messagingAllowed {
+                listBotsForRun = { [weak self] in
+                    await MainActor.run { self?.listOtherBots() ?? [] }
+                }
+                messageBotForRun = { [weak self] to, message in
+                    guard let self else { return ["error": "bot no longer available"] }
+                    let tainted = await taintProbe.runtime?.isTainted ?? false
+                    return await self.delegateToBot(named: to, message: message, quickIfBusy: true, senderTainted: tainted)
+                }
+            }
             let runtime = AgentRuntime(
                 model: await makeModelBackend(),
                 sandbox: sandbox,
@@ -2219,6 +2267,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                     onGetProfile: { [weak self] in
                         await MainActor.run { self?.getProfileForTool() ?? ["error": "bot no longer available"] }
                     },
+                    onListBots: listBotsForRun,
+                    onMessageBot: messageBotForRun,
                     // Self-scoped display-only note into this bot's own 1:1
                     // chat — the way an isolated run keeps the user informed.
                     onUpdateUser: { [weak self] message in
@@ -2304,6 +2354,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                     : [],
                 audit: AuditLog.shared,
                 inbox: PendingInboxStore.standard,
+                initialTaint: initialTaint,
                 plainReplyEndsTurn: plainReplyEndsTurn,
                 // Goal work must still record its steps, so only without a goal.
                 answerEndsTurnAfterTools: goalHandler == nil
@@ -2527,8 +2578,17 @@ final class Bot: Identifiable, @unchecked Sendable {
                 result += "- \(routine.schedule.summary): \(routine.instruction)\n"
             }
         }
-        let others = isolated ? [] : botDirectory.directory(excluding: id)
-        if !others.isEmpty {
+        let others = botDirectory.directory(excluding: id)
+        if isolated, !others.isEmpty {
+            // Group turns and routines: who to ask when the work needs something another bot has.
+            result += "\n\n---\n\nOther bots, and what each one handles. When your task needs information another "
+                + "bot has (its findings, files, results or decisions), ask it with message_bot instead of guessing or "
+                + "asking your user; if message_bot isn't available in this run, @mention the bot in the group. Write a "
+                + "self-contained question (it can't see your context) and use its answer in your reply:\n\n"
+            for other in others {
+                result += "- \(other.name): \(other.role)\n"
+            }
+        } else if !others.isEmpty {
             result += "\n\n---\n\nOther bots on this Mac, and what each one handles — use list_bots for a "
                 + "live check (this list was current when this conversation started, but bots can be added, "
                 + "removed, or renamed since). When the user @mentions one of them asking you to coordinate, "
@@ -2703,7 +2763,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// to the Keychain; the model gets back only their names (and any non-secret values).
     func requestCredentialsFromTool(_ arguments: [String: AnyCodable], untrusted: Bool) async -> [String: Any] {
         let request: CredentialRequest
-        switch CredentialRequest.parse(arguments) {
+        let isLogin = (arguments["_kind"]?.value as? String) == "login"
+        switch isLogin ? CredentialRequest.parseLogin(arguments) : CredentialRequest.parse(arguments) {
         case .success(let parsed): request = parsed
         case .failure(let error): return ["error": error.message]
         }
@@ -2730,7 +2791,15 @@ final class Bot: Identifiable, @unchecked Sendable {
         for field in request.fields {
             let value = answer[field.name] ?? ""
             if !field.secret {
-                if value.isEmpty { missing.append(field.name) } else { plain[field.name] = value }
+                if !value.isEmpty {
+                    plain[field.name] = value
+                    // A login's username is kept too, so the next sign-in can reuse it.
+                    if isLogin { try? await store.put(name: field.name, value: value, notes: request.reason) }
+                } else if isLogin, savedNames.contains(field.name), let saved = try? await store.resolveOne(name: field.name) {
+                    plain[field.name] = saved
+                } else {
+                    missing.append(field.name)
+                }
             } else if value.isEmpty {
                 if savedNames.contains(field.name) { kept.append(field.name) } else { missing.append(field.name) }
             } else if (try? await store.put(name: field.name, value: value, notes: request.reason)) != nil {
@@ -2844,7 +2913,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                         },
                         onMessageBot: { [weak self] to, message in
                             guard let self else { return ["error": "bot no longer available"] }
-                            return await self.delegateToBot(named: to, message: message)
+                            let tainted = await self.runtime?.isTainted ?? false
+                            return await self.delegateToBot(named: to, message: message, senderTainted: tainted)
                         },
                         onCreateBot: { [weak self] name, tagline, systemPrompt in
                             guard let self else { return ["error": "bot no longer available"] }

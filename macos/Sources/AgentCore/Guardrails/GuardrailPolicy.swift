@@ -118,6 +118,23 @@ public enum GuardrailPolicy {
     /// Tools whose durable effect is held for review when the run is tainted.
     public static let quarantinedTools: Set<String> = ["remember", "save_evidence", "create_routine", "edit_routine"]
 
+    /// Rules that stay with the user in an untrusted run even when their effect looks local.
+    static let neverReviewedWhenTainted: Set<String> = [
+        "shell.opaque", "shell.unresolved", "shell.remote_exec", "shell.fetch_then_exec", "exec.wrapper", "exec.find_exec", "exec.xargs",
+        "network.dynamic_url", "url.private", "url.unparseable", "url.userinfo", "exec.git_config_read",
+    ]
+
+    /// Every finding that escalates in an untrusted run is local work: running, building, editing, installing
+    /// or downloading into the VM, or using its desktop.
+    static func localOnly(_ classification: Classification) -> Bool {
+        let local: Set<EffectClass> = [.observe, .reversibleWrite, .ui, .exec, .network]
+        let escalating = classification.findings.filter { $0.tainted >= .askStrict }
+        return !escalating.isEmpty && !classification.tripwire
+            // Only undoes what the taint added: a finding already strict in a clean run stays strict.
+            && escalating.allSatisfy { local.contains($0.effect) && $0.tainted == .askStrict && $0.clean <= .ask
+                && !neverReviewedWhenTainted.contains($0.rule) }
+    }
+
     /// Combine the static baseline (`Policy`), the effect classification and
     /// the run's taint into one verdict. Layers only move toward `.deny`; the
     /// single deliberate lowering is the opt-in read-only-shell fast path.
@@ -149,6 +166,14 @@ public enum GuardrailPolicy {
             verdict = .allow
         }
 
+        // Untrusted content can steer what the agent wants to do, but work that stays inside its own VM can't
+        // send anything out by itself. Let the fast-model reviewer settle it (it is told the run is untrusted
+        // and to be stricter) instead of asking the user every time. Anything that reaches outside the VM,
+        // touches credentials, destroys, or can't be fully analyzed still goes to the user.
+        if tainted, !taint.hasFriend, verdict == .askStrict, baseline != .deny, localOnly(classification) {
+            verdict = .ask
+        }
+
         // A friend's message is a live adversary: anything beyond bookkeeping asks.
         if taint.hasFriend, verdict == .allow, !friendSafeTools.contains(tool) {
             verdict = .ask
@@ -162,7 +187,8 @@ public enum GuardrailPolicy {
         if classification.tripwire { verdict = .deny }
 
         // Never grantable: anything whose real effect is computed at run time.
-        let notGrantable: Set<String> = ["shell.unresolved", "shell.opaque", "path.dynamic", "redirect.dynamic", "args.dynamic", "exec.wrapper", "exec.find_exec", "exec.xargs"]
+        // Also never standing grants: the reviewer-settled exceptions below are judged one call at a time.
+        let notGrantable: Set<String> = ["write.rm_workspace", "exec.privilege_apt", "external.git_push", "shell.unresolved", "shell.opaque", "path.dynamic", "redirect.dynamic", "args.dynamic", "exec.wrapper", "exec.find_exec", "exec.xargs"]
         let grantable = verdict == .ask && !tainted && tool == "run_shell" && classification.rules.allSatisfy { !notGrantable.contains($0) }
 
         return GuardrailDecision(

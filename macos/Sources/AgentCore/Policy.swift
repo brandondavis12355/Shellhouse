@@ -130,6 +130,7 @@ public enum Policy: Sendable {
         "list_secrets": .allow,
         // Opens a form in the user's own chat; what they type there is their consent.
         "request_credentials": .allow,
+        "request_login": .allow,
 
         // Arbitrary command execution pauses for a human by default; the
         // approval card offers per-binary and blanket ("allow all shell

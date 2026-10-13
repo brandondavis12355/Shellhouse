@@ -89,7 +89,8 @@ public actor SecretStore {
             kSecAttrComment as String: notes,
             // Not synchronized to iCloud, and only available while unlocked.
             // An agent's credentials have no business leaving this machine.
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+            // ThisDeviceOnly: never restored to another Mac from a backup either.
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             kSecAttrSynchronizable as String: false,
         ]
 

@@ -211,7 +211,7 @@ final class SmolAgentsEngineTests: XCTestCase {
 
     func testStrictActionIsDeniedWhenTheUserSaysNo() async {
         let sandbox = FakeRunnerSandbox([
-            .events([ev("rpc_request", ["id": "r1", "kind": "policy_check", "name": "run_shell", "args": ["command": "rm -rf build"]])]),
+            .events([ev("rpc_request", ["id": "r1", "kind": "policy_check", "name": "run_shell", "args": ["command": "rm -rf /srv/build"]])]),
             .awaitReply("r1"),
             .events([final()]),
         ])

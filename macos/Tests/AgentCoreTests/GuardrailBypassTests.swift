@@ -88,7 +88,7 @@ final class GuardrailBypassTests: XCTestCase {
     // MARK: destructive
 
     func testDeleteFlagPermutationsAndProtectedTargets() {
-        expect(.askStrict, ["rm -r -f x", "rm -rf -- x", "rm --recursive --force x", "rm -dr x", "rm .*", "rm -rf /workspace/.git", "rm -rf /var/lib"])
+        expect(.askStrict, ["rm -r -f /srv/x", "rm -rf -- /srv/x", "rm --recursive --force /srv/x", "rm -dr /srv/x", "rm .*", "rm -rf /workspace/.git", "rm -rf /var/lib"])
         expect(.deny, [
             "rm -rf .", "rm -rf ..", "rm -rf /workspace/.", "rm -rf ~/.", "rm -rf //", "rm -fr /", "rm -r -f /", "rm --recursive --force /",
             "rm -rf /proc/self/root", "rm -rf /proc/1/root/", "rm -rf /home", "rm -rf /root",

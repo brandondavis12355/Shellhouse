@@ -34,3 +34,30 @@ final class CredentialRequestTests: XCTestCase {
         XCTAssertEqual(Policy.evaluate(tool: "request_credentials"), .allow)
     }
 }
+
+final class LoginRequestTests: XCTestCase {
+    private func parse(_ json: String) -> Result<CredentialRequest, CredentialRequest.ParseError> {
+        CredentialRequest.parseLogin(try! JSONDecoder().decode([String: AnyCodable].self, from: Data(json.utf8)))
+    }
+
+    func testLoginMakesUsernameAndPasswordFields() throws {
+        let request = try parse(#"{"service":"My Jira (work)","site":"https://jira.example.com/login","reason":"File the bug"}"#).get()
+        XCTAssertEqual(request.fields.map(\.name), ["MY_JIRA_WORK_USERNAME", "MY_JIRA_WORK_PASSWORD"])
+        XCTAssertEqual(request.fields.map(\.secret), [false, true])
+        XCTAssertEqual(request.kind, .login(service: "My Jira (work)", site: "jira.example.com"))
+    }
+
+    func testLoginRejectsBadInput() {
+        XCTAssertThrowsError(try parse(#"{"service":"","reason":"x"}"#).get())
+        XCTAssertThrowsError(try parse(#"{"service":"Jira","reason":""}"#).get())
+        XCTAssertThrowsError(try parse(#"{"service":"Jira","reason":"x","site":"not a domain!"}"#).get())
+        XCTAssertThrowsError(try parse(#"{"service":"123","reason":"x"}"#).get())
+    }
+
+    func testBotMessagesFromUntrustedRunsGoToTheReviewerNotStraightThrough() {
+        var taint = TaintState(); _ = taint.mark(.web)
+        let d = GuardrailPolicy.evaluate(tool: "message_bot", arguments: [:], baseline: Policy.evaluate(tool: "message_bot"), taint: taint, config: GuardrailConfig())
+        XCTAssertEqual(d.verdict, .ask)
+        XCTAssertEqual(Policy.evaluate(tool: "request_login"), .allow)
+    }
+}

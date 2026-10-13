@@ -10,8 +10,15 @@ public struct CredentialRequest: Sendable, Equatable {
         public var id: String { name }
     }
 
+    public enum Kind: Sendable, Equatable {
+        case credentials
+        /// A username and password for one service (`request_login`).
+        case login(service: String, site: String?)
+    }
+
     public let reason: String
     public let fields: [Field]
+    public var kind: Kind = .credentials
 
     public static let maxFields = 5
 
@@ -35,6 +42,42 @@ public struct CredentialRequest: Sendable, Equatable {
         guard !fields.isEmpty else { return .failure(ParseError("request_credentials needs at least one field")) }
         guard fields.count <= maxFields else { return .failure(ParseError("ask for at most \(maxFields) fields at a time")) }
         return .success(CredentialRequest(reason: String(reason.prefix(300)), fields: fields))
+    }
+
+    /// `request_login(service, reason, site?)`: a Username and a Password field named after the service,
+    /// e.g. "Jira" -> JIRA_USERNAME / JIRA_PASSWORD.
+    public static func parseLogin(_ arguments: [String: AnyCodable]) -> Result<CredentialRequest, ParseError> {
+        let service = (arguments["service"]?.asString ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = (arguments["reason"]?.asString ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !service.isEmpty, service.count <= 60, service.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) else {
+            return .failure(ParseError("request_login needs a short 'service' name, e.g. \"Jira\""))
+        }
+        guard !reason.isEmpty else { return .failure(ParseError("request_login needs a 'reason' your user can read")) }
+        var site = (arguments["site"]?.asString ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        if let url = URL(string: site), let host = url.host { site = host }
+        if !site.isEmpty, site.count > 253 || site.range(of: #"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"#, options: .regularExpression) == nil {
+            return .failure(ParseError("'site' must be a domain like jira.example.com"))
+        }
+        let prefix = namePrefix(for: service)
+        guard !prefix.isEmpty else { return .failure(ParseError("'service' needs at least one letter")) }
+        var request = CredentialRequest(reason: String(reason.prefix(300)), fields: [
+            Field(name: prefix + "_USERNAME", label: "Username or email", secret: false),
+            Field(name: prefix + "_PASSWORD", label: "Password", secret: true),
+        ])
+        request.kind = .login(service: service, site: site.isEmpty ? nil : site)
+        return .success(request)
+    }
+
+    /// "My Jira (work)" -> "MY_JIRA_WORK": capital letters, digits and _, starting with a letter.
+    static func namePrefix(for service: String) -> String {
+        var out = ""
+        for scalar in service.uppercased().unicodeScalars {
+            if ("A"..."Z").contains(Character(scalar)) || ("0"..."9").contains(Character(scalar)) { out.unicodeScalars.append(scalar) }
+            else if !out.hasSuffix("_"), !out.isEmpty { out += "_" }
+        }
+        while out.hasSuffix("_") { out.removeLast() }
+        while let first = out.first, !first.isLetter { out.removeFirst() }
+        return String(out.prefix(40))
     }
 
     public struct ParseError: Error, Equatable {

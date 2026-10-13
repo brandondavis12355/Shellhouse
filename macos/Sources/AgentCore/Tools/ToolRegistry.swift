@@ -174,7 +174,17 @@ public struct ToolRegistry: Sendable {
         }
         if let onRequestCredentials {
             schemas.append(Self.requestCredentialsSchema)
-            executors["request_credentials"] = { _, _, arguments, _ in await onRequestCredentials(arguments) }
+            executors["request_credentials"] = { _, _, arguments, _ in
+                var arguments = arguments
+                arguments["_kind"] = nil
+                return await onRequestCredentials(arguments)
+            }
+            schemas.append(Self.requestLoginSchema)
+            executors["request_login"] = { _, _, arguments, _ in
+                var arguments = arguments
+                arguments["_kind"] = AnyCodable("login")
+                return await onRequestCredentials(arguments)
+            }
         }
         if let onGetProfile {
             schemas.append(Self.getProfileSchema)
@@ -457,6 +467,26 @@ public struct ToolRegistry: Sendable {
         )
     }
 
+    private static var requestLoginSchema: ToolSchema {
+        ToolSchema(
+            name: "request_login",
+            description: "Ask your user for a username and password for one service or website. Opens a secure sign-in "
+                + "card in your 1:1 chat and waits. The password goes to the Mac's Keychain as <SERVICE>_PASSWORD and is "
+                + "NEVER shown to you: type it with type_secret, or use it in run_shell's use_secrets. The username comes "
+                + "back as plain text (and is saved as <SERVICE>_USERNAME). If they're already saved, your user can keep "
+                + "them without retyping. Prefer this over request_credentials for any login.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "service": ["type": "string", "description": "Short name, e.g. \"Jira\" or \"Vendor portal\"."],
+                    "site": ["type": "string", "description": "The sign-in domain, e.g. jira.example.com, so your user can check it."],
+                    "reason": ["type": "string", "description": "One line your user reads: what you'll do once signed in."],
+                ],
+                "required": ["service", "reason"],
+            ]
+        )
+    }
+
     private static var requestCredentialsSchema: ToolSchema {
         ToolSchema(
             name: "request_credentials",
@@ -515,9 +545,11 @@ public struct ToolRegistry: Sendable {
     private static var messageBotSchema: ToolSchema {
         ToolSchema(
             name: "message_bot",
-            description: "Delegate something to another bot by name (see list_bots) and wait for its answer — "
-                + "for when the user @mentions one asking you to coordinate with them, or when something is "
-                + "outside your own scope and one of them specializes in it. This happens in the background: "
+            description: "Ask or delegate something to another bot by name (see list_bots) and wait for its answer — "
+                + "for when the user @mentions one asking you to coordinate with them, when something is "
+                + "outside your own scope and one of them specializes in it, or when your task needs information "
+                + "another bot has (its findings, files, results). If it's busy, it answers from what it already "
+                + "knows, without running anything. This happens in the background: "
                 + "the user sees only a \"Messaged <name>…\" notice in this chat, not the exchange itself, "
                 + "unless they tap it. YOU relay the answer back once you have it — don't just report that "
                 + "you messaged them and stop. Once you learn which bot handles something, use the remember "

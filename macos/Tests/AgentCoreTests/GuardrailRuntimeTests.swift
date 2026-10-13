@@ -131,19 +131,19 @@ final class GuardrailRuntimeTests: XCTestCase {
     func testDestructiveCommandIsStrictAndNeverGrantable() async {
         let h = Harness(); defer { h.cleanup() }
         let permissions = RunShellPermissions()
-        await run(h, turns: [shell("rm -rf build"), shell("rm -rf build")], answer: .approveAllShellThisBotSession, permissions: permissions, botID: "gr-strict")
+        await run(h, turns: [shell("rm -rf /srv/build"), shell("rm -rf /srv/build")], answer: .approveAllShellThisBotSession, permissions: permissions, botID: "gr-strict")
         XCTAssertEqual(h.log.approvals.count, 2, "approved once, but the second identical call asks again")
         XCTAssertTrue(h.log.approvals.allSatisfy { $0.strict && $0.alwaysAllowCandidate == nil })
         XCTAssertNotNil(h.log.approvals.first?.expiresAt)
         XCTAssertFalse(h.log.approvals[0].reasons.isEmpty)
         let blanket = await permissions.isBlanketAllowed(botID: "gr-strict")
         XCTAssertFalse(blanket, "a strict approval must not create a standing grant")
-        XCTAssertEqual(h.sandbox.modelCommands.filter { $0 == "rm -rf build" }.count, 2)
+        XCTAssertEqual(h.sandbox.modelCommands.filter { $0 == "rm -rf /srv/build" }.count, 2)
     }
 
     func testDestructiveCommandIsDeniedOutrightInATaintedRun() async {
         let h = Harness(); defer { h.cleanup() }
-        await run(h, turns: [shell("rm -rf build")], answer: .approve, taint: [.web])
+        await run(h, turns: [shell("rm -rf /srv/build")], answer: .approve, taint: [.web])
         XCTAssertTrue(h.sandbox.modelCommands.isEmpty)
         XCTAssertTrue(h.log.approvals.isEmpty)
     }
@@ -259,7 +259,8 @@ final class GuardrailRuntimeTests: XCTestCase {
             onEvent: { _ in }
         )
         box.gate = gate
-        let call = ToolCall(name: "run_shell", arguments: ["command": AnyCodable("pytest -q")])
+        // Local work like `pytest` no longer escalates when untrusted (the reviewer settles it); a push still does.
+        let call = ToolCall(name: "run_shell", arguments: ["command": AnyCodable("git push origin feature/x")])
         let outcome = await gate.evaluate(call)
         guard case .refuse(let message) = outcome else { return XCTFail("expected the stale approval to be refused, got \(outcome)") }
         XCTAssertTrue(message.contains("situation changed"))

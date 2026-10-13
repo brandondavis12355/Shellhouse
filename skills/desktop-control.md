@@ -56,8 +56,9 @@ Everything you do there is visible, so act deliberately.
 
 ## Passwords and other secrets
 Never type a password with `type_text`, and never ask for one in chat.
-1. Don't have it yet? `request_credentials` (shell-and-files skill) saves
-   it to the Keychain under a name like `SITE_PASSWORD`.
+1. Don't have it yet? `request_login(service, reason, site)` (or
+   `request_credentials` for a key or token) saves it to the Keychain, e.g.
+   `JIRA_PASSWORD`, and gives you the username.
 2. Type the username normally; click the password field.
 3. `type_secret(name, window)`: `window` is part of the target window's
    title (from `list_windows`). It refuses if a different window has

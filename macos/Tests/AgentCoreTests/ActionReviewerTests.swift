@@ -75,3 +75,41 @@ final class ActionReviewerTests: XCTestCase {
         func listSandboxes() async throws -> [SandboxHandle] { [] }
     }
 }
+
+/// The usability relaxations keep their limits.
+final class ApprovalBalanceTests: XCTestCase {
+    private func verdict(_ command: String, tainted: Bool = false, tool: String = "run_shell") -> GuardrailDecision {
+        var taint = TaintState(); if tainted { _ = taint.mark(.web) }
+        let args: [String: AnyCodable] = tool == "type_text" ? ["text": AnyCodable(command)] : ["command": AnyCodable(command)]
+        return GuardrailPolicy.evaluate(tool: tool, arguments: args, baseline: Policy.evaluate(tool: tool), taint: taint, config: GuardrailConfig())
+    }
+
+    func testLocalWorkInAnUntrustedRunGoesToTheReviewer() {
+        for command in ["npm test", "pytest -q", "make", "pip install pandas", "git clone https://github.com/o/r.git", "tar xzf a.tgz"] {
+            XCTAssertEqual(verdict(command, tainted: true).verdict, .ask, command)
+        }
+    }
+
+    func testIndirectOrDisguisedDeletesStayStrict() {
+        for command in ["find . -exec rm -rf {} +", "ls | xargs rm -rf", "bash -c 'rm -rf build'", "r''m -rf build", "nohup rm -rf build",
+                        "f() { rm -rf build; }; f", "rm -rf $DIR"] {
+            XCTAssertGreaterThanOrEqual(verdict(command).verdict, .askStrict, command)
+        }
+        XCTAssertGreaterThanOrEqual(verdict("rm -rf build\n", tool: "type_text").verdict, .askStrict, "typed into a terminal: no trash backup")
+    }
+
+    func testRelaxedRulesAreNeverStandingGrants() {
+        for command in ["rm -rf build", "sudo apt-get install -y ffmpeg", "git push origin feature/x"] {
+            XCTAssertEqual(verdict(command).verdict, .ask, command)
+            XCTAssertFalse(verdict(command).grantable, command)
+        }
+    }
+
+    func testPublishingAndPrivilegeStayWithTheUser() {
+        for command in ["git push origin main", "git push", "sudo rm -rf /var/lib", "sudo -u root apt-get install x", "sudo bash"] {
+            XCTAssertGreaterThanOrEqual(verdict(command).verdict, .askStrict, command)
+        }
+        XCTAssertGreaterThanOrEqual(verdict("git push origin feature/x", tainted: true).verdict, .askStrict)
+        XCTAssertGreaterThanOrEqual(verdict("awk 'BEGIN{system(\"id\")}'", tainted: true).verdict, verdict("awk 'BEGIN{system(\"id\")}'").verdict)
+    }
+}
