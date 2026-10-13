@@ -34,6 +34,7 @@ struct GroupChatDetailView: View {
 
     /// Which `@mention` is currently in progress — see
     /// `MentionAnchorTracker`'s doc comment.
+    @State private var editingMessage: MessageEdit?
     @State private var mentionTracker = MentionAnchorTracker(trigger: "@")
     /// Index into `mentionSuggestionItems` (the "Everyone" row, when
     /// shown, is index 0) — Up/Down move it, Return commits it, reset
@@ -87,8 +88,13 @@ struct GroupChatDetailView: View {
                 mentionColors: Dictionary(uniqueKeysWithValues: resolvedMembers.map { ($0.name.lowercased(), $0.colorHex) }),
                 drafts: resolvedMembers.compactMap { member in
                     group.liveDrafts[member.id].map { GroupMessage(id: "draft-\(member.id)", speakerBotID: member.id, speakerName: member.name, text: $0) }
-                }
+                },
+                onEdit: group.canEditMessages ? { message in editingMessage = MessageEdit(id: message.id, text: message.text) } : nil,
+                onDelete: group.canEditMessages ? { message in group.deleteMessage(id: message.id) } : nil
             )
+            .sheet(item: $editingMessage) { edit in
+                MessageEditSheet(edit: edit) { text in group.editMessage(id: edit.id, text: text) }
+            }
             .padding(.horizontal, 20)
 
             BotStatusStrip(bots: resolvedMembers)

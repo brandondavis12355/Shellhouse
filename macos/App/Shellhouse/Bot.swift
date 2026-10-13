@@ -551,6 +551,37 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// `runtime` is just dropped, not asked to do anything: the next
     /// message lazily builds a fresh one (see `drainQueue`), the same path
     /// a brand-new bot's first message already takes.
+    /// Debug mode only, and only while this bot isn't doing anything: editing history under a running turn
+    /// would change what it's working from mid-step.
+    var canEditMessages: Bool {
+        DebugSettings.shared.isEnabled && !isBusy && messageQueue.isEmpty && pendingApproval == nil && pendingCredentialRequest == nil
+    }
+
+    func editMessage(id messageID: UUID, text: String) {
+        guard canEditMessages, let index = displayMessages.firstIndex(where: { $0.id == messageID }) else { return }
+        displayMessages[index].text = text
+        forgetModelContextAfterEdit()
+    }
+
+    func deleteMessage(id messageID: UUID) {
+        guard canEditMessages, let index = displayMessages.firstIndex(where: { $0.id == messageID }) else { return }
+        displayMessages.remove(at: index)
+        streamingIndex = nil
+        forgetModelContextAfterEdit()
+    }
+
+    /// The model's copy of the conversation (and its saved summary) predates the edit: drop both, so the next
+    /// message rebuilds the context from the edited transcript (see `drainQueue`).
+    private func forgetModelContextAfterEdit() {
+        runtime = nil
+        contextSummary = nil
+        ContextSummaryStore.delete(id: id)
+        persistTranscript()
+        if DebugSettings.shared.isEnabled {
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "debug", text: "transcript edited — the model's context will be rebuilt on the next message")
+        }
+    }
+
     func clearConversation() {
         displayMessages = []
         messageQueue = []

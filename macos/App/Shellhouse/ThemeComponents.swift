@@ -932,3 +932,77 @@ func saveTranscript(_ text: String, suggestedName: String) {
         }
     }
 }
+
+/// Debug-mode message editing: a right-click menu plus small hover buttons (right-clicks on selectable text
+/// can land on the text's own menu). Inactive when `enabled` is false.
+struct EditableMessage: ViewModifier {
+    let enabled: Bool
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .overlay(alignment: .topTrailing) {
+                    if hovering {
+                        HStack(spacing: 4) {
+                            Button(action: onEdit) { Image(systemName: "pencil") }.help("Edit message")
+                            Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.help("Delete message")
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 11))
+                        .padding(4)
+                        .background(.regularMaterial, in: Capsule())
+                        .offset(y: -6)
+                    }
+                }
+                .onHover { hovering = $0 }
+                .contextMenu {
+                    Button("Edit message…", action: onEdit)
+                    Button("Delete message", role: .destructive, action: onDelete)
+                }
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func editableMessage(enabled: Bool, onEdit: @escaping () -> Void, onDelete: @escaping () -> Void) -> some View {
+        modifier(EditableMessage(enabled: enabled, onEdit: onEdit, onDelete: onDelete))
+    }
+}
+
+/// The text being edited, for `MessageEditSheet`.
+struct MessageEdit: Identifiable {
+    let id: String
+    var text: String
+}
+
+struct MessageEditSheet: View {
+    @State var edit: MessageEdit
+    let onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Edit message").font(.system(size: 15, weight: .semibold))
+            TextEditor(text: $edit.text)
+                .font(.system(size: 14))
+                .frame(minWidth: 480, minHeight: 220)
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 8))
+            Text("Bots see the edited text from their next turn on.").font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Save") { onSave(edit.text); dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(edit.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(18)
+    }
+}

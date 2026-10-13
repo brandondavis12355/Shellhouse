@@ -25,6 +25,9 @@ struct GroupChatTranscriptView: View {
     /// What members are writing right now, shown as dimmed "typing…" bubbles
     /// after the real messages until each turn's message is posted.
     var drafts: [GroupMessage] = []
+    /// Debug-mode editing; nil when not allowed right now.
+    var onEdit: ((GroupMessage) -> Void)?
+    var onDelete: ((GroupMessage) -> Void)?
 
     var body: some View {
         GeometryReader { geometry in
@@ -39,6 +42,7 @@ struct GroupChatTranscriptView: View {
                                     avatarStyle: message.speakerBotID.flatMap { memberStyles[$0] },
                                     mentionColors: mentionColors
                                 )
+                                .editableMessage(enabled: onEdit != nil, onEdit: { onEdit?(message) }, onDelete: { onDelete?(message) })
                                 .id(message.id)
                                 .transition(.messageArrival)
                             }

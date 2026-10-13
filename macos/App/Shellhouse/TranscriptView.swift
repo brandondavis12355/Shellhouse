@@ -40,6 +40,9 @@ struct TranscriptView: View {
     /// be able to reset (and thereby dismiss the sheet for) a completely
     /// unrelated bubble's local state.
     var onOpenInterBotThread: (String, String) -> Void = { _, _ in }
+    /// Debug-mode editing; nil when not allowed right now.
+    var onEdit: ((DisplayMessage) -> Void)?
+    var onDelete: ((DisplayMessage) -> Void)?
 
     var body: some View {
         GeometryReader { geometry in
@@ -54,6 +57,7 @@ struct TranscriptView: View {
                                         mentionColors: mentionColors, peerAvatarStyles: peerAvatarStyles,
                                         onOpenInterBotThread: onOpenInterBotThread
                                     )
+                                    .editableMessage(enabled: onEdit != nil, onEdit: { onEdit?(message) }, onDelete: { onDelete?(message) })
                                     .id(message.id)
                                     .transition(.messageArrival)
                                 }

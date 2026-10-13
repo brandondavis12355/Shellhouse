@@ -141,6 +141,27 @@ final class GroupChatSession: Identifiable {
     /// goal are kept. For a shared group, what was already sent to the relay stays
     /// there (friends keep their copies); the receive cursor is left alone so old
     /// friend messages are not pulled back in.
+    /// Debug mode only, and only while no member is working on this group.
+    var canEditMessages: Bool { DebugSettings.shared.isEnabled && !isBusy && liveDrafts.isEmpty }
+
+    /// Group turns read the transcript fresh each time, so an edit is what members see next. In a shared
+    /// group only this copy changes; friends keep what was already sent.
+    func editMessage(id messageID: String, text: String) {
+        guard canEditMessages, let index = displayMessages.firstIndex(where: { $0.id == messageID }) else { return }
+        displayMessages[index].text = text
+        displayMessages[index].evidence = nil
+        persist()
+    }
+
+    func deleteMessage(id messageID: String) {
+        guard canEditMessages, let index = displayMessages.firstIndex(where: { $0.id == messageID }) else { return }
+        displayMessages.remove(at: index)
+        // Per-member read positions and the friends mirror index into this array.
+        for key in Array(seenCount.keys) where (seenCount[key] ?? 0) > index { seenCount[key]! -= 1 }
+        if mirrorCursor > index { mirrorCursor -= 1 }
+        persist()
+    }
+
     @discardableResult
     func clearConversation() -> Bool {
         guard !isBusy else { return false }

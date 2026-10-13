@@ -231,6 +231,7 @@ struct BotDetailView: View {
     /// Off by default — the computer is a secondary, opt-in view now (see
     /// the desktop-icon button below), not something shown for every bot
     /// the moment you open it.
+    @State private var editingMessage: MessageEdit?
     @State private var showComputer = false
     /// When true, the chat pane is hidden entirely and the computer panel
     /// takes the space it would have used — for when the desktop itself is
@@ -310,8 +311,15 @@ struct BotDetailView: View {
                             peerAvatarStyles: Dictionary(uniqueKeysWithValues: otherBots.map { ($0.name.lowercased(), $0.avatarStyle) }),
                             onOpenInterBotThread: { peerID, peerName in
                                 activeInterBotThread = InterBotThreadTarget(peerID: peerID, peerName: peerName)
-                            }
+                            },
+                            onEdit: bot.canEditMessages ? { message in editingMessage = MessageEdit(id: message.id.uuidString, text: message.text) } : nil,
+                            onDelete: bot.canEditMessages ? { message in bot.deleteMessage(id: message.id) } : nil
                         )
+                        .sheet(item: $editingMessage) { edit in
+                            MessageEditSheet(edit: edit) { text in
+                                if let id = UUID(uuidString: edit.id) { bot.editMessage(id: id, text: text) }
+                            }
+                        }
 
                         VStack(spacing: 10) {
                         if let pending = bot.pendingApproval {
