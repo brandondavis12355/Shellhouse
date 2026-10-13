@@ -52,12 +52,18 @@ public actor OpenAICompatibleBackend: ModelBackend {
         model: String?,
         temperature: Double
     ) async throws -> ModelReply {
+        let started = Date()
         let (data, response) = try await send(messages: messages, tools: tools, model: model, temperature: temperature)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            Telemetry.recorder.modelCall(model: model ?? "remote", promptTokens: 0, completionTokens: 0,
+                                         seconds: Date().timeIntervalSince(started), error: "HTTP \(status)")
             throw ModelError.requestFailed(status: status, detail: String(data: data, encoding: .utf8) ?? "")
         }
-        return try Self.decodeReply(from: data)
+        let reply = try Self.decodeReply(from: data)
+        Telemetry.recorder.modelCall(model: model ?? "remote", promptTokens: reply.usage?.promptTokens ?? 0,
+                                     completionTokens: reply.usage?.completionTokens ?? 0, seconds: Date().timeIntervalSince(started))
+        return reply
     }
 
     private func send(

@@ -1671,38 +1671,40 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// ambiguous answer proceeds to the full run, so this can only ever
     /// skip a turn the bot itself clearly said it had nothing to add to.
     func wantsToRespondInGroup(groupName: String, transcript: String, goalContext: String? = nil) async -> Bool {
-        guard sandbox != nil else { return true }
-        let checkSpan = BotActivity.shared.begin(bot: self, kind: .checking, detail: "reply check · \(groupName)")
-        defer { BotActivity.shared.end(checkSpan) }
-        let role = tagline.isEmpty ? String(systemPromptText.prefix(300)) : tagline
-        let messages = [
-            ChatMessage(role: .system, content: "You are \(name), a member of the group chat \"\(groupName)\". Your role: \(role)"),
-            ChatMessage(role: .user, content: """
-                Recent group messages:
-                \(transcript)
+        await Telemetry.$context.withValue(TelemetryContext(bot: name, purpose: "reply gate")) {
+            guard sandbox != nil else { return true }
+            let checkSpan = BotActivity.shared.begin(bot: self, kind: .checking, detail: "reply check · \(groupName)")
+            defer { BotActivity.shared.end(checkSpan) }
+            let role = tagline.isEmpty ? String(systemPromptText.prefix(300)) : tagline
+            let messages = [
+                ChatMessage(role: .system, content: "You are \(name), a member of the group chat \"\(groupName)\". Your role: \(role)"),
+                ChatMessage(role: .user, content: """
+                    Recent group messages:
+                    \(transcript)
 
-                \(goalContext.map { $0 + "\n\n" } ?? "")Should you reply to the latest message? Answer YES if it asks or invites anything of you or \
-                your role, or if you have something necessary to add that nobody has already said\(goalContext == nil ? "" : ", or if an open goal step is assigned to you or someone @mentioned you. Do NOT answer YES just because you could help, and never to start your own side investigation"). Answer \
-                NO only if it clearly has nothing to do with you or has already been fully handled. If \
-                unsure, answer YES. Reply with exactly one word: YES or NO.
-                """),
-        ]
-        if Reliability.isOn(.structuredGates), let decided = await structuredYesNo(system: messages[0].content, user: messages[1].content) {
+                    \(goalContext.map { $0 + "\n\n" } ?? "")Should you reply to the latest message? Answer YES if it asks or invites anything of you or \
+                    your role, or if you have something necessary to add that nobody has already said\(goalContext == nil ? "" : ", or if an open goal step is assigned to you or someone @mentioned you. Do NOT answer YES just because you could help, and never to start your own side investigation"). Answer \
+                    NO only if it clearly has nothing to do with you or has already been fully handled. If \
+                    unsure, answer YES. Reply with exactly one word: YES or NO.
+                    """),
+            ]
+            if Reliability.isOn(.structuredGates), let decided = await structuredYesNo(system: messages[0].content, user: messages[1].content) {
+                if DebugSettings.shared.isEnabled {
+                    DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "group: \(groupName)",
+                                        text: "reply gate (structured): \(decided ? "YES — running full turn" : "NO — skipped full turn")")
+                }
+                return decided
+            }
+            let (backend, fastModel) = await makeFastBackend()
+            guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0),
+                  !reply.message.content.isEmpty else { return true }
+            let wants = ReplyGate.shouldReply(from: reply.message.content)
             if DebugSettings.shared.isEnabled {
                 DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "group: \(groupName)",
-                                    text: "reply gate (structured): \(decided ? "YES — running full turn" : "NO — skipped full turn")")
+                                    text: "reply gate: \(wants ? "YES — running full turn" : "NO — skipped full turn")")
             }
-            return decided
+            return wants
         }
-        let (backend, fastModel) = await makeFastBackend()
-        guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0),
-              !reply.message.content.isEmpty else { return true }
-        let wants = ReplyGate.shouldReply(from: reply.message.content)
-        if DebugSettings.shared.isEnabled {
-            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "group: \(groupName)",
-                                text: "reply gate: \(wants ? "YES — running full turn" : "NO — skipped full turn")")
-        }
-        return wants
     }
 
     /// The cheap tier: a small fast model for gates, intake checks, small talk and helpers.
@@ -1721,29 +1723,31 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// `ask_helpers`: independent, tool-less sub-prompts answered in parallel by the fast tier.
     /// With Ollama's OLLAMA_NUM_PARALLEL > 1 they genuinely run at the same time.
     func runHelpers(_ tasks: [String]) async -> [String: Any] {
-        let (backend, model) = await makeFastBackend()
-        let system = "You are a focused helper for another AI agent. Answer ONLY the task given, concisely and "
-            + "factually, using only the text provided. If something is missing, say what is missing."
-        let answers = await withTaskGroup(of: (Int, String).self) { group -> [(Int, String)] in
-            for (index, task) in tasks.enumerated() {
-                group.addTask {
-                    let messages = [ChatMessage(role: .system, content: system), ChatMessage(role: .user, content: String(task.prefix(12_000)))]
-                    do {
-                        let reply = try await backend.chat(messages: messages, tools: [], model: model, temperature: 0.2)
-                        var text = reply.message.content
-                        if let end = text.range(of: "</think>") { text = String(text[end.upperBound...]) }
-                        return (index, text.trimmingCharacters(in: .whitespacesAndNewlines))
-                    } catch {
-                        return (index, "(helper failed: \(error.localizedDescription))")
+        await Telemetry.$context.withValue(TelemetryContext(bot: name, purpose: "helpers")) {
+            let (backend, model) = await makeFastBackend()
+            let system = "You are a focused helper for another AI agent. Answer ONLY the task given, concisely and "
+                + "factually, using only the text provided. If something is missing, say what is missing."
+            let answers = await withTaskGroup(of: (Int, String).self) { group -> [(Int, String)] in
+                for (index, task) in tasks.enumerated() {
+                    group.addTask {
+                        let messages = [ChatMessage(role: .system, content: system), ChatMessage(role: .user, content: String(task.prefix(12_000)))]
+                        do {
+                            let reply = try await backend.chat(messages: messages, tools: [], model: model, temperature: 0.2)
+                            var text = reply.message.content
+                            if let end = text.range(of: "</think>") { text = String(text[end.upperBound...]) }
+                            return (index, text.trimmingCharacters(in: .whitespacesAndNewlines))
+                        } catch {
+                            return (index, "(helper failed: \(error.localizedDescription))")
+                        }
                     }
                 }
+                var out: [(Int, String)] = []
+                for await item in group { out.append(item) }
+                return out
             }
-            var out: [(Int, String)] = []
-            for await item in group { out.append(item) }
-            return out
+            let ordered = answers.sorted { $0.0 < $1.0 }.map { ["task": tasks[$0.0].prefix(80) + (tasks[$0.0].count > 80 ? "…" : ""), "answer": $0.1] }
+            return ["results": ordered, "note": "Helper answers are unverified model output; check anything important."]
         }
-        let ordered = answers.sorted { $0.0 < $1.0 }.map { ["task": tasks[$0.0].prefix(80) + (tasks[$0.0].count > 80 ? "…" : ""), "answer": $0.1] }
-        return ["results": ordered, "note": "Helper answers are unverified model output; check anything important."]
     }
 
     /// A yes/no decision from the fast tier with the output constrained to {"answer":"YES"|"NO"} (Ollama
@@ -1771,30 +1775,32 @@ final class Bot: Identifiable, @unchecked Sendable {
         groupName: String, otherMembers: [String], transcript: String, instruction: String,
         extraContext: String = "", style: String = "warm, natural, 1-3 short sentences", includeMemory: Bool = true
     ) async -> String? {
-        let span = BotActivity.shared.begin(bot: self, kind: .running, detail: "quick reply · \(groupName)")
-        defer { BotActivity.shared.end(span) }
-        let persona = String(systemPromptText.prefix(700))
-        var system = "You are \(name)" + (tagline.isEmpty ? "" : ", \(tagline)")
-        system += ", in the group chat \"\(groupName)\" with \(otherMembers.joined(separator: ", ")). "
-        if !persona.isEmpty { system += "Your persona:\n\(persona)\n\n" }
-        let remembered = includeMemory ? memoryBook.core(limit: 6).map(\.text) : []
-        if !remembered.isEmpty { system += "Things you remember:\n- " + remembered.joined(separator: "\n- ") + "\n\n" }
-        system += "Reply in character as a chat message: \(style). Messages are labeled by sender. "
-        system += "Never prefix your reply with your own name. Do not repeat what others already said."
-        let messages = [
-            ChatMessage(role: .system, content: system),
-            ChatMessage(role: .user, content: "Group chat so far:\n\(transcript)\n\n" + (extraContext.isEmpty ? "" : extraContext + "\n\n") + instruction),
-        ]
-        let (backend, fastModel) = await makeFastBackend()
-        guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0.6) else { return nil }
-        var text = reply.message.content
-        if let end = text.range(of: "</think>") { text = String(text[end.upperBound...]) }
-        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Strip a self-label the model sometimes adds ("Bugbot: hi").
-        if text.lowercased().hasPrefix(name.lowercased() + ":") {
-            text = String(text.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces)
+        await Telemetry.$context.withValue(TelemetryContext(bot: name, purpose: "quick reply")) {
+            let span = BotActivity.shared.begin(bot: self, kind: .running, detail: "quick reply · \(groupName)")
+            defer { BotActivity.shared.end(span) }
+            let persona = String(systemPromptText.prefix(700))
+            var system = "You are \(name)" + (tagline.isEmpty ? "" : ", \(tagline)")
+            system += ", in the group chat \"\(groupName)\" with \(otherMembers.joined(separator: ", ")). "
+            if !persona.isEmpty { system += "Your persona:\n\(persona)\n\n" }
+            let remembered = includeMemory ? memoryBook.core(limit: 6).map(\.text) : []
+            if !remembered.isEmpty { system += "Things you remember:\n- " + remembered.joined(separator: "\n- ") + "\n\n" }
+            system += "Reply in character as a chat message: \(style). Messages are labeled by sender. "
+            system += "Never prefix your reply with your own name. Do not repeat what others already said."
+            let messages = [
+                ChatMessage(role: .system, content: system),
+                ChatMessage(role: .user, content: "Group chat so far:\n\(transcript)\n\n" + (extraContext.isEmpty ? "" : extraContext + "\n\n") + instruction),
+            ]
+            let (backend, fastModel) = await makeFastBackend()
+            guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0.6) else { return nil }
+            var text = reply.message.content
+            if let end = text.range(of: "</think>") { text = String(text[end.upperBound...]) }
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Strip a self-label the model sometimes adds ("Bugbot: hi").
+            if text.lowercased().hasPrefix(name.lowercased() + ":") {
+                text = String(text.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces)
+            }
+            return (text.isEmpty || text.contains("[[silent]]")) ? nil : text
         }
-        return (text.isEmpty || text.contains("[[silent]]")) ? nil : text
     }
 
     /// What this bot knows about its own work, for a stand-up: its open tasks, scheduled routines and
@@ -1813,23 +1819,25 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// request (work to be done) rather than a question, greeting, or chat?
     /// Errors resolve to `false` — no goal is safer than a spurious one.
     func looksLikeActionableRequest(_ text: String) async -> Bool {
-        let checkSpan = BotActivity.shared.begin(bot: self, kind: .checking, detail: "goal intake check")
-        defer { BotActivity.shared.end(checkSpan) }
-        let messages = [
-            ChatMessage(role: .system, content: "You classify chat messages. Reply with exactly one word."),
-            ChatMessage(role: .user, content: """
-                Message from the user to a team of AI bots:
-                \(text)
+        await Telemetry.$context.withValue(TelemetryContext(bot: name, purpose: "intake check")) {
+            let checkSpan = BotActivity.shared.begin(bot: self, kind: .checking, detail: "goal intake check")
+            defer { BotActivity.shared.end(checkSpan) }
+            let messages = [
+                ChatMessage(role: .system, content: "You classify chat messages. Reply with exactly one word."),
+                ChatMessage(role: .user, content: """
+                    Message from the user to a team of AI bots:
+                    \(text)
 
-                Is this an actionable request that needs multi-step work by the team (build, install, fix, \
-                investigate, produce something)? Answer NO for questions, greetings, opinions, status \
-                checks, or casual chat. Reply with exactly one word: YES or NO.
-                """),
-        ]
-        if Reliability.isOn(.structuredGates), let decided = await structuredYesNo(system: messages[0].content, user: messages[1].content) { return decided }
-        let (backend, fastModel) = await makeFastBackend()
-        guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0) else { return false }
-        return reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("YES")
+                    Is this an actionable request that needs multi-step work by the team (build, install, fix, \
+                    investigate, produce something)? Answer NO for questions, greetings, opinions, status \
+                    checks, or casual chat. Reply with exactly one word: YES or NO.
+                    """),
+            ]
+            if Reliability.isOn(.structuredGates), let decided = await structuredYesNo(system: messages[0].content, user: messages[1].content) { return decided }
+            let (backend, fastModel) = await makeFastBackend()
+            guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0) else { return false }
+            return reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("YES")
+        }
     }
 
     /// The owner's "where we are" post when a goal stalls.
@@ -2361,7 +2369,10 @@ final class Bot: Identifiable, @unchecked Sendable {
             )
 
             taintProbe.runtime = runtime
-            await runtime.start(systemPrompt: fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract, goal: await withRelevantMemoryContext(goal))
+            let runGoal = await withRelevantMemoryContext(goal)
+            let runPrompt = fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract
+            let telemetry = TelemetryContext(bot: name, purpose: debugContext)
+            await Telemetry.$context.withValue(telemetry) { await runtime.start(systemPrompt: runPrompt, goal: runGoal) }
             @MainActor func currentResult() async -> IsolatedResult {
                 let runTainted = await runtime.isTainted
                 lastTurnObservations = toolCallCounter.observations
@@ -2378,7 +2389,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 isSilent = false
                 draftText = ""
                 publishDraft(nil)
-                await runtime.send(correction)
+                await Telemetry.$context.withValue(telemetry) { await runtime.send(correction) }
                 let next = await currentResult()
                 // Keep the first answer if the follow-up produced nothing usable.
                 if next.failed { break }
@@ -2862,7 +2873,10 @@ final class Bot: Identifiable, @unchecked Sendable {
                 runtime = nil
             }
             if let runtime {
-                await runtime.send(await withRelevantMemoryContext(queued.text), images: queued.images)
+                let turnText = await withRelevantMemoryContext(queued.text)
+                await Telemetry.$context.withValue(TelemetryContext(bot: name, purpose: "chat")) {
+                    await runtime.send(turnText, images: queued.images)
+                }
             } else {
                 let model = selectedModel
                 let budgets = AgentRuntime.Budgets(
@@ -3376,26 +3390,32 @@ extension Bot {
     func makeActionReviewer() -> ActionReviewer {
         { [weak self] request in
             guard let self else { return nil }
-            let (backend, model) = await self.reviewerBackend()
-            let messages = [
-                ChatMessage(role: .system, content: ActionReviewPrompt.system),
-                ChatMessage(role: .user, content: ActionReviewPrompt.user(request)),
-            ]
-            let raw: String?
-            if let ollama = backend as? OllamaBackend {
-                raw = try? await ollama.chatStructured(messages: messages, model: model, schema: ActionReviewPrompt.schema)
-            } else {
-                raw = try? await backend.chat(messages: messages, tools: [], model: model, temperature: 0).message.content
+            let botName = await MainActor.run { self.name }
+            return await Telemetry.$context.withValue(TelemetryContext(bot: botName, purpose: "approval review")) {
+                await self.review(request)
             }
-            let review = raw.flatMap(ActionReviewPrompt.parse)
-            await MainActor.run {
-                guard DebugSettings.shared.isEnabled else { return }
-                let verdict = review.map { $0.approve ? "auto-approved" : "asks you" } ?? "unavailable — asks you"
-                DebugLog.shared.log(bot: self.name, colorHex: self.colorHex, kind: .status, context: "guardrails",
-                                    text: "reviewer \(verdict): \(request.tool)" + (review.map { " — \($0.reason)" } ?? ""))
-            }
-            return review
         }
+    }
+
+    private func review(_ request: ActionReviewRequest) async -> ActionReview? {
+        let (backend, model) = await reviewerBackend()
+        let messages = [
+            ChatMessage(role: .system, content: ActionReviewPrompt.system),
+            ChatMessage(role: .user, content: ActionReviewPrompt.user(request)),
+        ]
+        let raw: String?
+        if let ollama = backend as? OllamaBackend {
+            raw = try? await ollama.chatStructured(messages: messages, model: model, schema: ActionReviewPrompt.schema)
+        } else {
+            raw = try? await backend.chat(messages: messages, tools: [], model: model, temperature: 0).message.content
+        }
+        let review = raw.flatMap(ActionReviewPrompt.parse)
+        if DebugSettings.shared.isEnabled {
+            let verdict = review.map { $0.approve ? "auto-approved" : "asks you" } ?? "unavailable — asks you"
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "guardrails",
+                                text: "reviewer \(verdict): \(request.tool)" + (review.map { " — \($0.reason)" } ?? ""))
+        }
+        return review
     }
 
     /// The fast tier with a short timeout: a slow review would stall the bot more than a prompt does.

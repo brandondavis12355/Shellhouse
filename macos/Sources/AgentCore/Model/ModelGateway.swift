@@ -167,12 +167,17 @@ public actor OllamaBackend: ModelBackend {
     }
 
 
-    /// Fixed context window sent on every request. Ollama otherwise uses a
-    /// small default, silently truncating long prompts and re-evaluating
-    /// them; and changing this value between calls forces a model reload,
-    /// so it must stay constant. Sized above `compactionThresholdTokens`
-    /// (12k) plus room for the reply.
-    public static let contextWindowTokens = 16_384
+    /// Context window sent on every request (Settings → Models). Ollama otherwise uses a small default,
+    /// silently truncating long prompts; and a value that changes between calls forces a model reload, so
+    /// it's one app-wide setting. Memory use grows with this × OLLAMA_NUM_PARALLEL. `AgentRuntime` compacts
+    /// the conversation well before it fills.
+    public static let contextWindowKey = "ollama.contextWindow"
+    public static let contextWindowChoices = [16_384, 32_768, 65_536]
+    public static let defaultContextWindow = 32_768
+    public static var contextWindowTokens: Int {
+        let stored = UserDefaults.standard.integer(forKey: contextWindowKey)
+        return contextWindowChoices.contains(stored) ? stored : defaultContextWindow
+    }
 
     static func requestOptions(temperature: Double) -> [String: AnyCodable] {
         ["temperature": AnyCodable(temperature), "num_ctx": AnyCodable(contextWindowTokens)]
@@ -198,14 +203,22 @@ public actor OllamaBackend: ModelBackend {
         )
         request.httpBody = try ModelRequestEncoding.encode(body)
 
-        let (data, response) = try await session.data(for: request)
+        let started = Date()
+        let modelName = model ?? defaultModel
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.data(for: request) } catch {
+            Telemetry.recorder.modelCall(model: modelName, promptTokens: 0, completionTokens: 0, seconds: Date().timeIntervalSince(started), error: error.localizedDescription)
+            throw error
+        }
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             let detail = String(data: data, encoding: .utf8) ?? ""
+            Telemetry.recorder.modelCall(model: modelName, promptTokens: 0, completionTokens: 0, seconds: Date().timeIntervalSince(started), error: "HTTP \(status)")
             throw ModelError.requestFailed(status: status, detail: detail)
         }
 
         let decoded = try JSONDecoder().decode(OllamaChatResponse.self, from: data)
+        Self.record(decoded, model: modelName, since: started)
 
         // Ollama reports counts on the response body. Surfacing them is what
         // makes the task token budget enforceable at all.
@@ -245,12 +258,22 @@ public actor OllamaBackend: ModelBackend {
             format: AnyCodable(schema)
         )
         request.httpBody = try ModelRequestEncoding.encode(body)
+        let started = Date()
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw ModelError.requestFailed(status: (response as? HTTPURLResponse)?.statusCode ?? -1, detail: String(data: data, encoding: .utf8) ?? "")
         }
         let decoded = try JSONDecoder().decode(OllamaChatResponse.self, from: data)
+        Self.record(decoded, model: model ?? defaultModel, since: started)
         return decoded.message?.content ?? ""
+    }
+
+    private static func record(_ response: OllamaChatResponse, model: String, since started: Date) {
+        Telemetry.recorder.modelCall(
+            model: model, promptTokens: response.prompt_eval_count ?? 0, completionTokens: response.eval_count ?? 0,
+            seconds: Date().timeIntervalSince(started),
+            generationSeconds: response.eval_duration.map { Double($0) / 1e9 }, loadSeconds: response.load_duration.map { Double($0) / 1e9 }
+        )
     }
 
     public func chatStream(
@@ -278,6 +301,7 @@ public actor OllamaBackend: ModelBackend {
         // each carrying the next slice of `message.content` plus `done`;
         // the very last line also carries the prompt/eval counts the
         // non-streaming path reads from the single response body.
+        let streamStarted = Date()
         let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             var firstLine = ""
@@ -289,6 +313,7 @@ public actor OllamaBackend: ModelBackend {
         var toolCalls: [ToolCall]?
         var promptTokens = 0
         var completionTokens = 0
+        var lastChunk: OllamaChatResponse?
 
         for try await line in bytes.lines {
             guard !line.isEmpty, let lineData = line.data(using: .utf8),
@@ -302,7 +327,9 @@ public actor OllamaBackend: ModelBackend {
             }
             promptTokens = chunk.prompt_eval_count ?? promptTokens
             completionTokens = chunk.eval_count ?? completionTokens
+            if chunk.eval_count != nil { lastChunk = chunk }
         }
+        if let lastChunk { Self.record(lastChunk, model: model ?? defaultModel, since: streamStarted) }
 
         return ModelReply(
             message: ChatMessage(role: .assistant, content: content, toolCalls: toolCalls),
@@ -319,6 +346,37 @@ public actor OllamaBackend: ModelBackend {
             let models: [Model]
         }
         return try JSONDecoder().decode(TagsResponse.self, from: data).models.map(\.name)
+    }
+
+    /// A model Ollama has in memory right now (`/api/ps`).
+    public struct LoadedModel: Sendable, Identifiable {
+        public let name: String
+        public let sizeBytes: Int64
+        public let gpuBytes: Int64
+        public let contextLength: Int?
+        public let expiresAt: Date?
+        public var id: String { name }
+    }
+
+    public func loadedModels() async throws -> [LoadedModel] {
+        let (data, _) = try await session.data(from: baseURL.appendingPathComponent("api/ps"))
+        struct PS: Decodable {
+            struct Model: Decodable {
+                let name: String
+                let size: Int64?
+                let size_vram: Int64?
+                let context_length: Int?
+                let expires_at: String?
+            }
+            let models: [Model]
+        }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return try JSONDecoder().decode(PS.self, from: data).models.map { model in
+            let expiry = model.expires_at.flatMap { iso.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) }
+            return LoadedModel(name: model.name, sizeBytes: model.size ?? 0, gpuBytes: model.size_vram ?? 0,
+                               contextLength: model.context_length, expiresAt: expiry)
+        }
     }
 
     // MARK: - Wire types
@@ -391,6 +449,9 @@ public actor OllamaBackend: ModelBackend {
         let message: Message?
         let prompt_eval_count: Int?
         let eval_count: Int?
+        /// Nanoseconds, as Ollama reports them.
+        let eval_duration: Int?
+        let load_duration: Int?
     }
 }
 

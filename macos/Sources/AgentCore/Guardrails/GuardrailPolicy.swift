@@ -188,7 +188,7 @@ public enum GuardrailPolicy {
 
         // Never grantable: anything whose real effect is computed at run time.
         // Also never standing grants: the reviewer-settled exceptions below are judged one call at a time.
-        let notGrantable: Set<String> = ["write.rm_workspace", "exec.privilege_apt", "external.git_push", "shell.unresolved", "shell.opaque", "path.dynamic", "redirect.dynamic", "args.dynamic", "exec.wrapper", "exec.find_exec", "exec.xargs"]
+        let notGrantable: Set<String> = ["write.rm_workspace", "exec.privilege_apt", "external.git_push", "shell.use_secrets_github", "security.gh_setup_git", "shell.unresolved", "shell.opaque", "path.dynamic", "redirect.dynamic", "args.dynamic", "exec.wrapper", "exec.find_exec", "exec.xargs"]
         let grantable = verdict == .ask && !tainted && tool == "run_shell" && classification.rules.allSatisfy { !notGrantable.contains($0) }
 
         return GuardrailDecision(

@@ -255,8 +255,8 @@ public enum ActionClassifier {
         switch tool {
         case "run_shell":
             let command = arguments["command"]?.asString ?? ""
-            let usesSecrets = !(arguments["use_secrets"]?.asStringArray ?? []).isEmpty
-            return classifyShell(command, usesSecrets: usesSecrets, config: config)
+            let secretNames = arguments["use_secrets"]?.asStringArray ?? []
+            return classifyShell(command, usesSecrets: !secretNames.isEmpty, secretNames: secretNames, config: config)
 
         case "list_files", "read_file":
             let path = arguments["path"]?.asString ?? "."
@@ -639,7 +639,33 @@ public enum ActionClassifier {
     }
 
     /// `viaShellTool` false: text typed into a terminal window, which skips the trash backup, so no delete is relaxed.
-    public static func classifyShell(_ command: String, usesSecrets: Bool = false, config: GuardrailConfig = .standard,
+    /// `git pull` / `git clone https://github.com/...` / `gh repo clone ...` with only GITHUB_TOKEN or GH_TOKEN:
+    /// plain git and gh, no other programs, no URLs anywhere but github.com, and nothing that prints or
+    /// redirects the environment.
+    static func isGitHubCredentialUse(_ command: String, secretNames: [String], config: GuardrailConfig) -> Bool {
+        guard !secretNames.isEmpty, secretNames.allSatisfy({ $0 == "GITHUB_TOKEN" || $0 == "GH_TOKEN" }) else { return false }
+        guard !command.contains("$"), !command.contains("`"), !command.contains(">"), !command.contains("|") else { return false }
+        let analysis = ShellAnalyzer.analyze(command, environment: ShellAnalyzer.Environment(home: config.home, cwd: config.cwd))
+        guard isSimpleCommandLine(analysis) else { return false }
+        let programs = analysis.commands.compactMap(\.program)
+        guard !programs.isEmpty, programs.allSatisfy({ ["git", "gh", "cd", "ls"].contains($0) }) else { return false }
+        let gitVerbs: Set<String> = ["clone", "pull", "fetch", "push", "ls-remote", "status", "log", "remote", "checkout", "switch", "branch"]
+        for cmd in analysis.commands where cmd.program == "git" {
+            let verb = cmd.args.first { !$0.hasPrefix("-") } ?? ""
+            guard gitVerbs.contains(verb), !cmd.args.contains(where: { $0.hasPrefix("-c") || $0 == "--upload-pack" || $0 == "--receive-pack" }) else { return false }
+        }
+        for cmd in analysis.commands where cmd.program == "gh" {
+            let words = cmd.args.filter { !$0.hasPrefix("-") }
+            guard words.first == "repo" && ["clone", "view"].contains(words.dropFirst().first ?? "")
+                || words.first == "auth" && ["setup-git", "status"].contains(words.dropFirst().first ?? "")
+                || words.first == "pr" && ["view", "list", "create", "status"].contains(words.dropFirst().first ?? "") else { return false }
+        }
+        // Any URL must be GitHub's.
+        let urls = command.split(whereSeparator: { $0 == " " || $0 == "\n" }).filter { $0.contains("://") || $0.hasPrefix("git@") }
+        return urls.allSatisfy { $0.hasPrefix("https://github.com/") || $0.hasPrefix("git@github.com:") }
+    }
+
+    public static func classifyShell(_ command: String, usesSecrets: Bool = false, secretNames: [String] = [], config: GuardrailConfig = .standard,
                                      viaShellTool: Bool = true) -> Classification {
         var findings: [Finding] = []
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -648,7 +674,12 @@ public enum ActionClassifier {
         }
 
         if usesSecrets {
-            findings.append(Finding(.credential, "shell.use_secrets", "command requests Keychain secrets", clean: .askStrict, tainted: .deny))
+            if Self.isGitHubCredentialUse(trimmed, secretNames: secretNames, config: config) {
+                // The token only ever reaches github.com (gh's credential helper), so the reviewer may settle it.
+                findings.append(Finding(.credential, "shell.use_secrets_github", "uses the GitHub token for git/gh", clean: .ask, tainted: .askStrict))
+            } else {
+                findings.append(Finding(.credential, "shell.use_secrets", "command requests Keychain secrets", clean: .askStrict, tainted: .deny))
+            }
         }
 
         // Whole-string patterns that don't need parsing to be damning.
@@ -750,6 +781,8 @@ public enum ActionClassifier {
         (#">\s*/dev/(sd[a-z]|nvme\d|vd[a-z]|hd[a-z]|mem|kmem|port|disk)"#, "shell.raw_device_write", "writes to a raw device"),
         (#"\brm\s+(-[a-zA-Z]*\s+)*--no-preserve-root"#, "shell.no_preserve_root", "rm --no-preserve-root"),
         (#"\bof=/dev/(sd[a-z]|nvme\d|vd[a-z]|hd[a-z]|mem|kmem|port|disk)"#, "shell.dd_raw_device", "dd onto a raw device"),
+        (#"[a-z][a-z0-9+.-]*://[^\s/@]*\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[^\s/@]*@"#, "url.secret_in_url",
+         "puts a secret inside a URL, where git saves it in .git/config (and it lands in logs); for GitHub run `gh auth setup-git` once, then plain git commands with use_secrets: [\"GITHUB_TOKEN\"]"),
     ]
 
     static let dangerousEnvRegexes: [NSRegularExpression] = [
@@ -1048,7 +1081,9 @@ public enum ActionClassifier {
             let second = operandList.dropFirst().first?.0 ?? ""
             let local = args.contains("--version") || args.contains("--help") || args.contains("-h")
                 || sub == "version" || sub == "help" || (sub == "auth" && second == "status")
-            if local {
+            if sub == "auth" && second == "setup-git" {
+                out.append(Finding(.credential, "security.gh_setup_git", "makes git use gh for GitHub sign-in (token read from the environment, not stored)", clean: .ask, tainted: .askStrict))
+            } else if local {
                 out.append(Finding(.observe, "read.gh_local", "GitHub CLI status or version", clean: .allow, tainted: .allow))
             } else if ["pr", "issue", "release", "repo", "workflow", "gist", "api", "secret", "variable"].contains(sub) {
                 let verbs = Set(operandList.map(\.0))

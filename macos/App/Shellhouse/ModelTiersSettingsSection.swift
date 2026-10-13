@@ -54,3 +54,28 @@ struct ModelTiersSettingsSection: View {
         }
     }
 }
+
+/// Settings › Context window: how much conversation each local-model request can hold.
+struct ContextWindowSettingsSection: View {
+    @AppStorage(OllamaBackend.contextWindowKey) private var window = OllamaBackend.defaultContextWindow
+
+    var body: some View {
+        CollapsibleSection("Context window", summary: "\(window / 1024)k tokens", storageKey: "contextWindow") {
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Context window", selection: $window) {
+                        ForEach(OllamaBackend.contextWindowChoices, id: \.self) { Text("\($0 / 1024)k tokens").tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text("How much of a conversation each request to a local model can hold. Bigger means bots keep more detail "
+                        + "before older history is summarized, but Ollama reserves memory for it on every parallel slot "
+                        + "(roughly this × OLLAMA_NUM_PARALLEL), and changing it reloads the model once. Bots summarize their "
+                        + "history automatically at about two-thirds full. Match your Ollama server's OLLAMA_CONTEXT_LENGTH if you set one.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                .padding(16)
+            }
+        }
+    }
+}

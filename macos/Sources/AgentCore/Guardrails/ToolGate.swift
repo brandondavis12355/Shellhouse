@@ -320,6 +320,7 @@ public actor ToolGate {
     }
 
     private func record(_ call: ToolCall, _ decision: GuardrailDecision, outcome: String) async {
+        Telemetry.recorder.approval(call.name, outcome: outcome)
         guard let audit else { return }
         await audit.append(
             bot: sandboxID, tool: call.name, effect: decision.effect.rawValue, verdict: "\(decision.verdict)",

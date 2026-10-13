@@ -606,9 +606,19 @@ public struct ToolRegistry: Sendable {
             schema("propose_goal",
                    "Group goal owner only, and only when there is no live goal: turn the user's actionable request into a goal with a short checklist of concrete, verifiable steps. Do not use for questions or small talk.",
                    ["title": str("One-line goal."),
-                    "steps": ["type": "array", "items": ["type": "string"], "description": "2-8 concrete steps, in order."]],
+                    "steps": ["type": "array", "items": ["type": "string"], "description": "2-8 concrete steps, in order."],
+                    "depends_on": ["type": "array", "description": "Which steps must wait for others, by step number (1 = first). "
+                        + "E.g. tests and the CLI both need the game logic in step 2: [{\"step\": 3, \"after\": [2]}, {\"step\": 4, \"after\": [2]}]. "
+                        + "Leave out steps that can start right away. A step can only wait on earlier steps.",
+                                   "items": ["type": "object", "properties": [
+                                       "step": ["type": "integer"],
+                                       "after": ["type": "array", "items": ["type": "integer"]],
+                                   ] as [String: Any], "required": ["step", "after"]] as [String: Any]] as [String: Any]],
                    required: ["title", "steps"]),
-            schema("add_goal_step", "Goal owner only: append a step to the checklist.", ["text": str("The new step.")], required: ["text"]),
+            schema("add_goal_step", "Goal owner only: append a step to the checklist.",
+                   ["text": str("The new step."),
+                    "after": ["type": "array", "items": ["type": "integer"], "description": "Optional: step numbers this one must wait for."]],
+                   required: ["text"]),
             schema("update_goal_step",
                    "Update a checklist step. Set 'inProgress' when you take it on, 'blocked' (with the reason as evidence) if you can't proceed, or 'done' — done REQUIRES evidence: what you ran or checked in THIS turn and what it showed. If you are NOT the goal owner, 'done' only SUBMITS the step for validation (shown as [?]); the goal owner re-checks it with their own tools and is the only one who can mark it truly done. Only the owner's validated completions count as progress.",
                    ["step_id": str("Step id from get_goal / the goal block."),

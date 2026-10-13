@@ -54,7 +54,8 @@ struct GroupGoalCard: View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(goal.steps.enumerated()), id: \.element.id) { index, step in
                 HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: stepIcon(step.status))
+                    let waitingOn = step.status == .done ? [] : goal.unmetDependencies(of: step.id).map(\.number)
+                    Image(systemName: waitingOn.isEmpty ? stepIcon(step.status) : "pause.circle")
                         .foregroundStyle(step.status == .done ? (step.verified ? Color.green : Color.orange) : .secondary)
                         .frame(width: 16)
                     VStack(alignment: .leading, spacing: 0) {
@@ -69,6 +70,10 @@ struct GroupGoalCard: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         } else if let assignee = step.assigneeName, step.status != .done, step.status != .review {
                             Text(assignee).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if !waitingOn.isEmpty {
+                            Text("waiting on step \(waitingOn.map(String.init).joined(separator: ", "))")
+                                .font(.caption2).foregroundStyle(.secondary)
                         }
                         if step.status == .review {
                             Text("submitted by \(step.assigneeName ?? "a member") — waiting for \(ownerName) to validate")

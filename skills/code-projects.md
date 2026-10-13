@@ -30,9 +30,15 @@ work.
      needs a token.
   2. No `GITHUB_TOKEN` saved yet? Call `request_credentials` with a
      `GITHUB_TOKEN` field ("GitHub personal access token").
-  3. `run_shell("gh repo clone owner/repo /workspace/repo",
-     use_secrets: ["GITHUB_TOKEN"])`. `gh` reads the token from the
-     environment and never stores it.
+  3. Once per VM: `run_shell("gh auth setup-git", use_secrets:
+     ["GITHUB_TOKEN"])`. Git then asks gh for GitHub sign-in, and gh reads
+     the token from the environment of each command. Nothing is stored.
+  4. Then plain git, with the token for that one command:
+     `run_shell("git clone https://github.com/owner/repo.git /workspace/repo",
+     use_secrets: ["GITHUB_TOKEN"])`; the same for `git pull`, `git fetch`
+     and `git push origin <your-branch>`.
+  **Never put a token in a URL** (`https://x-access-token:$GITHUB_TOKEN@...`):
+  git saves the URL, token included, in `.git/config`. It's blocked.
   Do this before browsing or downloading anything else in the run, because
   secret commands are blocked once a run is untrusted.
 - In a group, only the member doing the clone asks for the token; the

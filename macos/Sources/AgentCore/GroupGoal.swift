@@ -31,6 +31,8 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         public var requiredMembers: [String]?
         /// Who has checked in on a per-member step, and what each saw.
         public var memberEvidence: [String: String]?
+        /// Ids of earlier steps that must be done before this one can start. Optional so older goals decode.
+        public var dependsOn: [String]?
 
         public init(id: String = UUID().uuidString, text: String, status: StepStatus = .open,
                     assigneeName: String? = nil, evidence: String? = nil, verified: Bool = false,
@@ -117,12 +119,86 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     public var openSteps: [Step] { steps.filter { $0.status == .open || $0.status == .inProgress || $0.status == .blocked || $0.status == .review } }
 
     @discardableResult
-    public mutating func addStep(_ text: String, requiredMembers: [String]? = nil) -> Step? {
+    public mutating func addStep(_ text: String, requiredMembers: [String]? = nil, dependsOnNumbers: [Int] = []) -> Step? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, isLive else { return nil }
-        let step = Step(text: trimmed, requiredMembers: requiredMembers)
+        var step = Step(text: trimmed, requiredMembers: requiredMembers)
+        step.dependsOn = Self.ids(forNumbers: dependsOnNumbers, before: steps.count, in: steps)
         steps.append(step)
         return step
+    }
+
+    /// Step numbers (1-based, as shown in the goal block) to ids, keeping only earlier steps, so a plan
+    /// can never form a cycle.
+    static func ids(forNumbers numbers: [Int], before position: Int, in steps: [Step]) -> [String]? {
+        let ids = Set(numbers).filter { $0 >= 1 && $0 <= min(position, steps.count) }.sorted().map { steps[$0 - 1].id }
+        return ids.isEmpty ? nil : ids
+    }
+
+    /// `[{"step": 3, "after": [2]}]` (or `{"3": [2]}`) from a tool call, as step number → numbers it waits on.
+    public static func dependencyMap(from value: Any?) -> [Int: [Int]] {
+        func unwrap(_ v: Any?) -> Any? { (v as? AnyCodable)?.value ?? v }
+        func int(_ v: Any?) -> Int? {
+            switch unwrap(v) {
+            case let n as Int: return n
+            case let n as Double: return Int(n)
+            case let n as NSNumber: return n.intValue
+            case let t as String: return Int(t.trimmingCharacters(in: .whitespaces))
+            default: return nil
+            }
+        }
+        var out: [Int: [Int]] = [:]
+        if let list = unwrap(value) as? [Any] {
+            for item in list {
+                guard let entry = unwrap(item) as? [String: Any], let step = int(entry["step"]) else { continue }
+                out[step, default: []] += numbers(from: entry["after"])
+            }
+        } else if let dict = unwrap(value) as? [String: Any] {
+            for (key, after) in dict { if let step = Int(key) { out[step, default: []] += numbers(from: after) } }
+        }
+        return out
+    }
+
+    public static func numbers(from value: Any?) -> [Int] {
+        let raw = (value as? AnyCodable)?.value ?? value
+        return ((raw as? [Any]) ?? []).compactMap { item in
+            let v = (item as? AnyCodable)?.value ?? item
+            if let n = v as? Int { return n }
+            if let n = v as? Double { return Int(n) }
+            if let t = v as? String { return Int(t) }
+            return nil
+        }
+    }
+
+    /// Sets each step's dependencies from `numbers` (step number → the step numbers it waits on). Used when
+    /// a goal is proposed; anything pointing at the same or a later step is dropped.
+    public mutating func setDependencies(_ numbers: [Int: [Int]]) {
+        for (number, after) in numbers where number >= 1 && number <= steps.count {
+            steps[number - 1].dependsOn = Self.ids(forNumbers: after, before: number - 1, in: steps)
+        }
+    }
+
+    /// The steps `stepID` waits on that aren't done yet, with their 1-based numbers.
+    public func unmetDependencies(of stepID: String) -> [(number: Int, step: Step)] {
+        guard let step = steps.first(where: { $0.id == stepID }) else { return [] }
+        return (step.dependsOn ?? []).compactMap { id in
+            guard let index = steps.firstIndex(where: { $0.id == id }), steps[index].status != .done else { return nil }
+            return (index + 1, steps[index])
+        }
+    }
+
+    public func isWaiting(_ step: Step) -> Bool { step.status != .done && !unmetDependencies(of: step.id).isEmpty }
+
+    /// `name` has goal work, but all of it waits on other steps: nothing it can do yet.
+    public func onlyWaitingWork(for name: String) -> Bool {
+        let mine = steps.filter { step in
+            guard step.status != .done, step.status != .review else { return false }
+            if let required = step.requiredMembers, !required.isEmpty {
+                return step.membersRemaining.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+            }
+            return step.assigneeName?.caseInsensitiveCompare(name) == .orderedSame
+        }
+        return !mine.isEmpty && mine.allSatisfy(isWaiting)
     }
 
     public mutating func removeStep(id: String) {
@@ -144,6 +220,12 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             return .rejected("No step with id '\(stepID)'. Call get_goal for the current ids.")
         }
         let current = steps[index].status
+        let waitingOn = unmetDependencies(of: stepID)
+        if newStatus == .inProgress || newStatus == .done, !waitingOn.isEmpty {
+            let list = waitingOn.map { "step \($0.number) (\($0.step.text))" }.joined(separator: ", ")
+            return .rejected("Step \(index + 1) can't start yet: it waits on \(list), which isn't done. Don't work on it or build "
+                + "a stand-in for the missing piece. Say in one line what you're waiting for and stop, or help finish \(list).")
+        }
         if newStatus == .review {
             return .rejected("'review' is set by the app when a member submits a step; use 'done' with evidence.")
         }
@@ -324,9 +406,17 @@ public struct GroupGoal: Codable, Sendable, Equatable {
                     ? " (all \(required.count) checked in)"
                     : " (each member on their own VM: \(required.count - remaining.count)/\(required.count) checked in; waiting on \(remaining.joined(separator: ", ")))"
             }
-            lines.append("  \(index + 1). \(mark) \(step.text)\(who)  id=\(step.id)")
+            let waitingOn = unmetDependencies(of: step.id)
+            let waits = step.status != .done && !waitingOn.isEmpty
+                ? "  ⏸ WAITING on step \(waitingOn.map { String($0.number) }.joined(separator: ", "))" : ""
+            lines.append("  \(index + 1). \(waits.isEmpty ? mark : "[⏸]") \(step.text)\(who)\(waits)  id=\(step.id)")
         }
         lines.append("Progress: \(doneCount)/\(steps.count) steps done; \(messagesSinceProgress)/\(stallLimit) messages since last verified progress.")
+        if steps.contains(where: isWaiting) {
+            lines.append("Steps marked [⏸] can't start until the steps they wait on are done. Don't work on them, and don't write "
+                + "stand-ins (stubs, mocks, placeholder files) for what they need. If all your work is waiting, say so in one line "
+                + "and stop; or help finish the step everyone is waiting on.")
+        }
         return lines.joined(separator: "\n")
     }
 }

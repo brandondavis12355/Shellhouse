@@ -18,9 +18,12 @@ final class BotDirectory {
     /// mutation — a plain passed-by-value array has no capture semantics
     /// to get wrong.
     private var bots: [Bot] = []
+    /// The app's one directory, for windows outside the main view (Telemetry).
+    nonisolated(unsafe) static weak var main: BotDirectory?
 
     func sync(_ bots: [Bot]) {
         self.bots = bots
+        Self.main = self
     }
 
     func allBots() -> [Bot] { bots }

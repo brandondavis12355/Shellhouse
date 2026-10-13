@@ -543,6 +543,13 @@ final class GroupChatSession: Identifiable {
                 finishTurn(messageID: turnMessageID, bot: bot, .passed("no goal step and not @mentioned"))
                 continue
             }
+            // All of this member's goal work waits on steps that aren't done: nothing to do yet. Only the
+            // user calling on it (or a stand-up) gets a turn; another bot's @mention doesn't.
+            if decision != .mustReply, !isStatusReport, let live = goal, live.isLive, live.ownerBotID != botID,
+               live.onlyWaitingWork(for: bot.name) {
+                finishTurn(messageID: turnMessageID, bot: bot, .passed("all its goal steps wait on unfinished steps"))
+                continue
+            }
             if decision == .optional {
                 debugLog(bot, "new messages — checking whether to reply")
                 let goalContext = goal.flatMap { $0.isLive ? goalBlockText($0) : nil }
@@ -737,7 +744,9 @@ final class GroupChatSession: Identifiable {
         the goal owner. Your FIRST tool call must be propose_goal (no skills, checks or other tools before it): \
         the other members are waiting for the plan. Give it a one-line title and 2-8 concrete, verifiable steps (each should be \
         checkable with a command or observation). Every member has its own separate Linux VM, so work that must happen on each machine needs one step per member; never refer to a shared sandbox. Then briefly tell the group the plan in your reply, and @mention \
-        the member best placed to start. Do not do the work before proposing the goal.
+        the member best placed to start. Do not do the work before proposing the goal. \
+        If a step needs another step's result (tests or a UI need the core code; a push needs the work), say so with \
+        depends_on, so nobody starts it early or builds a stand-in; members whose steps wait are told to hold off.
         """
 
     private func goalBlockText(_ goal: GroupGoal) -> String {
@@ -863,7 +872,9 @@ final class GroupChatSession: Identifiable {
             let steps = stepTexts.prefix(12).map {
                 GroupGoal.Step(text: $0, requiredMembers: GroupGoal.membersRequired(byStepText: $0, memberNames: memberNames))
             }
-            goal = GroupGoal(title: title, ownerBotID: botID, steps: steps, stallLimit: stallLimit)
+            var proposed = GroupGoal(title: title, ownerBotID: botID, steps: steps, stallLimit: stallLimit)
+            proposed.setDependencies(GroupGoal.dependencyMap(from: arguments["depends_on"]))
+            goal = proposed
             persistGoal()
             // The plan exists now: let the other members start on it instead of
             // waiting for the owner's whole turn to finish.
@@ -876,7 +887,8 @@ final class GroupChatSession: Identifiable {
             guard var g = goal, g.isLive else { return ["error": "No live goal."] }
             guard g.ownerBotID == botID else { return ["error": "Only the goal owner can change the plan."] }
             guard let text = arguments["text"]?.asString,
-                  g.addStep(text, requiredMembers: GroupGoal.membersRequired(byStepText: text, memberNames: members.map(\.name))) != nil
+                  g.addStep(text, requiredMembers: GroupGoal.membersRequired(byStepText: text, memberNames: members.map(\.name)),
+                            dependsOnNumbers: GroupGoal.numbers(from: arguments["after"])) != nil
             else { return ["error": "add_goal_step needs non-empty 'text'."] }
             goal = g; persistGoal()
             return ["ok": true, "goal": goalBlockText(g)]

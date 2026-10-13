@@ -100,6 +100,7 @@ struct SidebarView: View {
     private var header: some View {
         HStack(spacing: 6) {
             Spacer(minLength: 0)
+            TelemetryButton()
             GlassCircleButton(systemName: "gearshape", size: 36, help: "Settings", action: actions.openSettings)
             GlassCircleButton(systemName: "person.2", size: 36, help: "Friends — connect to a relay, invite people, accept requests.", action: actions.openFriends)
                 .overlay(alignment: .topTrailing) {
@@ -468,5 +469,15 @@ struct JoinedGroupSidebarRow: View {
         .padding(.vertical, 8)
         .background(isSelected ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(Rectangle())
+    }
+}
+
+/// Opens the Telemetry window (also Window › Telemetry, ⇧⌘T).
+struct TelemetryButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        GlassCircleButton(systemName: "chart.bar.xaxis", size: 36, help: "Telemetry — live model, token and tool usage") {
+            openWindow(id: "telemetry")
+        }
     }
 }

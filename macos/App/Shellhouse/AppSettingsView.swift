@@ -42,6 +42,7 @@ struct AppSettingsView: View {
                 AccuracySettingsSection()
 
                 ModelTiersSettingsSection()
+                ContextWindowSettingsSection()
 
                 AgentEngineSettingsSection()
 

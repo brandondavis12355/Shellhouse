@@ -38,7 +38,19 @@ progress moves the group toward an automatic pause.
 6. `@mention` the one member who should act next. Don't reply just to
    acknowledge; if nothing is needed from you, stay silent.
 
+## Steps that wait on other steps
+A step marked `[⏸] WAITING on step N` can't start until step N is done.
+- Don't work on it, and don't build stand-ins (stubs, mocks, placeholder
+  files) for what it needs: that work gets thrown away or conflicts.
+- If all your steps are waiting, say so in one line and stop, or offer to
+  help with the step everyone is waiting on.
+- `update_goal_step` refuses to start or finish a waiting step.
+
 ## If you are the owner
+- Mark which steps need others with `depends_on` (by step number), e.g.
+  tests and the CLI both need the game logic in step 2:
+  `depends_on: [{"step": 3, "after": [2]}, {"step": 4, "after": [2]}]`.
+  `add_goal_step` takes `after: [2]` the same way.
 - On an actionable request with no goal, call `propose_goal(title, steps)` — 2-8
   concrete steps, each checkable — then post the plan briefly and `@mention`
   who should start. Questions and small talk are not goals.

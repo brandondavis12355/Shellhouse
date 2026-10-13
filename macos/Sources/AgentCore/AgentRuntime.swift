@@ -37,11 +37,13 @@ public actor AgentRuntime {
         /// erroring — there's no clean failure to react to, so this has
         /// to be proactive. Conservative by default since there's no way
         /// to introspect a given model's actual context length here.
+        /// 0 (the default) means automatic: about 65% of the model's context window, after the tool
+        /// definitions and room for the reply (see `ContextBudget`).
         public var compactionThresholdTokens: Int
 
         public init(
             maxIterations: Int = 40, maxWallSeconds: TimeInterval = 1800, maxTokens: Int = 200_000,
-            compactionThresholdTokens: Int = 12_000
+            compactionThresholdTokens: Int = 0
         ) {
             self.maxIterations = maxIterations
             self.maxWallSeconds = maxWallSeconds
@@ -127,6 +129,14 @@ public actor AgentRuntime {
     private var messages: [ChatMessage] = []
     private var iterations = 0
     private var tokensUsed = 0
+    /// For local models, `maxTokens` counts new work: replies plus what was added to the conversation since
+    /// the last call. Resending the same history costs nothing extra (the server reuses its prompt cache).
+    private var chargedThrough = 0
+    private var lastPromptTokens = 0
+    private var schemaTokens = 0
+    private var countsResentContext: Bool { !(model is OllamaBackend) }
+    /// Why the current turn stopped early, for telemetry (nil = it finished).
+    private var stopReason: String?
     private var startedAt = Date()
     /// Time spent waiting for a person to answer an approval card: it does not count against the wall-clock budget.
     private var secondsWaitingForHuman: TimeInterval = 0
@@ -345,8 +355,10 @@ public actor AgentRuntime {
         stuck = StuckDetector(); abortForStuck = nil
         iterations = 0
         tokensUsed = 0
+        chargedThrough = 0
         callFingerprints = [:]
         messages = [ChatMessage(role: .system, content: systemPrompt)] + history
+        chargedThrough = messages.count
     }
 
     /// Begin a brand new conversation.
@@ -356,6 +368,7 @@ public actor AgentRuntime {
         stuck = StuckDetector(); abortForStuck = nil
         iterations = 0
         tokensUsed = 0
+        chargedThrough = 0
         callFingerprints = [:]
         messages = [
             ChatMessage(role: .system, content: systemPrompt),
@@ -369,7 +382,9 @@ public actor AgentRuntime {
         errorCounts = [:]
         failureStreak = 0; abortForFailures = false; abortForSameResults = false; sameResultStreak = 0
         budgetWarningsSent = []
+        stopReason = nil
         await loop()
+        Telemetry.recorder.runEnded(stoppedBecause: stopReason)
     }
 
     /// Continue an existing conversation with a follow-up message.
@@ -399,7 +414,9 @@ public actor AgentRuntime {
         // rest of this runtime's life, even though nothing was actually
         // looping.
         callFingerprints = [:]
+        stopReason = nil
         await loop()
+        Telemetry.recorder.runEnded(stoppedBecause: stopReason)
     }
 
     public func transcript() -> [ChatMessage] { messages }
@@ -419,6 +436,7 @@ public actor AgentRuntime {
         // Group goal turns already have the goal's checklist; a second plan would compete with it.
         let offersPlan = !tools.names().contains("update_goal_step")
         let toolSchemas = tools.schemas + [Self.finishTaskSchema] + (offersPlan ? [Self.updatePlanSchema] : [])
+        schemaTokens = ContextBudget.estimatedTokens(ofSchemas: toolSchemas)
         while true {
             do {
                 try checkBudgets()
@@ -466,7 +484,7 @@ public actor AgentRuntime {
                     return
                 }
             }
-            if let usage = reply.usage { tokensUsed += usage.total }
+            chargeUsage(reply.usage)
             if Reliability.isOn(.callChecks), (reply.message.toolCalls ?? []).isEmpty,
                let recovered = ToolCallRecovery.extract(from: reply.message.content, toolNames: Set(tools.names())) {
                 // The model wrote its tool call as text. Treat it as the call it meant to make.
@@ -654,6 +672,7 @@ public actor AgentRuntime {
 
     private func execute(_ call: ToolCall, repeatCount: Int, decision: GuardrailDecision) async {
         onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
+        let toolStarted = Date()
         var observation = await tools.execute(
             name: call.name, arguments: call.arguments, sandboxID: sandboxID, sandbox: sandbox, secretStore: secretStore
         )
@@ -674,6 +693,7 @@ public actor AgentRuntime {
         }
         noteError(call, observation: observation)
         noteFailure(FailureCheck.kind(shown))
+        Telemetry.recorder.toolRun(call.name, seconds: Date().timeIntervalSince(toolStarted), failed: FailureCheck.kind(shown) != .ok)
         let streak = noteResult(call, observation: observation)
         if !Reliability.isOn(.loopGuards) {
             // same-result guard switched off
@@ -777,7 +797,8 @@ public actor AgentRuntime {
     /// `.cancelled` (`Bot.stop()`) — that's an intentional interrupt,
     /// not a failure worth narrating.
     private func emitAbortMessage(for error: Error) {
-        if case RuntimeError.cancelled = error { return }
+        stopReason = ModelConnection.isConnectionProblem(error) ? "model server unreachable" : "\(error)"
+        if case RuntimeError.cancelled = error { stopReason = "stopped by the user"; return }
         // A dead model server is not something the bot said or did: one plain sentence, not the raw URL error.
         if ModelConnection.isConnectionProblem(error) {
             onEvent(.message(ChatMessage(role: .assistant, content: ModelConnection.friendlyMessage(for: error), isTaskSummary: true)))
@@ -815,9 +836,34 @@ public actor AgentRuntime {
     /// A no-op unless the running estimate crosses
     /// `budgets.compactionThresholdTokens`.
     private func compactContextIfNeeded() async {
+        let threshold = budgets.compactionThresholdTokens > 0 ? budgets.compactionThresholdTokens
+            : ContextBudget.compactionThreshold(window: contextWindow, schemaTokens: schemaTokens)
         let estimatedTotal = messages.reduce(0) { $0 + estimatedTokens(for: $1) }
-        guard estimatedTotal > budgets.compactionThresholdTokens else { return }
+        // The server's own count of the last prompt catches what the estimate misses (tool definitions,
+        // formatting); it includes the schemas, so compare it against the whole usable window.
+        let reported = lastPromptTokens - schemaTokens
+        guard max(estimatedTotal, reported) > threshold else { return }
         await compact()
+        // Still too big (a few huge recent tool results): shrink older results harder.
+        if messages.reduce(0, { $0 + estimatedTokens(for: $1) }) > threshold {
+            messages = ObservationPolicy.collapseStale(messages, keepLast: 3, minCharacters: 400, batch: 1)
+        }
+        lastPromptTokens = 0
+        chargedThrough = messages.count
+    }
+
+    private var contextWindow: Int { model is OllamaBackend ? OllamaBackend.contextWindowTokens : 32_768 }
+
+    private func chargeUsage(_ usage: TokenUsage?) {
+        guard let usage else { return }
+        if countsResentContext {
+            tokensUsed += usage.total
+        } else {
+            let added = messages.dropFirst(min(chargedThrough, messages.count)).reduce(0) { $0 + estimatedTokens(for: $1) }
+            tokensUsed += usage.completionTokens + added
+            chargedThrough = messages.count + 1   // the reply appended next is already counted as completion
+        }
+        lastPromptTokens = usage.promptTokens
     }
 
     /// Keeps `messages[0]` (the system prompt) and the most recent
@@ -830,14 +876,22 @@ public actor AgentRuntime {
     /// are never split across the kept/summarized boundary.
     private func compact() async {
         let keepRecentCount = 10
-        guard messages.count > keepRecentCount + 2 else { return }
+        guard messages.count > keepRecentCount + 3 else { return }
         var cutIndex = messages.count - keepRecentCount
         while cutIndex > 1, messages[cutIndex].role == .tool {
             cutIndex -= 1
         }
         guard cutIndex > 1 else { return }
 
-        let toSummarize = Array(messages[1..<cutIndex])
+        // The task itself stays word for word when it's a reasonable size: losing it is how a bot forgets
+        // what it was asked to do.
+        let taskMessage = messages[1]
+        let keepTask = taskMessage.role == .user && estimatedTokens(for: taskMessage) <= contextWindow / 5
+        let firstSummarized = keepTask ? 2 : 1
+        // Too little old history to be worth a summary call: the size is in recent tool output instead,
+        // which `compactContextIfNeeded` shrinks next.
+        guard cutIndex - firstSummarized >= 4 else { return }
+        let toSummarize = Array(messages[firstSummarized..<cutIndex])
         let kept = Array(messages[cutIndex...])
         // Images stripped from the copies sent for summarizing — the
         // point is a text digest, not reproducing them, and this keeps
@@ -850,15 +904,13 @@ public actor AgentRuntime {
         }
         summaryRequest.append(ChatMessage(
             role: .user,
-            content: "Summarize the conversation above concisely — key facts established, decisions "
-                + "made, and anything still in progress or unresolved. A few sentences, not a "
-                + "transcript. This replaces the detailed history above, so keep whatever still matters."
+            content: ContextBudget.summaryInstruction
         ))
 
         let summaryText: String
         do {
             let reply = try await model.chat(messages: summaryRequest, tools: [], model: modelName, temperature: 0.2)
-            if let usage = reply.usage { tokensUsed += usage.total }
+            if let usage = reply.usage { tokensUsed += countsResentContext ? usage.total : usage.completionTokens }
             summaryText = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             // Don't lose history over a failed summarization attempt —
@@ -874,8 +926,9 @@ public actor AgentRuntime {
             content: "(Earlier conversation summarized to keep this within the model's context — "
                 + "nothing before this point is verbatim anymore:)\n\n\(summaryText)"
         )
-        messages = [messages[0], summaryMessage] + kept
+        messages = [messages[0]] + (keepTask ? [taskMessage] : []) + [summaryMessage] + kept
         onEvent(.contextCompacted(summary: summaryText))
+        Telemetry.recorder.compaction(dropped: droppedCount)
         // `.system` role specifically: `Bot.handleEvent`'s `.message`
         // case drops system-role content from the visible chat (it
         // would just be noise there), but `logToDebugConsole` sees

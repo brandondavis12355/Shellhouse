@@ -143,5 +143,21 @@ struct ShellhouseApp: App {
         .defaultSize(width: 1280, height: 820)
         // The window can't be dragged smaller than its panes' minimum widths (sidebar + chat + debug).
         .windowResizability(.contentMinSize)
+        .commands {
+            CommandGroup(after: .windowList) { TelemetryMenuItem() }
+        }
+
+        Window("Telemetry", id: "telemetry") {
+            TelemetryView()
+        }
+        .defaultSize(width: 1100, height: 760)
+    }
+}
+
+private struct TelemetryMenuItem: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Telemetry") { openWindow(id: "telemetry") }
+            .keyboardShortcut("t", modifiers: [.command, .shift])
     }
 }
