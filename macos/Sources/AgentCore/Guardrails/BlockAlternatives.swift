@@ -5,7 +5,8 @@ public enum BlockAlternatives {
     /// First matching rule wins. Kept short: one concrete, allowed route.
     static let byRule: [(prefix: String, untrusted: String?, normal: String)] = [
         ("url.secret_in_url", nil, "use a plain https://github.com/ URL with use_secrets: [\"GITHUB_TOKEN\"], after `gh auth setup-git` once."),
-        ("shell.use_secrets", "secrets can't be used after reading untrusted content in this run; finish the parts that don't need them and ask your user to rerun the step that does.", "use only GITHUB_TOKEN with plain git/gh commands, or ask your user."),
+        ("shell.use_secrets_github", nil, "run the plain git/gh command on its own (no other programs, no `| tail`), so it can be checked."),
+        ("shell.use_secrets", "secrets can't be used after reading untrusted content in this run. For GitHub, run the plain git/gh command on its own with use_secrets: [\"GITHUB_TOKEN\"] (no other programs or pipes); otherwise finish the parts that don't need it and say which step needs your user.", "use only GITHUB_TOKEN with plain git/gh commands, or ask your user."),
         ("external.git_push_main", "push to a new branch (`git push origin <your-branch>`) and ask your user to merge it.", "push to a new branch (`git push origin <your-branch>`) and ask your user to merge it, or ask them to approve the push to main."),
         ("external.git_push", "commit locally and ask your user to push; pushing isn't allowed after reading untrusted content.", "push to your own branch."),
         ("destroy.git_push_force", nil, "push to a new branch instead of rewriting history."),

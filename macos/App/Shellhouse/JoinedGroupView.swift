@@ -242,7 +242,7 @@ struct JoinedGroupView: View {
             .settlesAtBottom(proxy, hasMessages: !session.messages.isEmpty)
             .topFade()
             .onChange(of: session.messages.last?.seq) { _, _ in
-                proxy.scrollTo(TranscriptEnd.id, anchor: .bottom)
+                scrollToEnd(proxy)
             }
         }
     }

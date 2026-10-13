@@ -1128,6 +1128,16 @@ enum TranscriptEnd {
     static var marker: some View { Color.clear.frame(height: 1).id(id) }
 }
 
+/// A new message glides into view. Deferred one run-loop turn so the new row is laid out first; scrolling to
+/// the end marker (outside the lazy list) keeps the animation from stuttering on estimated row heights.
+@MainActor
+func scrollToEnd(_ proxy: ScrollViewProxy) {
+    let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    DispatchQueue.main.async {
+        withAnimation(Motion.pick(.smooth(duration: 0.45), reduceMotion: reduce)) { proxy.scrollTo(TranscriptEnd.id, anchor: .bottom) }
+    }
+}
+
 /// Opens a transcript already sitting at its newest message. A lazy list keeps refining its row heights for
 /// a few frames after it first appears, so one scroll can land short (a blank pane, or a few messages up).
 /// This scrolls to the end marker while that settles, keeps the list invisible until it's in place, then

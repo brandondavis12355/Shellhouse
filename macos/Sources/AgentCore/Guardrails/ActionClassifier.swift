@@ -95,6 +95,14 @@ public struct GuardrailConfig: Sendable {
     public var yolo = false
     public init() {}
     public static let yoloKey = "guardrails.yolo"
+    public static let trustedGitHubOwnersKey = "guardrails.trustedGitHubOwners"
+
+    /// GitHub accounts or organizations whose repositories count as trusted (Settings → Guardrails):
+    /// cloning or pulling them doesn't make a run untrusted.
+    public static var trustedGitHubOwners: Set<String> {
+        let raw = UserDefaults.standard.string(forKey: trustedGitHubOwnersKey) ?? ""
+        return Set(raw.lowercased().split(whereSeparator: { ", \n".contains($0) }).map(String.init).filter { !$0.isEmpty })
+    }
 
     /// Opt-ins read from UserDefaults (App Settings).
     public static var standard: GuardrailConfig {
@@ -644,6 +652,7 @@ public enum ActionClassifier {
     /// redirects the environment.
     static func isGitHubCredentialUse(_ command: String, secretNames: [String], config: GuardrailConfig) -> Bool {
         guard !secretNames.isEmpty, secretNames.allSatisfy({ $0 == "GITHUB_TOKEN" || $0 == "GH_TOKEN" }) else { return false }
+        let command = withoutExitCodeBoilerplate(command)
         guard !command.contains("$"), !command.contains("`"), !command.contains(">"), !command.contains("|") else { return false }
         let analysis = ShellAnalyzer.analyze(command, environment: ShellAnalyzer.Environment(home: config.home, cwd: config.cwd))
         guard isSimpleCommandLine(analysis) else { return false }
@@ -663,6 +672,14 @@ public enum ActionClassifier {
         // Any URL must be GitHub's.
         let urls = command.split(whereSeparator: { $0 == " " || $0 == "\n" }).filter { $0.contains("://") || $0.hasPrefix("git@") }
         return urls.allSatisfy { $0.hasPrefix("https://github.com/") || $0.hasPrefix("git@github.com:") }
+    }
+
+    /// Drops what models habitually add to see a command's result: `2>&1` and a trailing
+    /// `; echo "EXIT=$?"`. Neither changes what the command does.
+    static func withoutExitCodeBoilerplate(_ command: String) -> String {
+        var out = command.replacingOccurrences(of: #"\s*2>&1"#, with: "", options: .regularExpression)
+        out = out.replacingOccurrences(of: #"\s*(;|&&)\s*echo\s+["']?[A-Za-z_ ]*[=:]?\s*\$\?["']?\s*$"#, with: "", options: .regularExpression)
+        return out.trimmingCharacters(in: .whitespaces)
     }
 
     public static func classifyShell(_ command: String, usesSecrets: Bool = false, secretNames: [String] = [], config: GuardrailConfig = .standard,

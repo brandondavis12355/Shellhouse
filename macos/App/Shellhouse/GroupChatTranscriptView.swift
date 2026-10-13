@@ -75,14 +75,17 @@ struct GroupChatTranscriptView: View {
                 .settlesAtBottom(proxy, hasMessages: !messages.isEmpty)
                 .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
-                    proxy.scrollTo(TranscriptEnd.id, anchor: .bottom)
+                    scrollToEnd(proxy)
                 }
                 // Keep a growing draft in view while it streams, at most a few
                 // times a second: a jump on every chunk made scrolling stutter.
                 .onChange(of: drafts.map(\.text.count).reduce(0, +)) { _, _ in
                     guard !drafts.isEmpty, Date().timeIntervalSince(lastDraftScroll) > 0.25 else { return }
                     lastDraftScroll = Date()
-                    proxy.scrollTo(TranscriptEnd.id, anchor: .bottom)
+                    // A short glide per step reads as one continuous follow while the reply streams.
+                    withAnimation(Motion.pick(.smooth(duration: 0.22), reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+                        proxy.scrollTo(TranscriptEnd.id, anchor: .bottom)
+                    }
                 }
             }
         }

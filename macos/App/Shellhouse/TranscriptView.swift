@@ -95,7 +95,7 @@ struct TranscriptView: View {
                 .settlesAtBottom(proxy, hasMessages: !messages.isEmpty)
                 .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
-                    proxy.scrollTo(TranscriptEnd.id, anchor: .bottom)
+                    scrollToEnd(proxy)
                 }
             }
         }

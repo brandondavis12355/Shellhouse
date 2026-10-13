@@ -8,6 +8,7 @@ struct GuardrailSettingsSection: View {
     @AppStorage("guardrails.autoAllowReadOnlyShell") private var autoAllowReadOnlyShell = false
     @AppStorage("guardrails.yolo") private var yolo = false
     @AppStorage(ActionReviewPrompt.settingKey) private var autoReview = true
+    @AppStorage(GuardrailConfig.trustedGitHubOwnersKey) private var trustedOwners = ""
     @State private var confirmingYolo = false
     @State private var entries: [AuditLog.Entry] = []
     @State private var verification: AuditLog.Verification?
@@ -36,6 +37,17 @@ struct GuardrailSettingsSection: View {
                         set: { on in if on { confirmingYolo = true } else { yolo = false } }
                     )
                 )
+                CardDivider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Trusted GitHub owners").font(.system(size: 15, weight: .medium))
+                    Text("Your GitHub account or organization, comma-separated. Cloning or pulling their repositories doesn't count as "
+                        + "untrusted content, so bots can keep using the GitHub token afterwards. Leave empty to treat every repository as untrusted.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    TextField("your-github-name, your-org", text: $trustedOwners)
+                        .themedField()
+                        .autocorrectionDisabled()
+                }
+                .padding(16)
                 CardDivider()
                 ToggleRow(
                     title: "Run provably read-only shell commands without asking",

@@ -53,7 +53,9 @@ public enum TaintRules {
         case "screenshot":
             if browserEngaged { out.append(.browser) }
         case "run_shell":
-            if shellDownloads(arguments["command"]?.asString ?? "", ruleHint: rules), !failedBeforeAnyRemoteContent(observation) {
+            let command = arguments["command"]?.asString ?? ""
+            if shellDownloads(command, ruleHint: rules), !failedBeforeAnyRemoteContent(observation),
+               !fromTrustedGitHubOwner(command, observation: observation, trusted: GuardrailConfig.trustedGitHubOwners) {
                 out.append(.download)
             }
         default:
@@ -84,6 +86,35 @@ public enum TaintRules {
     /// A download that failed locally on authentication, before the remote sent anything: nothing outside
     /// came in, so the run stays trusted and can still use a secret to retry. Any `remote:` line (text the
     /// server chose) or other output keeps the usual taint.
+    /// `git clone/pull/fetch` or `gh repo clone` of a repository owned by an account the user trusts (their
+    /// own, their org's). The owner comes from the command's URLs, or for a plain `git pull` from git's own
+    /// "From https://github.com/<owner>/..." line. Anything else in the command, or any other host, keeps the taint.
+    static func fromTrustedGitHubOwner(_ command: String, observation: [String: Any], trusted: Set<String>) -> Bool {
+        guard !trusted.isEmpty else { return false }
+        let plain = ActionClassifier.withoutExitCodeBoilerplate(command)
+        let analysis = ShellAnalyzer.analyze(plain)
+        guard ActionClassifier.isSimpleCommandLine(analysis),
+              analysis.commands.allSatisfy({ ["git", "gh", "cd", "ls"].contains($0.program ?? "") }) else { return false }
+        let output = ((observation["stdout"] as? String) ?? "") + "\n" + ((observation["stderr"] as? String) ?? "")
+        let hostPattern = #"(?:https://|git@)([A-Za-z0-9.-]+)[/:]([A-Za-z0-9_.-]+)/"#
+        guard let regex = try? NSRegularExpression(pattern: hostPattern) else { return false }
+        var owners: [String] = []
+        for text in [plain, output] {
+            for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                guard let host = Range(match.range(at: 1), in: text), let owner = Range(match.range(at: 2), in: text) else { continue }
+                guard text[host].lowercased() == "github.com" else { return false }
+                owners.append(text[owner].lowercased())
+            }
+        }
+        // `gh repo clone owner/repo`
+        for cmd in analysis.commands where cmd.program == "gh" {
+            if let spec = cmd.args.filter({ !$0.hasPrefix("-") }).dropFirst(2).first, spec.contains("/"), !spec.contains(":") {
+                owners.append(String(spec.split(separator: "/")[0]).lowercased())
+            }
+        }
+        return !owners.isEmpty && owners.allSatisfy(trusted.contains)
+    }
+
     static func failedBeforeAnyRemoteContent(_ observation: [String: Any]) -> Bool {
         let output = ((observation["stdout"] as? String) ?? "") + "\n" + ((observation["stderr"] as? String) ?? "")
         guard AuthFailure.matches(output), !output.contains("remote:") else { return false }
