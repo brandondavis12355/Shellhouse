@@ -341,7 +341,12 @@ public enum ActionClassifier {
         case "update_user", "remember_task":
             return Classification(findings: [Finding(.state, "tool.\(tool)", "changes this bot's durable state", clean: .allow, tainted: .askStrict)])
 
-        case "propose_goal", "add_goal_step", "update_goal_step", "propose_goal_complete", "complete_task":
+        case "propose_goal":
+            // Exempt from taint by the user's choice: a plan only lists steps inside this app, where
+            // everyone sees it, and each step's real action is still checked when it runs.
+            return Classification(findings: [Finding(.state, "tool.propose_goal", "proposes a goal plan", clean: .allow, tainted: .allow)])
+
+        case "add_goal_step", "update_goal_step", "propose_goal_complete", "complete_task":
             return Classification(findings: [Finding(.state, "tool.\(tool)", "changes goals or tasks", clean: .allow, tainted: .ask)])
 
         case "list_bots", "list_tasks", "list_routines", "get_profile",

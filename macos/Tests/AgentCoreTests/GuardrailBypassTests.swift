@@ -265,9 +265,11 @@ final class GuardrailBypassTests: XCTestCase {
             XCTAssertEqual(decide(tool, [:]).verdict, .allow, tool)
             XCTAssertEqual(decide(tool, [:], tainted: true).verdict, .askStrict, tool)
         }
-        for tool in ["propose_goal", "add_goal_step", "update_goal_step", "propose_goal_complete", "complete_task"] {
+        for tool in ["add_goal_step", "update_goal_step", "propose_goal_complete", "complete_task"] {
             XCTAssertGreaterThanOrEqual(decide(tool, [:], tainted: true).verdict, .ask, tool)
         }
+        // Exempt by the user's choice: a plan only, and each step's action is still checked.
+        XCTAssertEqual(decide("propose_goal", [:], tainted: true).verdict, .allow)
     }
 
     func testZReportAttemptCount() {

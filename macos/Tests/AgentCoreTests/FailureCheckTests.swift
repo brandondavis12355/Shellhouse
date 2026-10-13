@@ -16,3 +16,11 @@ final class FailureCheckTests: XCTestCase {
         XCTAssertTrue(FailureCheck.stopNotice.contains("request_credentials"))
     }
 }
+
+final class ProposeGoalTaintTests: XCTestCase {
+    func testProposeGoalRunsWithoutApprovalInUntrustedRuns() {
+        let classification = ActionClassifier.classify(tool: "propose_goal", arguments: [:])
+        XCTAssertEqual(classification.verdict(tainted: true), .allow)
+        XCTAssertEqual(ActionClassifier.classify(tool: "add_goal_step", arguments: [:]).verdict(tainted: true), .ask)
+    }
+}
