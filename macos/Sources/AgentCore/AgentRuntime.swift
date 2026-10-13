@@ -1023,6 +1023,8 @@ public actor AgentRuntime {
         failureStreak += 1
         if failureStreak >= FailureCheck.stopAfter {
             abortForFailures = true
+        } else if kind == .blocked {
+            messages.append(ChatMessage(role: .user, content: FailureCheck.blockedNotice))
         } else if kind == .hard || failureStreak == 2 {
             messages.append(ChatMessage(role: .user, content: FailureCheck.stopNotice))
         }

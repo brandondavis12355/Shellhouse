@@ -147,3 +147,12 @@ final class GitHubTokenUseTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(decide("git pull", secrets: ["GITHUB_TOKEN"], tainted: true).verdict, .askStrict)
     }
 }
+
+final class SecretURLCorrectionTests: XCTestCase {
+    func testCorrectionRemovesTheCredentialAndExplainsTheFix() {
+        let text = ToolGate.secretInURLCorrection("cd /workspace/r && git pull https://x-access-token:$GITHUB_TOKEN@github.com/o/r.git main")
+        XCTAssertTrue(text.contains("git pull https://github.com/o/r.git main"))
+        XCTAssertFalse(text.contains("x-access-token"))
+        XCTAssertTrue(text.contains("gh auth setup-git"))
+    }
+}

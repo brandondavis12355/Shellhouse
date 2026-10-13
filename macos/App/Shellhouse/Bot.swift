@@ -257,6 +257,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     var lastTurnFailure: String?
     /// What the last isolated run's tools ran and returned (bounded), and how many real tool calls it made.
     var lastTurnObservations = ""
+    /// The own-chat run's recent tool results (bounded), so a stop update can say what was actually seen.
+    var lastOwnChatToolOutput = ""
     var lastTurnToolCalls = 0
     /// Last assistant text logged per debug context, to flag a model repeating itself.
     private var lastLoggedAssistantText: [String: String] = [:]
@@ -1803,6 +1805,44 @@ final class Bot: Identifiable, @unchecked Sendable {
         }
     }
 
+    /// A plain-language update after a run stopped early, written from what the tools actually returned:
+    /// what was done and confirmed, what's left, what's needed. Never the internal stop reason verbatim.
+    func stopUpdate(reason: String, evidence: String, transcript: String, audience: String, includeMemory: Bool) async -> String {
+        let plain = Self.plainStopReason(reason)
+        let instruction = "You had to stop before finishing your task (\(plain)). Write a short message to \(audience): what you did "
+            + "and confirmed (ONLY from the tool output below; if there is none, say you didn't get to check anything), what's left, and "
+            + "what you need from them to continue. Write naturally in 2-5 sentences: no headings, no labels like Verified/Open/Need, "
+            + "no internal terms (guardrails, frozen, tokens, iterations). Do not invent results."
+        let context = evidence.isEmpty ? "" : "WHAT YOUR TOOLS RETURNED:\n" + EvidenceDigest.digest(evidence, limit: 1_500)
+        if let text = await quickReplyInGroup(groupName: "your current task", otherMembers: [], transcript: transcript,
+                                              instruction: instruction, extraContext: context, style: "a short, honest status update",
+                                              includeMemory: includeMemory) {
+            return text
+        }
+        return "I had to stop before finishing (\(plain)). Ask me to pick it up again, or tell me how you'd like to proceed."
+    }
+
+    /// The stop reason in words a user understands.
+    static func plainStopReason(_ reason: String) -> String {
+        let r = reason.lowercased()
+        if r.contains("guardrails froze") || r.contains("blocked") { return "a few of the commands I tried aren't allowed here" }
+        if r.contains("max tokens") || r.contains("max iterations") || r.contains("wall-clock") { return "I ran out of room for this turn" }
+        if r.contains("in a row failed") { return "several attempts in a row failed, so I stopped to check with you" }
+        if r.contains("same result") || r.contains("repeated") || r.contains("circles") { return "I was repeating myself without making progress" }
+        if r.contains("unreachable") { return "the model server wasn't reachable" }
+        return "something stopped me partway"
+    }
+
+    private func logStop(_ reason: String, context: String) {
+        guard DebugSettings.shared.isEnabled else { return }
+        DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .error, context: context, text: "stopped early: \(reason)")
+    }
+
+    /// The latest tool results from this bot's own-chat run, for `stopUpdate`.
+    private func runtimeToolOutput() -> String? {
+        lastOwnChatToolOutput.isEmpty ? nil : lastOwnChatToolOutput
+    }
+
     /// What this bot knows about its own work, for a stand-up: its open tasks, scheduled routines and
     /// anything it was told to remember. Nothing is invented here; an empty section says so.
     func standupContext() -> String {
@@ -1942,17 +1982,13 @@ final class Bot: Identifiable, @unchecked Sendable {
             }
         }
         // Stopped early (budget, loop, guardrail freeze): say honestly what was verified instead of a bare error.
-        if Reliability.isOn(.taskFocus), !outcome.failed, outcome.text.hasPrefix("(stopped early"), lastTurnToolCalls > 0 {
+        if Reliability.isOn(.taskFocus), !outcome.failed, outcome.text.hasPrefix("(stopped early") {
             let reason = outcome.text.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
-            if let salvage = await quickReplyInGroup(
-                groupName: groupName, otherMembers: otherMembers, transcript: String(transcriptSoFar.suffix(2_500)),
-                instruction: "Your work was stopped early (\(reason)). In at most 5 short lines: what you VERIFIED (only from the tool output "
-                    + "below), what is still open, and what you need. Do not invent results.",
-                extraContext: "WHAT YOUR TOOLS RETURNED SO FAR:\n" + EvidenceDigest.digest(lastTurnObservations, limit: 1_500),
-                style: "an honest, concise status report", includeMemory: !untrustedInput
-            ) {
-                outcome = IsolatedResult(text: "⚠ \(reason.prefix(1).uppercased() + reason.dropFirst()). " + salvage, failed: false, tainted: outcome.tainted)
-            }
+            logStop(reason, context: "group: \(groupName)")
+            let update = await stopUpdate(reason: reason, evidence: lastTurnObservations, transcript: String(transcriptSoFar.suffix(2_500)),
+                                          audience: "the group \"\(groupName)\" (members: \(otherMembers.joined(separator: ", ")))",
+                                          includeMemory: !untrustedInput)
+            outcome = IsolatedResult(text: update, failed: false, tainted: outcome.tainted)
         }
         // The model server being down is an infrastructure problem, never something to post as the bot's reply.
         if !outcome.failed, outcome.text.hasPrefix(ModelConnection.unreachablePrefix) {
@@ -2873,6 +2909,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 runtime = nil
             }
             if let runtime {
+                lastOwnChatToolOutput = ""
                 let turnText = await withRelevantMemoryContext(queued.text)
                 await Telemetry.$context.withValue(TelemetryContext(bot: name, purpose: "chat")) {
                     await runtime.send(turnText, images: queued.images)
@@ -3123,6 +3160,23 @@ final class Bot: Identifiable, @unchecked Sendable {
             break
         case .message(let message):
             guard message.role != .system, !message.content.isEmpty else { return }
+            // A run that stopped early: tell the user in plain words what was seen and what's needed, instead
+            // of posting the internal reason. The reason itself goes to the debug console and Telemetry.
+            if message.role == .assistant, message.isTaskSummary, message.content.hasPrefix("(stopped early") {
+                let reason = message.content.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+                logStop(reason, context: "own chat")
+                let evidence = (runtimeToolOutput() ?? "")
+                let recent = displayMessages.suffix(8).map { "\($0.role == .user ? "User" : name): \($0.text.prefix(400))" }.joined(separator: "\n")
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let update = await self.stopUpdate(reason: reason, evidence: evidence, transcript: recent, audience: "your user, in your private chat",
+                                                       includeMemory: true)
+                    self.displayMessages.append(DisplayMessage(role: .assistant, text: update, toolName: nil, isTaskSummary: false))
+                    self.persistTranscript()
+                    self.hasUnread = true
+                }
+                return
+            }
             // `!message.isTaskSummary` matters here: finish_task's own
             // summary must always land in its own fresh bubble (so it
             // keeps its collapsed "Done — tap for summary" treatment —
@@ -3160,8 +3214,9 @@ final class Bot: Identifiable, @unchecked Sendable {
             // at the same one, so it earns its own bubble instead of
             // reusing (and overwriting) the one before the tool call.
             streamingIndex = nil
-        case .toolCompleted(let name, _):
+        case .toolCompleted(let name, let resultJSON):
             status = "Finished \(name)"
+            lastOwnChatToolOutput = String((lastOwnChatToolOutput + "\n" + name + ": " + resultJSON).suffix(8_000))
         case .approvalNeeded:
             break  // surfaced via the `requestApproval` closure/card, not here
         case .contextCompacted(let summary):

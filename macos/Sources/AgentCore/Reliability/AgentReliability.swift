@@ -110,13 +110,15 @@ public enum ObservationPolicy {
 
 /// How a tool result went, for the "stop and tell your user" rule (see `AgentRuntime`).
 public enum FailureCheck {
-    public enum Kind: Equatable { case ok, failed, hard }
+    public enum Kind: Equatable { case ok, failed, blocked, hard }
 
     /// `hard`: blocked, denied or missing credentials: nothing to retry. `failed`: an error, a non-zero
     /// exit, or exit 0 with failure text in the output (the warning `ObservationPolicy.annotate` adds).
     public static func kind(_ shown: [String: Any]) -> Kind {
         let text = ((shown["error"] as? String) ?? "") + "\n" + ((shown["stdout"] as? String) ?? "") + "\n" + ((shown["stderr"] as? String) ?? "")
-        if let error = shown["error"] as? String, error.hasPrefix("blocked by guardrails") || error.hasPrefix("denied by user") { return .hard }
+        // A block comes with an allowed alternative to act on; the user saying no is a real stop.
+        if let error = shown["error"] as? String, error.hasPrefix("blocked") { return .blocked }
+        if let error = shown["error"] as? String, error.hasPrefix("denied by user") { return .hard }
         let exit = (shown["exit_code"] as? Int) ?? (shown["exit_code"] as? NSNumber)?.intValue ?? 0
         let failed = shown["error"] != nil || exit != 0 || shown["warning"] != nil
         if failed, AuthFailure.matches(text) { return .hard }
@@ -127,6 +129,10 @@ public enum FailureCheck {
         + "package to install, a path to correct), stop here: finish_task with outcome \"blocked\", telling your user what "
         + "failed, what you tried, and what you need from them. Don't probe with more commands or try workarounds first. "
         + "(Missing credentials: request_credentials.)"
+
+    public static let blockedNotice = "[blocked] That action isn't allowed, but the task can usually still be done. Take the "
+        + "allowed route the message gives (or another one you're sure is allowed), or move on to the parts you can do. Don't retry "
+        + "the blocked action. Mention what you couldn't do in your reply."
 
     /// Consecutive failed actions after which the run stops and reports instead.
     public static let stopAfter = 3

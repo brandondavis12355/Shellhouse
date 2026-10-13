@@ -328,6 +328,10 @@ final class GuardrailTests: XCTestCase {
         var g3 = RunGuard(limits: { var l = RunLimits(); l.maxBlockedActions = 2; return l }())
         XCTAssertNoThrow(try g3.recordBlocked())
         XCTAssertThrowsError(try g3.recordBlocked())
+        // Different blocks are information; the same one retried freezes.
+        var g5 = RunGuard()
+        XCTAssertNoThrow(try g5.recordBlocked(kind: "a")); XCTAssertNoThrow(try g5.recordBlocked(kind: "b"))
+        XCTAssertNoThrow(try g5.recordBlocked(kind: "a")); XCTAssertThrowsError(try g5.recordBlocked(kind: "a"))
         var g4 = RunGuard(limits: { var l = RunLimits(); l.maxBytesWritten = 10; return l }())
         XCTAssertNoThrow(try g4.recordWrite(bytes: 10))
         XCTAssertThrowsError(try g4.recordWrite(bytes: 1))

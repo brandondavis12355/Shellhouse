@@ -81,6 +81,16 @@ public actor ToolGate {
 
     public func setTask(_ text: String) { task = text }
 
+    /// The blocked command with the credential taken out of its URL, and how to authenticate instead.
+    static func secretInURLCorrection(_ command: String) -> String {
+        let fixed = command.replacingOccurrences(of: #"([a-z][a-z0-9+.-]*://)[^\s/@]*\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[^\s/@]*@"#,
+                                                 with: "$1", options: .regularExpression)
+        return "blocked: this puts the token inside a URL, where git saves it in .git/config. Do this instead (same result, nothing stored): "
+            + "1) once on this VM: run_shell(\"gh auth setup-git\", use_secrets: [\"GITHUB_TOKEN\"]); "
+            + "2) then: run_shell(\"\(fixed)\", use_secrets: [\"GITHUB_TOKEN\"]). "
+            + "Use plain https://github.com/... URLs from now on, and tell others in the group to do the same."
+    }
+
     public func mark(_ source: TaintSource) {
         if taint.mark(source) { taintVersion += 1 }
     }
@@ -145,10 +155,19 @@ public actor ToolGate {
             if decision.tripwire {
                 return await freeze(call, "the agent touched a decoy credential", decision: decision)
             }
-            do { try runGuard.recordBlocked() } catch {
+            // A token pasted into a URL is a known mistake with a known fix: hand over the corrected commands,
+            // and don't count it toward the freeze (it isn't probing the boundary).
+            if decision.rules.contains("url.secret_in_url"), call.name == "run_shell", let command = call.arguments["command"]?.asString {
+                return .refuse(Self.secretInURLCorrection(command))
+            }
+            do { try runGuard.recordBlocked(kind: call.name + "|" + decision.rules.sorted().joined(separator: ",")) } catch {
                 return await freeze(call, "\(error)", decision: decision)
             }
-            return .refuse("blocked by guardrails: \(decision.reasons.joined(separator: "; ")). This action is not allowed here; choose a different approach or tell the user what you need.")
+            let instead = BlockAlternatives.suggestion(for: decision.rules, tainted: decision.tainted)
+            return .refuse("blocked by guardrails: \(decision.reasons.joined(separator: "; ")). "
+                + (instead.map { "Instead: \($0) " } ?? "")
+                + "Don't retry this or a reworded version of it. Take an allowed route to the same result, or carry on with the "
+                + "rest of the task, and say in your reply what you couldn't do and what you'd need.")
 
         case .allow:
             if decision.quarantine { return await quarantine(call, decision) }
@@ -234,7 +253,7 @@ public actor ToolGate {
             switch answer {
             case .deny:
                 await record(call, decision, outcome: "denied_by_user")
-                do { try runGuard.recordBlocked() } catch {
+                do { try runGuard.recordBlocked(kind: "denied|" + call.name + "|" + decision.rules.sorted().joined(separator: ",")) } catch {
                     return await freeze(call, "\(error)", decision: decision)
                 }
                 return .refuse("denied by user")

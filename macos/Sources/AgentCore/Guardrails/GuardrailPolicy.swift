@@ -210,8 +210,11 @@ public enum GuardrailPolicy {
 public struct RunLimits: Sendable {
     public var maxToolCallsPerMinute = 90
     public var maxShellCommands = 400
-    /// Denied or strictly-blocked attempts before the run is frozen.
-    public var maxBlockedActions = 3
+    /// Blocked or denied attempts of any kind before the run is frozen (a run hitting this many different
+    /// walls is probing them). Blocks are otherwise information the bot acts on.
+    public var maxBlockedActions = 8
+    /// The same kind of blocked action (same rules), retried this many times, freezes the run.
+    public var maxRepeatsOfOneBlock = 3
     public var maxBytesWritten = 64 * 1024 * 1024
     public init() {}
 }
@@ -221,6 +224,7 @@ public struct RunGuard: Sendable {
         case rateLimit(Int)
         case shellLimit(Int)
         case blockedLimit(Int)
+        case repeatedBlock(Int)
         case writeQuota(Int)
         case tripwire(String)
 
@@ -229,6 +233,7 @@ public struct RunGuard: Sendable {
             case .rateLimit(let n): return "more than \(n) tool calls in a minute"
             case .shellLimit(let n): return "more than \(n) shell commands in one run"
             case .blockedLimit(let n): return "\(n) blocked actions in one run"
+            case .repeatedBlock(let n): return "the same blocked action was tried \(n) times"
             case .writeQuota(let n): return "more than \(n / 1024 / 1024) MB written in one run"
             case .tripwire(let why): return "touched a decoy credential (\(why))"
             }
@@ -253,8 +258,15 @@ public struct RunGuard: Sendable {
         }
     }
 
-    public mutating func recordBlocked() throws {
+    private var blockedByKind: [String: Int] = [:]
+
+    /// `kind` groups rewordings of the same blocked thing (its rules), so retrying it is caught early.
+    public mutating func recordBlocked(kind: String = "") throws {
         blocked += 1
+        if !kind.isEmpty {
+            blockedByKind[kind, default: 0] += 1
+            if blockedByKind[kind]! >= limits.maxRepeatsOfOneBlock { throw Violation.repeatedBlock(blockedByKind[kind]!) }
+        }
         if blocked >= limits.maxBlockedActions { throw Violation.blockedLimit(blocked) }
     }
 
