@@ -177,6 +177,17 @@ public actor AgentRuntime {
     /// Failed actions in a row (see `FailureCheck`); any success resets it.
     private var failureStreak = 0
     private var abortForFailures = false
+    /// The same failure (same error text) repeating: no new information, unlike a test that fails differently.
+    private var sameFailureStreak = 0
+    private var lastFailureKey = ""
+    private var githubTokenSaved: Bool?
+
+    private func hasSavedGitHubToken() async -> Bool {
+        if let known = githubTokenSaved { return known }
+        let saved = ((try? await secretStore.list()) ?? []).contains { $0.name == "GITHUB_TOKEN" }
+        githubTokenSaved = saved
+        return saved
+    }
     private var stuck = StuckDetector()
     private var currentGoal = ""
     private var budgetWarningsSent: Set<Int> = []
@@ -383,6 +394,7 @@ public actor AgentRuntime {
         finishGuardUsed = false
         errorCounts = [:]
         failureStreak = 0; abortForFailures = false; abortForSameResults = false; sameResultStreak = 0
+        sameFailureStreak = 0; lastFailureKey = ""
         budgetWarningsSent = []
         stopReason = nil
         await loop()
@@ -403,6 +415,7 @@ public actor AgentRuntime {
         finishGuardUsed = false
         errorCounts = [:]
         failureStreak = 0; abortForFailures = false; abortForSameResults = false; sameResultStreak = 0
+        sameFailureStreak = 0; lastFailureKey = ""
         // Loop-detection is meant to catch a model stuck repeating the
         // SAME call within one reasoning task, not across entirely
         // separate turns — without this reset, `callFingerprints`
@@ -622,6 +635,16 @@ public actor AgentRuntime {
             return true
         }
 
+        // A plain GitHub git/gh network command with no secret attached: bots often forget use_secrets and get
+        // "could not read Username". When a GITHUB_TOKEN is saved, attach it (it only ever reaches github.com
+        // through gh's credential helper, and the guardrails still judge the call with it attached).
+        var call = call
+        if call.name == "run_shell", (call.arguments["use_secrets"]?.asStringArray ?? []).isEmpty,
+           let command = call.arguments["command"]?.asString, ActionClassifier.isGitHubNetworkCommand(command),
+           await hasSavedGitHubToken() {
+            call = ToolCall(name: call.name, arguments: call.arguments.merging(["use_secrets": AnyCodable(["GITHUB_TOKEN"])]) { _, new in new })
+        }
+
         let evaluationStarted = Date()
         let outcome = await gate.evaluate(call)
         // Judging a call is instant; anything longer was a person deciding.
@@ -637,7 +660,7 @@ public actor AgentRuntime {
             return false
         case .refuse(let message):
             appendToolResult(name: call.name, observation: ["error": message])
-            noteFailure(FailureCheck.kind(["error": message]))
+            noteFailure(FailureCheck.kind(["error": message]), key: call.name + message)
             if abortForFailures { return stopForFailures() }
             return true
         case .held(let note, let stored):
@@ -687,14 +710,14 @@ public actor AgentRuntime {
         onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(shown)))
         // Something changed on the machine (an install, a write, a command with side effects): checking again
         // is now a different question, so earlier identical checks no longer count as a loop.
-        if decision.effect != .observe {
+        if !ObservationPolicy.isObservation(decision) {
             callFingerprints.removeAll()
             lastResultKey = ""
             sameResultStreak = 0
             stuck.reset()
         }
         noteError(call, observation: observation)
-        noteFailure(FailureCheck.kind(shown))
+        noteFailure(FailureCheck.kind(shown), key: call.name + FailureCheck.key(shown))
         Telemetry.recorder.toolRun(call.name, seconds: Date().timeIntervalSince(toolStarted), failed: FailureCheck.kind(shown) != .ok)
         let streak = noteResult(call, observation: observation)
         if !Reliability.isOn(.loopGuards) {
@@ -1019,21 +1042,27 @@ public actor AgentRuntime {
     /// loop guards would stop the run.
     /// The user wants to hear about a problem before the bot takes more actions on it: a hard failure,
     /// or two failures in a row, tell it to stop and report; a third in a row ends the run.
-    private func noteFailure(_ kind: FailureCheck.Kind) {
+    private func noteFailure(_ kind: FailureCheck.Kind, key: String) {
         guard Reliability.isOn(.loopGuards) else { return }
-        guard kind != .ok else { failureStreak = 0; return }
+        guard kind != .ok else { failureStreak = 0; sameFailureStreak = 0; lastFailureKey = ""; return }
         failureStreak += 1
-        if failureStreak >= FailureCheck.stopAfter {
+        sameFailureStreak = key == lastFailureKey ? sameFailureStreak + 1 : 1
+        lastFailureKey = key
+        // Stop on the same failure three times (nothing new is being learned), or six failures of any kind.
+        // A test that fails differently each run is debugging, not a loop.
+        if sameFailureStreak >= FailureCheck.stopAfter || failureStreak >= FailureCheck.stopAfterAny {
             abortForFailures = true
         } else if kind == .blocked {
             messages.append(ChatMessage(role: .user, content: FailureCheck.blockedNotice))
-        } else if kind == .hard || failureStreak == 2 {
+        } else if kind == .hard || sameFailureStreak == 2 || failureStreak == FailureCheck.stopAfter {
             messages.append(ChatMessage(role: .user, content: FailureCheck.stopNotice))
         }
     }
 
     private func stopForFailures() -> Bool {
-        let error = RuntimeError.repeated("\(FailureCheck.stopAfter) actions in a row failed, so it stopped to check with you before trying anything else")
+        let error = RuntimeError.repeated(sameFailureStreak >= FailureCheck.stopAfter
+            ? "the same action failed \(sameFailureStreak) times in a row, so it stopped to check with you before trying anything else"
+            : "\(failureStreak) actions in a row failed, so it stopped to check with you before trying anything else")
         emitAbortMessage(for: error)
         onEvent(.status(.aborted("\(error)")))
         return false

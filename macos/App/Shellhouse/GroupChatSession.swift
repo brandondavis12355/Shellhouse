@@ -926,6 +926,13 @@ final class GroupChatSession: Identifiable {
             let grounded = EvidenceGrounding.isGrounded(evidence: evidenceText, observations: pool)
             let backedByTools = toolCalls > 0 && (grounded || !Reliability.isOn(.replyChecks))
             let isOwner = g.ownerBotID == botID
+            // Marking a finished step done again isn't progress or a failure: point at what's next instead.
+            if status == .done, let index = g.steps.firstIndex(where: { $0.id == stepID }), g.steps[index].status == .done {
+                let next = g.steps.enumerated().first { $0.element.status != .done }
+                return ["ok": true, "already_done": true,
+                        "note": "Step \(index + 1) is already done; nothing to record. "
+                            + (next.map { "Next open step: \($0.offset + 1). \(GroupGoal.displayText($0.element.text))" } ?? "Every step is done.")]
+            }
             // Members can only put themselves on a step; the owner may assign anyone.
             let assignee = isOwner ? (arguments["assignee"]?.asString ?? (status == .inProgress ? bot.name : nil)) : bot.name
             let ownerName = members.first(where: { $0.id == g.ownerBotID })?.name ?? "the goal owner"

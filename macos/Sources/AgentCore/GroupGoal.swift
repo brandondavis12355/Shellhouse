@@ -388,6 +388,13 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     }
 
     /// Prompt text shown to every member each turn.
+    /// Step text without credentials pasted into URLs (`https://x-access-token:$GITHUB_TOKEN@github.com/...`),
+    /// so a plan written that way doesn't keep teaching every member the blocked pattern.
+    public static func displayText(_ text: String) -> String {
+        text.replacingOccurrences(of: #"([a-z][a-z0-9+.-]*://)[^\s/@]*(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|:[^\s/@]+)[^\s/@]*@"#,
+                                  with: "$1", options: .regularExpression)
+    }
+
     public func promptBlock(ownerName: String) -> String {
         var lines = ["CURRENT GROUP GOAL (owner: \(ownerName), status: \(status.rawValue)): \(title)"]
         for (index, step) in steps.enumerated() {
@@ -409,9 +416,11 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             let waitingOn = unmetDependencies(of: step.id)
             let waits = step.status != .done && !waitingOn.isEmpty
                 ? "  ⏸ WAITING on step \(waitingOn.map { String($0.number) }.joined(separator: ", "))" : ""
-            lines.append("  \(index + 1). \(waits.isEmpty ? mark : "[⏸]") \(step.text)\(who)\(waits)  id=\(step.id)")
+            lines.append("  \(index + 1). \(waits.isEmpty ? mark : "[⏸]") \(Self.displayText(step.text))\(who)\(waits)  id=\(step.id)")
         }
         lines.append("Progress: \(doneCount)/\(steps.count) steps done; \(messagesSinceProgress)/\(stallLimit) messages since last verified progress.")
+        lines.append("If you're waiting on someone (a review, a push, another step), say so once in your reply and end your turn: "
+            + "don't re-check the same files or git log again and again while nothing has changed.")
         if steps.contains(where: isWaiting) {
             lines.append("Steps marked [⏸] can't start until the steps they wait on are done. Don't work on them, and don't write "
                 + "stand-ins (stubs, mocks, placeholder files) for what they need. If all your work is waiting, say so in one line "

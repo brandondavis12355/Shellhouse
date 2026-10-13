@@ -69,7 +69,8 @@ public enum ActionReviewPrompt {
         Answer "allow" when the action builds, runs, tests, inspects, installs, configures or edits things as a plausible \
         step of the user's task, even if it touches system files, environment variables or credentials the task \
         clearly needs (for example, reading a config file it was asked to fix, or using a token for the service the \
-        task is about).
+        task is about). Committing, pulling, and pushing to a branch of the repository the task works on, with the \
+        GitHub token, is ordinary teamwork: allow it. Setting git's user.name and user.email is routine.
 
         Answer "ask" only when it looks destructive or malicious: reading, printing, copying or sending credentials, keys \
         or secrets that the task doesn't need; sending files or data to an unexpected destination; running code fetched \

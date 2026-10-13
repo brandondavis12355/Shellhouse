@@ -8,6 +8,12 @@ import Foundation
 // MARK: - 1. Bounded observations, 2. failure hints, 3. masked-failure warnings
 
 public enum ObservationPolicy {
+    /// Looking, not changing: `cd somewhere && git log && ls` reads like `ls`, so repeating it is a loop.
+    public static func isObservation(_ decision: GuardrailDecision) -> Bool {
+        decision.effect == .observe
+            || (!decision.rules.isEmpty && decision.rules.allSatisfy { $0.hasPrefix("read.") || $0 == "exec.cd" || $0 == "shell.read_only" })
+    }
+
     /// A single tool field longer than this is shown as head + tail with an explicit omission marker.
     /// (SWE-agent: bounded, summarized observations beat raw dumps.)
     public static let maxFieldCharacters = 6_000
@@ -134,8 +140,16 @@ public enum FailureCheck {
         + "allowed route the message gives (or another one you're sure is allowed), or move on to the parts you can do. Don't retry "
         + "the blocked action. Mention what you couldn't do in your reply."
 
-    /// Consecutive failed actions after which the run stops and reports instead.
+    /// The same failure this many times in a row stops the run with a report.
     public static let stopAfter = 3
+    /// Failures of any kind in a row before the run stops.
+    public static let stopAfterAny = 6
+
+    /// What identifies "the same failure": the error or stderr text, numbers ignored.
+    public static func key(_ shown: [String: Any]) -> String {
+        let text = (shown["error"] as? String) ?? ((shown["stderr"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (shown["stdout"] as? String) ?? "")
+        return String(text.suffix(300)).replacingOccurrences(of: "[0-9]+", with: "#", options: .regularExpression)
+    }
 }
 
 public struct StuckDetector: Sendable {

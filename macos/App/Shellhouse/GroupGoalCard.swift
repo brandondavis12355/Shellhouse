@@ -67,7 +67,7 @@ struct GroupGoalCard: View {
                         .contentTransition(.symbolEffect(.replace))
                         .frame(width: 16)
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("\(index + 1). \(step.text)")
+                        Text("\(index + 1). \(GroupGoal.displayText(step.text))")
                             .font(.caption)
                             .strikethrough(step.status == .done)
                         if let required = step.requiredMembers, !required.isEmpty {

@@ -648,6 +648,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             try await sandbox.forceDestroy(oldHandle.id)
             let created = try await sandbox.create(taskID: id, persistent: true)
             handle = created
+            Task { await self.configureVMBasics(sandbox: sandbox, sandboxID: created.id) }
             if let vncString = created.metadata["vnc_url"], let vncURL = URL(string: vncString) {
                 state = .running(vncURL: vncURL)
             } else {
@@ -667,6 +668,29 @@ final class Bot: Identifiable, @unchecked Sendable {
         } catch {
             state = .failed(error.localizedDescription)
             status = "Sandbox reset failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Every VM gets a git identity (the bot's name) and gh as GitHub's credential helper, so commits don't fail
+    /// with "Author identity unknown" and git commands run with use_secrets: ["GITHUB_TOKEN"] just work. Only
+    /// fills in what's missing; a bot's own later settings win.
+    func configureVMBasics(sandbox: RemoteSandboxManager, sandboxID: String) async {
+        let slug = name.lowercased().replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        let command = """
+            git config --global user.name >/dev/null || git config --global user.name \(shellQuote(name)); \
+            git config --global user.email >/dev/null || git config --global user.email \(shellQuote((slug.isEmpty ? "bot" : slug) + "@shellhouse.local")); \
+            if command -v gh >/dev/null && ! git config --global --get-all credential.https://github.com.helper | grep -q 'gh auth git-credential'; then \
+              git config --global credential.https://github.com.helper '' && \
+              git config --global --add credential.https://github.com.helper '!/usr/bin/gh auth git-credential'; fi
+            """
+        // The container reports "created" a moment before it accepts commands: retry for up to ~40 s.
+        for attempt in 0..<8 {
+            if let result = try? await sandbox.exec(sandboxID, command: command, timeout: 20, env: nil), result.exitCode == 0 { return }
+            try? await Task.sleep(nanoseconds: UInt64(2 + attempt) * 1_000_000_000)
+        }
+        if DebugSettings.shared.isEnabled {
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .error, context: "sandbox", text: "couldn't set the VM's git identity and GitHub credential helper")
         }
     }
 
@@ -1866,7 +1890,8 @@ final class Bot: Identifiable, @unchecked Sendable {
 
     private func logStop(_ reason: String, context: String) {
         guard DebugSettings.shared.isEnabled else { return }
-        DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .error, context: context, text: "stopped early: \(reason)")
+        DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .error, context: context,
+                            text: reason.hasPrefix("stopped early") ? reason : "stopped early: \(reason)")
     }
 
     /// The latest tool results from this bot's own-chat run, for `stopUpdate`.
@@ -2493,6 +2518,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             // container (and its state) rather than creating a new one.
             let created = try await provider.create(taskID: id, persistent: true)
             handle = created
+            Task { await self.configureVMBasics(sandbox: provider, sandboxID: created.id) }
             if let vncString = created.metadata["vnc_url"], let vncURL = URL(string: vncString) {
                 state = .running(vncURL: vncURL)
             } else {
@@ -3283,6 +3309,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         case .waitingForApproval: return "Waiting for your approval…"
         case .completed: return "Done"
         case .failed(let message): return "Failed: \(message)"
+        case .aborted("silent"): return "Nothing to add"
         case .aborted(let message): return "Stopped: \(message)"
         }
     }
@@ -3310,6 +3337,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         case .status(let runtimeStatus):
             let kind: DebugLogEntry.Kind
             switch runtimeStatus {
+            case .aborted("silent"): kind = .status   // the bot chose not to reply; not a failure
             case .failed, .aborted: kind = .error
             default: kind = .status
             }
@@ -3317,6 +3345,9 @@ final class Bot: Identifiable, @unchecked Sendable {
         case .messageDelta(let delta):
             DebugLog.shared.logDelta(bot: name, colorHex: colorHex, context: context, delta: delta)
         case .message(let message):
+            // Empty assistant turns (a tool call with no text) are noise, and tool results are already logged
+            // once as "← tool: …" by `.toolCompleted`.
+            guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, message.role != .tool else { return }
             var text = message.content
             if message.role == .assistant, !message.isTaskSummary, !text.isEmpty {
                 let key = context ?? ""
@@ -3394,11 +3425,15 @@ final class ToolCallCounter: @unchecked Sendable {
     }
     /// What this run's tools actually returned (most recent ~12k characters): the world's output, the only
     /// thing a "done" claim can be checked against.
+    /// File reads are capped so a few large ones can't push command results (what evidence usually quotes)
+    /// out of the pool.
     func noteOutput(_ toolName: String, _ text: String) {
         guard !Self.bookkeeping.contains(toolName) else { return }
+        let reads: Set<String> = ["read_file", "search_files", "find_files", "list_files", "use_skill"]
+        let entry = reads.contains(toolName) ? String(text.prefix(1_500)) : String(text.suffix(8_000))
         lock.lock()
-        pool += "\n" + text
-        if pool.count > 12_000 { pool = String(pool.suffix(12_000)) }
+        pool += "\n" + entry
+        if pool.count > 40_000 { pool = String(pool.suffix(40_000)) }
         lock.unlock()
     }
     var observations: String { lock.lock(); defer { lock.unlock() }; return pool }

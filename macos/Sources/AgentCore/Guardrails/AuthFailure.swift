@@ -18,9 +18,8 @@ public enum AuthFailure {
         patterns.contains { output.contains($0) }
     }
 
-    public static let hint = "This failed because it needs credentials, not because of a typo: retrying it, or trying "
-        + "ssh instead, will fail the same way. Call request_credentials once (e.g. a GITHUB_TOKEN field, labelled "
-        + "\"GitHub personal access token\") to have your user enter it securely, then retry with "
-        + "run_shell(use_secrets: [\"GITHUB_TOKEN\"]), e.g. `gh repo clone owner/repo /workspace/repo`. "
-        + "If the request is cancelled, stop and tell your user what you need."
+    public static let hint = "This failed because it needs GitHub credentials, not because of a typo: retrying it as is, or "
+        + "trying ssh, fails the same way. If a GITHUB_TOKEN is already saved, re-run the same command with "
+        + "run_shell(use_secrets: [\"GITHUB_TOKEN\"]). Only if none is saved, call request_credentials once for a GITHUB_TOKEN "
+        + "(\"GitHub personal access token\"). If that request is cancelled, stop and tell your user what you need."
 }

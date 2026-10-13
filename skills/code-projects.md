@@ -45,6 +45,17 @@ work.
   others wait for its result instead of trying the same clone.
 - Never put a token in a URL, a file or a commit, and never print it.
 
+## When a test fails
+- Check the test's own expectation before calling it a bug: print the
+  input and the value you expected, and work it out by hand. (A
+  "draw" board of X O X / O X O / X O X is not a draw: X has both
+  diagonals.)
+- Only report a bug in someone else's code once you've shown the code is
+  wrong, not just that a test disagrees with it.
+- Put tests in a file (`test_*.py`) and run the file, instead of pasting a
+  long `python3 -c "…"` again and again. Edit the file to change a case.
+- Git commits need an identity; every VM has one set (your bot's name).
+
 ## Work in small, checked steps
 For anything with several steps, keep a plan with `update_plan` and mark
 each step done as you go; you can't finish while steps are still open.

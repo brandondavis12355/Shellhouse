@@ -663,6 +663,12 @@ public enum ActionClassifier {
         let gitVerbs: Set<String> = ["clone", "pull", "fetch", "push", "ls-remote", "status", "log", "remote", "checkout", "switch", "branch"]
         for cmd in analysis.commands where cmd.program == "git" {
             let verb = cmd.args.first { !$0.hasPrefix("-") } ?? ""
+            // Setting the commit identity is routine and touches nothing credential-related.
+            if verb == "config" {
+                let words = cmd.args.filter { !$0.hasPrefix("-") }
+                guard words.count >= 2, ["user.name", "user.email"].contains(words[1].lowercased()) else { return false }
+                continue
+            }
             guard gitVerbs.contains(verb), !cmd.args.contains(where: { $0.hasPrefix("-c") || $0 == "--upload-pack" || $0 == "--receive-pack" }) else { return false }
         }
         for cmd in analysis.commands where cmd.program == "gh" {
@@ -676,11 +682,26 @@ public enum ActionClassifier {
         return urls.allSatisfy { $0.hasPrefix("https://github.com/") || $0.hasPrefix("git@github.com:") }
     }
 
+    /// A GitHub git/gh command that talks to the network (clone, pull, fetch, push, ls-remote, gh repo clone)
+    /// and nothing else: the kind that needs the GitHub token to work.
+    public static func isGitHubNetworkCommand(_ command: String) -> Bool {
+        let plain = withoutExitCodeBoilerplate(command)
+        let analysis = ShellAnalyzer.analyze(plain)
+        let network = analysis.commands.contains { cmd in
+            let verb = cmd.args.first { !$0.hasPrefix("-") } ?? ""
+            return (cmd.program == "git" && ["clone", "pull", "fetch", "push", "ls-remote"].contains(verb))
+                || (cmd.program == "gh" && ["repo", "pr", "auth"].contains(verb))
+        }
+        return network && isGitHubCredentialUse(command, secretNames: ["GITHUB_TOKEN"], config: GuardrailConfig())
+    }
+
     /// Drops what models habitually add to see a command's result: `2>&1` and a trailing
     /// `; echo "EXIT=$?"`. Neither changes what the command does.
     static func withoutExitCodeBoilerplate(_ command: String) -> String {
         var out = command.replacingOccurrences(of: #"\s*2>&1"#, with: "", options: .regularExpression)
         out = out.replacingOccurrences(of: #"\s*(;|&&)\s*echo\s+["']?[A-Za-z_ ]*[=:]?\s*\$\?["']?\s*$"#, with: "", options: .regularExpression)
+        // Trimming the output (`| head -20`, `| tail -5`) changes nothing the command does.
+        out = out.replacingOccurrences(of: #"\s*\|\s*(head|tail)(\s+-n)?(\s+-?[0-9]+)?\s*$"#, with: "", options: .regularExpression)
         return out.trimmingCharacters(in: .whitespaces)
     }
 
