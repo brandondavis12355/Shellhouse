@@ -145,6 +145,19 @@ struct JoinedGroupView: View {
     var onLeft: () -> Void = {}
     @State private var confirmLeave = false
 
+    /// From this side the owner's bots are "bot", you are "you", everyone else is a friend.
+    private func exportTranscript() {
+        let lines = session.messages.map { message in
+            GroupTranscriptExport.Line(
+                time: Date(timeIntervalSince1970: message.ts), speaker: message.speakerName, text: message.text,
+                kind: message.kind == .system ? .notice : message.kind == .bot ? .bot
+                    : message.speakerUserId == session.myUserID ? .user : .friend
+            )
+        }
+        let text = GroupTranscriptExport.markdown(groupName: session.name, members: session.members.map(\.displayName), lines: lines)
+        saveTranscript(text, suggestedName: GroupTranscriptExport.fileName(groupName: session.name))
+    }
+
     private var mentionColors: [String: String] {
         var colors: [String: String] = [:]
         for message in session.messages {
@@ -173,6 +186,8 @@ struct JoinedGroupView: View {
                 GlassCircleMenu(help: "Members and options") {
                     ForEach(session.members) { member in Text(member.displayName) }
                     Divider()
+                    Button("Export transcript…") { exportTranscript() }
+                        .disabled(session.messages.isEmpty)
                     Button("Leave group…", role: .destructive) { confirmLeave = true }
                 }
             }

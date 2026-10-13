@@ -16,6 +16,17 @@ struct GroupChatDetailView: View {
     /// stays reactive to both `memberBotIDs` changes (Settings toggles)
     /// and `allBots` changes (a bot added/removed elsewhere), since both
     /// are read as plain values right here in this view's own body.
+    private func exportTranscript() {
+        let lines = group.displayMessages.map { message in
+            GroupTranscriptExport.Line(
+                time: message.timestamp, speaker: message.speakerName, text: message.text,
+                kind: message.isSystem == true ? .notice : message.externalUserID != nil ? .friend : message.speakerBotID != nil ? .bot : .user
+            )
+        }
+        let text = GroupTranscriptExport.markdown(groupName: group.name, members: ["You"] + resolvedMembers.map(\.name), lines: lines)
+        saveTranscript(text, suggestedName: GroupTranscriptExport.fileName(groupName: group.name))
+    }
+
     private var resolvedMembers: [Bot] {
         let byID = Dictionary(uniqueKeysWithValues: allBots.map { ($0.id, $0) })
         return group.memberBotIDs.compactMap { byID[$0] }
@@ -61,6 +72,10 @@ struct GroupChatDetailView: View {
                             .padding(14)
                             .frame(width: 400)
                         }
+                }
+                GlassCircleMenu(help: "More") {
+                    Button("Export transcript…") { exportTranscript() }
+                        .disabled(group.displayMessages.isEmpty)
                 }
                 GlassCircleButton(systemName: "info", help: "Group settings — rename, members, delete.", action: onOpenSettings)
             }

@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import AppKit
 import SwiftUI
 import AgentCore
@@ -909,5 +910,25 @@ struct MessageTimestamp: View {
             .foregroundStyle(.tertiary)
             .padding(.horizontal, 6)
             .help(MessageTime.full(for: date))
+    }
+}
+
+/// Save panel for an exported transcript (Markdown, readable as plain text).
+@MainActor
+func saveTranscript(_ text: String, suggestedName: String) {
+    let panel = NSSavePanel()
+    panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
+    panel.nameFieldStringValue = suggestedName
+    panel.canCreateDirectories = true
+    panel.begin { response in
+        guard response == .OK, let url = panel.url else { return }
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn't save the transcript"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
     }
 }
