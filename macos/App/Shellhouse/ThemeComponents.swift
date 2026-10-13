@@ -960,8 +960,25 @@ func saveTranscript(_ text: String, suggestedName: String) {
     }
 }
 
-/// Debug-mode message editing: a right-click menu plus small hover buttons (right-clicks on selectable text
-/// can land on the text's own menu). Inactive when `enabled` is false.
+/// Debug-mode message editing. The row tracks hover and owns the right-click menu; the bubble itself draws
+/// the buttons beside its own edge (`editButtonsBeside`), so they never overlap neighbouring rows.
+struct MessageEditActions {
+    var visible: Bool
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+}
+
+private struct MessageEditActionsKey: EnvironmentKey {
+    static let defaultValue: MessageEditActions? = nil
+}
+
+extension EnvironmentValues {
+    var messageEditActions: MessageEditActions? {
+        get { self[MessageEditActionsKey.self] }
+        set { self[MessageEditActionsKey.self] = newValue }
+    }
+}
+
 struct EditableMessage: ViewModifier {
     let enabled: Bool
     let onEdit: () -> Void
@@ -971,19 +988,7 @@ struct EditableMessage: ViewModifier {
     func body(content: Content) -> some View {
         if enabled {
             content
-                .overlay(alignment: .topTrailing) {
-                    if hovering {
-                        HStack(spacing: 4) {
-                            Button(action: onEdit) { Image(systemName: "pencil") }.help("Edit message")
-                            Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.help("Delete message")
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 11))
-                        .padding(4)
-                        .background(.regularMaterial, in: Capsule())
-                        .offset(y: -6)
-                    }
-                }
+                .environment(\.messageEditActions, MessageEditActions(visible: hovering, onEdit: onEdit, onDelete: onDelete))
                 .onHover { hovering = $0 }
                 .contextMenu {
                     Button("Edit message…", action: onEdit)
@@ -995,9 +1000,42 @@ struct EditableMessage: ViewModifier {
     }
 }
 
+/// The pencil and trash buttons, centred on the bubble's outer edge: to the left of your own messages, to the
+/// right of everyone else's. Drawn outside the bubble's frame, so they take no layout space.
+struct EditButtonsBeside: ViewModifier {
+    let leading: Bool
+    @Environment(\.messageEditActions) private var actions
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: leading ? .leading : .trailing) {
+            if let actions {
+                HStack(spacing: 2) {
+                    Button(action: actions.onEdit) { Image(systemName: "pencil") }.help("Edit message")
+                    Button(role: .destructive, action: actions.onDelete) { Image(systemName: "trash") }.help("Delete message")
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(.regularMaterial, in: Capsule())
+                .fixedSize()
+                .alignmentGuide(leading ? .leading : .trailing) { d in leading ? d.width + 8 : -8 }
+                .opacity(actions.visible ? 1 : 0)
+                .allowsHitTesting(actions.visible)
+                .animation(Motion.pick(Motion.quick, reduceMotion: reduceMotion), value: actions.visible)
+            }
+        }
+    }
+}
+
 extension View {
     func editableMessage(enabled: Bool, onEdit: @escaping () -> Void, onDelete: @escaping () -> Void) -> some View {
         modifier(EditableMessage(enabled: enabled, onEdit: onEdit, onDelete: onDelete))
+    }
+
+    func editButtonsBeside(leading: Bool) -> some View {
+        modifier(EditButtonsBeside(leading: leading))
     }
 }
 
@@ -1081,31 +1119,45 @@ extension AnyTransition {
     }
 }
 
-/// Opens a transcript already sitting at its newest message. A lazy list's first layout uses estimated row
-/// heights, so `defaultScrollAnchor(.bottom)` can land past the real content and show a blank pane until
-/// you scroll. This scrolls again once rows are measured, then fades the list in, so the jump is never seen.
-struct SettlesAtBottom<ID: Hashable>: ViewModifier {
+/// Marks the very end of a transcript's content. Scrolling to it (rather than to the last message) always
+/// lands on the true bottom, whatever the last row's height turns out to be.
+enum TranscriptEnd {
+    static let id = "transcript-end"
+
+    /// Put after the last message, inside the scrolled content.
+    static var marker: some View { Color.clear.frame(height: 1).id(id) }
+}
+
+/// Opens a transcript already sitting at its newest message. A lazy list keeps refining its row heights for
+/// a few frames after it first appears, so one scroll can land short (a blank pane, or a few messages up).
+/// This scrolls to the end marker while that settles, keeps the list invisible until it's in place, then
+/// fades it in.
+struct SettlesAtBottom: ViewModifier {
     let proxy: ScrollViewProxy
-    let lastID: ID?
+    let hasMessages: Bool
     @State private var settled = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
-            .opacity(settled || lastID == nil ? 1 : 0)
+            .opacity(settled || !hasMessages ? 1 : 0)
             .onAppear {
-                guard let lastID else { settled = true; return }
-                DispatchQueue.main.async { proxy.scrollTo(lastID, anchor: .bottom) }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                    proxy.scrollTo(lastID, anchor: .bottom)
-                    withAnimation(Motion.pick(Motion.quick, reduceMotion: reduceMotion)) { settled = true }
+                guard hasMessages else { settled = true; return }
+                for delay in [0.0, 0.03, 0.08, 0.16, 0.3] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        var instant = Transaction(); instant.disablesAnimations = true
+                        withTransaction(instant) { proxy.scrollTo(TranscriptEnd.id, anchor: .bottom) }
+                        if delay >= 0.16, !settled {
+                            withAnimation(Motion.pick(Motion.quick, reduceMotion: reduceMotion)) { settled = true }
+                        }
+                    }
                 }
             }
     }
 }
 
 extension View {
-    func settlesAtBottom<ID: Hashable>(_ proxy: ScrollViewProxy, lastID: ID?) -> some View {
-        modifier(SettlesAtBottom(proxy: proxy, lastID: lastID))
+    func settlesAtBottom(_ proxy: ScrollViewProxy, hasMessages: Bool) -> some View {
+        modifier(SettlesAtBottom(proxy: proxy, hasMessages: hasMessages))
     }
 }

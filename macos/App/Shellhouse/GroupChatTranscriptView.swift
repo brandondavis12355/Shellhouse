@@ -67,23 +67,22 @@ struct GroupChatTranscriptView: View {
                         // instead of leaving them centered/bottom-heavy
                         // when there isn't enough history to fill it.
                         Spacer(minLength: 0)
+                        TranscriptEnd.marker
                     }
                     .frame(minHeight: geometry.size.height, alignment: .top)
                 }
                 .defaultScrollAnchor(.bottom)
-                .settlesAtBottom(proxy, lastID: messages.last?.id)
+                .settlesAtBottom(proxy, hasMessages: !messages.isEmpty)
                 .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
-                    if let last = messages.last?.id {
-                        proxy.scrollTo(last, anchor: .bottom)
-                    }
+                    proxy.scrollTo(TranscriptEnd.id, anchor: .bottom)
                 }
                 // Keep a growing draft in view while it streams, at most a few
                 // times a second: a jump on every chunk made scrolling stutter.
                 .onChange(of: drafts.map(\.text.count).reduce(0, +)) { _, _ in
-                    guard let last = drafts.last?.id, Date().timeIntervalSince(lastDraftScroll) > 0.25 else { return }
+                    guard !drafts.isEmpty, Date().timeIntervalSince(lastDraftScroll) > 0.25 else { return }
                     lastDraftScroll = Date()
-                    proxy.scrollTo(last, anchor: .bottom)
+                    proxy.scrollTo(TranscriptEnd.id, anchor: .bottom)
                 }
             }
         }
@@ -147,6 +146,7 @@ private struct GroupMessageBubble: View {
                     .padding(.vertical, 13)
                     .background(isUser ? Theme.userBubble : Theme.bubble)
                     .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
+                    .editButtonsBeside(leading: isUser)
                     .opacity(isDraft ? 0.65 : 1)
                 if isDraft {
                     Text("typing…").font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 6)

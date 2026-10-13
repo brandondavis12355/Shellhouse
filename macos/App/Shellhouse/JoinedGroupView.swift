@@ -236,12 +236,13 @@ struct JoinedGroupView: View {
                 .padding(.vertical, 12)
                 .frame(maxWidth: Theme.chatColumnWidth)
                 .frame(maxWidth: .infinity)
+                TranscriptEnd.marker
             }
             .defaultScrollAnchor(.bottom)
-                .settlesAtBottom(proxy, lastID: session.messages.last?.seq)
+            .settlesAtBottom(proxy, hasMessages: !session.messages.isEmpty)
             .topFade()
-            .onChange(of: session.messages.last?.seq) { _, last in
-                if let last { proxy.scrollTo(last, anchor: .bottom) }
+            .onChange(of: session.messages.last?.seq) { _, _ in
+                proxy.scrollTo(TranscriptEnd.id, anchor: .bottom)
             }
         }
     }

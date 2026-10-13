@@ -75,6 +75,7 @@ struct TranscriptView: View {
                         // actually pins the messages to the top of that
                         // extra space instead of centering them in it.
                         Spacer(minLength: 0)
+                        TranscriptEnd.marker
                     }
                     // Tied to the pane's own live size (via `GeometryReader`),
                     // not a fixed constant — so this keeps working whether
@@ -91,12 +92,10 @@ struct TranscriptView: View {
                 // instantiated the last row's view yet at that point, so the
                 // scroll-to-target can silently miss on first open.
                 .defaultScrollAnchor(.bottom)
-                .settlesAtBottom(proxy, lastID: messages.last?.id)
+                .settlesAtBottom(proxy, hasMessages: !messages.isEmpty)
                 .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
-                    if let last = messages.last?.id {
-                        proxy.scrollTo(last, anchor: .bottom)
-                    }
+                    proxy.scrollTo(TranscriptEnd.id, anchor: .bottom)
                 }
             }
         }
@@ -166,6 +165,7 @@ private struct MessageBubble: View {
                 .padding(.vertical, 13)
                 .background(isUser ? Theme.userBubble : Theme.bubble)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
+                .editButtonsBeside(leading: isUser)
                 MessageTimestamp(date: message.timestamp)
             }
             if !isUser { Spacer(minLength: 72) }
