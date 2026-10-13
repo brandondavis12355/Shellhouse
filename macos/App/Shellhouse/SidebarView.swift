@@ -342,6 +342,7 @@ private struct GroupTile: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(isSelected ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .motion(Motion.quick, value: isSelected)
         .contentShape(Rectangle())
         .help(group.displayMessages.last.map { "\($0.speakerName): \($0.text)" } ?? "\(group.memberBotIDs.count) members")
     }
@@ -384,6 +385,8 @@ private struct GroupSidebarRow: View {
             isSelected ? Theme.selection : (isHovering ? Theme.selection.opacity(0.5) : .clear),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
+        .motion(Motion.quick, value: isSelected)
+        .motion(Motion.quick, value: isHovering)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
     }
@@ -440,6 +443,8 @@ private struct BotSidebarRow: View {
             isSelected ? Theme.selection : (isHovering ? Theme.selection.opacity(0.5) : .clear),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
+        .motion(Motion.quick, value: isSelected)
+        .motion(Motion.quick, value: isHovering)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
     }
@@ -468,6 +473,7 @@ struct JoinedGroupSidebarRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
         .background(isSelected ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .motion(Motion.quick, value: isSelected)
         .contentShape(Rectangle())
     }
 }

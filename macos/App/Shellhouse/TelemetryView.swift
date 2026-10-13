@@ -211,6 +211,8 @@ struct TelemetryView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.system(size: 12)).foregroundStyle(.secondary)
             Text(value).font(.system(size: 22, weight: .semibold, design: .rounded)).monospacedDigit()
+                .contentTransition(.numericText())
+                .motion(Motion.smooth, value: value)
             Text(detail).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
         }
         .padding(12)

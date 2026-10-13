@@ -237,7 +237,7 @@ struct MessageArrivalAnimation<Value: Equatable>: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .animation(ready ? (reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.86)) : nil, value: value)
+            .animation(ready ? Motion.pick(Motion.settle, reduceMotion: reduceMotion) : nil, value: value)
             .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { ready = true } }
     }
 }
@@ -256,6 +256,7 @@ struct CollapsibleSection<Content: View>: View {
     let title: String
     var summary: String?
     @AppStorage private var isExpanded: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let content: Content
 
     init(_ title: String, summary: String? = nil, storageKey: String, @ViewBuilder content: () -> Content) {
@@ -269,7 +270,7 @@ struct CollapsibleSection<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             Card {
                 Button {
-                    withAnimation(.easeOut(duration: 0.18)) { isExpanded.toggle() }
+                    withAnimation(Motion.pick(Motion.smooth, reduceMotion: reduceMotion)) { isExpanded.toggle() }
                 } label: {
                     SettingRow(title) {
                         HStack(spacing: 8) {
@@ -288,7 +289,7 @@ struct CollapsibleSection<Content: View>: View {
             if isExpanded {
                 VStack(alignment: .leading, spacing: 0) { content }
                     .padding(.top, 8)
-                    .transition(.opacity)
+                    .transition(.opacity.combined(with: .offset(y: -6)))
             }
         }
         .padding(.top, 12)
@@ -300,7 +301,25 @@ struct CollapsibleSection<Content: View>: View {
 /// Press feedback without any chrome.
 struct PressableButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.opacity(configuration.isPressed ? 0.6 : 1)
+        PressableBody(configuration: configuration)
+    }
+
+    /// Settles in on press and lifts a touch on hover.
+    struct PressableBody: View {
+        let configuration: ButtonStyleConfiguration
+        @State private var hovering = false
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.94 : (hovering && isEnabled ? 1.04 : 1)))
+                .opacity(configuration.isPressed ? 0.75 : 1)
+                .brightness(hovering && isEnabled && !configuration.isPressed ? 0.04 : 0)
+                .animation(Motion.pick(Motion.settle, reduceMotion: reduceMotion), value: configuration.isPressed)
+                .animation(Motion.pick(Motion.quick, reduceMotion: reduceMotion), value: hovering)
+                .onHover { hovering = $0 }
+        }
     }
 }
 
@@ -320,6 +339,8 @@ struct PillButtonStyle: ButtonStyle {
         let kind: Kind
         let compact: Bool
         @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var hovering = false
 
         var body: some View {
             let destructive = configuration.role == .destructive
@@ -329,8 +350,14 @@ struct PillButtonStyle: ButtonStyle {
                 .padding(.horizontal, compact ? 11 : 15)
                 .padding(.vertical, compact ? 5 : 8)
                 .background(Capsule().fill(background(destructive: destructive)))
-                .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
+                .brightness(hovering && isEnabled && !configuration.isPressed ? 0.05 : 0)
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.97 : 1))
+                .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1) : 0.4)
                 .contentShape(Capsule())
+                .animation(Motion.pick(Motion.settle, reduceMotion: reduceMotion), value: configuration.isPressed)
+                .animation(Motion.pick(Motion.quick, reduceMotion: reduceMotion), value: hovering)
+                .animation(Motion.pick(Motion.quick, reduceMotion: reduceMotion), value: isEnabled)
+                .onHover { hovering = $0 }
         }
 
         private func foreground(destructive: Bool) -> Color {
@@ -1004,5 +1031,81 @@ struct MessageEditSheet: View {
             }
         }
         .padding(18)
+    }
+}
+
+// MARK: - Motion
+
+/// The app's motion, in one place so every transition feels like the same product: soft, unhurried,
+/// never bouncy. With Reduce Motion on, everything falls back to a short fade.
+enum Motion {
+    /// Content changing place: chat switches, sections opening, cards arriving.
+    static let smooth = Animation.smooth(duration: 0.34)
+    /// Small state changes: selection, hover, badges, text swaps.
+    static let quick = Animation.smooth(duration: 0.2)
+    /// Things that should feel physical: press feedback, cards settling in.
+    static let settle = Animation.spring(response: 0.42, dampingFraction: 0.88)
+    static let reduced = Animation.easeOut(duration: 0.15)
+
+    static func pick(_ animation: Animation, reduceMotion: Bool) -> Animation { reduceMotion ? reduced : animation }
+}
+
+/// `.animation(Motion.x, value:)` that respects Reduce Motion.
+struct MotionAnimation<Value: Equatable>: ViewModifier {
+    let animation: Animation
+    let value: Value
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        content.animation(Motion.pick(animation, reduceMotion: reduceMotion), value: value)
+    }
+}
+
+extension View {
+    func motion<Value: Equatable>(_ animation: Animation, value: Value) -> some View {
+        modifier(MotionAnimation(animation: animation, value: value))
+    }
+}
+
+extension AnyTransition {
+    /// A card or banner arriving from below and leaving the same way.
+    static var cardArrival: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: 10)).combined(with: .scale(scale: 0.98, anchor: .bottom)),
+            removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .bottom))
+        )
+    }
+
+    /// One pane replacing another (switching chats).
+    static var paneSwap: AnyTransition {
+        .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.992)), removal: .opacity)
+    }
+}
+
+/// Opens a transcript already sitting at its newest message. A lazy list's first layout uses estimated row
+/// heights, so `defaultScrollAnchor(.bottom)` can land past the real content and show a blank pane until
+/// you scroll. This scrolls again once rows are measured, then fades the list in, so the jump is never seen.
+struct SettlesAtBottom<ID: Hashable>: ViewModifier {
+    let proxy: ScrollViewProxy
+    let lastID: ID?
+    @State private var settled = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(settled || lastID == nil ? 1 : 0)
+            .onAppear {
+                guard let lastID else { settled = true; return }
+                DispatchQueue.main.async { proxy.scrollTo(lastID, anchor: .bottom) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    proxy.scrollTo(lastID, anchor: .bottom)
+                    withAnimation(Motion.pick(Motion.quick, reduceMotion: reduceMotion)) { settled = true }
+                }
+            }
+    }
+}
+
+extension View {
+    func settlesAtBottom<ID: Hashable>(_ proxy: ScrollViewProxy, lastID: ID?) -> some View {
+        modifier(SettlesAtBottom(proxy: proxy, lastID: lastID))
     }
 }

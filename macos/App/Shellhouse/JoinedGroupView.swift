@@ -238,6 +238,7 @@ struct JoinedGroupView: View {
                 .frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
+                .settlesAtBottom(proxy, lastID: session.messages.last?.seq)
             .topFade()
             .onChange(of: session.messages.last?.seq) { _, last in
                 if let last { proxy.scrollTo(last, anchor: .bottom) }

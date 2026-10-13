@@ -71,6 +71,7 @@ struct GroupChatTranscriptView: View {
                     .frame(minHeight: geometry.size.height, alignment: .top)
                 }
                 .defaultScrollAnchor(.bottom)
+                .settlesAtBottom(proxy, lastID: messages.last?.id)
                 .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
                     if let last = messages.last?.id {

@@ -91,6 +91,7 @@ struct TranscriptView: View {
                 // instantiated the last row's view yet at that point, so the
                 // scroll-to-target can silently miss on first open.
                 .defaultScrollAnchor(.bottom)
+                .settlesAtBottom(proxy, lastID: messages.last?.id)
                 .topFade()
                 .onChange(of: messages.last?.id) { _, _ in
                     if let last = messages.last?.id {

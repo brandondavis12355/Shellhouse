@@ -115,9 +115,11 @@ struct BotStatusStrip: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(current, id: \.state) { line in
                         row(line.state, line.bots, at: context.date)
+                            .transition(.opacity.combined(with: .offset(y: 4)))
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .motion(Motion.smooth, value: current.map { "\($0.state)" + $0.bots.map(\.id).joined() })
             }
         }
     }
@@ -144,7 +146,9 @@ struct BotStatusStrip: View {
                 .font(.system(size: 13))
                 .italic(state == .responding || state == .working || state == .checking)
                 .foregroundStyle(state == .waiting ? Color.secondary : (state == .approval ? Color.orange : color))
-                .animation(.easeInOut(duration: 0.6), value: index)
+                .contentTransition(.opacity)
+                .motion(Motion.smooth, value: index)
+                .motion(Motion.quick, value: text)
         }
     }
 }
@@ -180,12 +184,17 @@ struct OwnBotStatusView: View {
                         .font(.system(size: 13))
                         .italic()
                         .foregroundStyle(bot.pendingApproval != nil ? Color.orange : Color(hex: bot.colorHex))
+                        .contentTransition(.opacity)
+                        .motion(Motion.quick, value: bot.status)
                 }
+                .transition(.opacity)
             }
         } else {
             Text(bot.messageQueue.isEmpty ? bot.status : "\(bot.status) • \(bot.messageQueue.count) queued")
                 .font(.body)
                 .foregroundStyle(.secondary)
+                .contentTransition(.opacity)
+                .motion(Motion.quick, value: bot.status)
         }
     }
 }

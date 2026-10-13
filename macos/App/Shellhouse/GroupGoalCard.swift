@@ -20,10 +20,17 @@ struct GroupGoalCard: View {
                 ProgressView(value: Double(goal.doneCount), total: Double(max(goal.steps.count, 1)))
                     .tint(statusColor(goal.status))
                 if expanded {
-                    steps(goal)
-                    footer(goal)
+                    Group {
+                        steps(goal)
+                        footer(goal)
+                    }
+                    .transition(.opacity.combined(with: .offset(y: -4)))
                 }
             }
+            // Progress fills, steps tick over and the list opens smoothly instead of jumping.
+            .motion(Motion.smooth, value: goal.doneCount)
+            .motion(Motion.smooth, value: goal.steps.map { "\($0.id)\($0.status.rawValue)" })
+            .motion(Motion.smooth, value: expanded)
             .padding(inPopover ? 0 : 14)
             .background(inPopover ? Color.clear : Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
             .overlay {
@@ -57,6 +64,7 @@ struct GroupGoalCard: View {
                     let waitingOn = step.status == .done ? [] : goal.unmetDependencies(of: step.id).map(\.number)
                     Image(systemName: waitingOn.isEmpty ? stepIcon(step.status) : "pause.circle")
                         .foregroundStyle(step.status == .done ? (step.verified ? Color.green : Color.orange) : .secondary)
+                        .contentTransition(.symbolEffect(.replace))
                         .frame(width: 16)
                     VStack(alignment: .leading, spacing: 0) {
                         Text("\(index + 1). \(step.text)")

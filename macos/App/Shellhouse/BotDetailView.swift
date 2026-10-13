@@ -322,26 +322,36 @@ struct BotDetailView: View {
                         }
 
                         VStack(spacing: 10) {
-                        if let pending = bot.pendingApproval {
-                            ApprovalCard(approval: pending.approval) { decision in
-                                pending.continuation.resume(returning: decision)
-                                bot.pendingApproval = nil
-                                if decision == .approveAlwaysSession || decision == .approveAlwaysGlobal {
-                                    Task { await bot.refreshPermissions() }
+                        // Cards glide in and out instead of popping (see `AnyTransition.cardArrival`).
+                        VStack(spacing: 10) {
+                            if let pending = bot.pendingApproval {
+                                ApprovalCard(approval: pending.approval) { decision in
+                                    pending.continuation.resume(returning: decision)
+                                    bot.pendingApproval = nil
+                                    if decision == .approveAlwaysSession || decision == .approveAlwaysGlobal {
+                                        Task { await bot.refreshPermissions() }
+                                    }
                                 }
+                                .id(pending.id)
+                                .transition(.cardArrival)
+                            }
+
+                            if let pending = bot.pendingCredentialRequest {
+                                CredentialRequestCard(botName: bot.name, pending: pending) { values in
+                                    bot.answerCredentialRequest(values)
+                                }
+                                .id(pending.id)
+                                .transition(.cardArrival)
+                            }
+
+                            if !bot.pendingReview.isEmpty {
+                                PendingReviewCard(bot: bot)
+                                    .transition(.cardArrival)
                             }
                         }
-
-                        if let pending = bot.pendingCredentialRequest {
-                            CredentialRequestCard(botName: bot.name, pending: pending) { values in
-                                bot.answerCredentialRequest(values)
-                            }
-                            .id(pending.id)
-                        }
-
-                        if !bot.pendingReview.isEmpty {
-                            PendingReviewCard(bot: bot)
-                        }
+                        .motion(Motion.settle, value: bot.pendingApproval?.id)
+                        .motion(Motion.settle, value: bot.pendingCredentialRequest?.id)
+                        .motion(Motion.settle, value: bot.pendingReview.count)
 
                         OwnBotStatusView(bot: bot)
                             .frame(maxWidth: .infinity, alignment: .leading)

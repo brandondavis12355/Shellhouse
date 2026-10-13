@@ -214,7 +214,13 @@ struct ContentView: View {
                 )
                 .frame(minWidth: 270, idealWidth: 320, maxWidth: 380)
             }
-            detailView
+            // Switching chats crossfades: each chat view has its own identity (see `detailView`), so the
+            // old one fades out while the new one fades and settles in.
+            ZStack {
+                detailView
+                    .transition(.paneSwap)
+            }
+            .motion(Motion.smooth, value: selectedItemID)
                 // The chat column never gets narrower than its header and composer need.
                 .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.bg)
@@ -350,9 +356,9 @@ struct ContentView: View {
                 )
                 .padding(.top, 8)
                 .transition(.move(edge: .top).combined(with: .opacity))
-                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: bannerBot.id)
             }
         }
+        .motion(Motion.settle, value: bannerBot?.id)
         .task {
             // `create_bot`/`add_bot_to_group` tool support — see
             // `BotDirectory`'s doc comments. Same "no confirmation sheet"

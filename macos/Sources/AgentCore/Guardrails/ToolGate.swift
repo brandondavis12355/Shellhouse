@@ -100,7 +100,6 @@ public actor ToolGate {
     /// Strict findings YOLO still waves through on a clean run: privilege use inside the bot's own
     /// disposable VM, and deletes (which are checkpointed to the trash first). Everything else strict
     /// (GitHub/remote actions, disk tools, force-pushes, deleting outside the workspace...) keeps asking.
-    public static let yoloStrictRules: Set<String> = ["exec.privilege", "destroy.rm_recursive", "destroy.rm_many"]
 
     /// Read live from the setting, not only from the config captured when the run began: a chat that is
     /// already open must honor the switch the moment it is flipped.
@@ -111,26 +110,21 @@ public actor ToolGate {
     }
 
     /// Whether YOLO waves this call through, and if not, why (shown on the approval card so it is never a mystery).
+    /// YOLO runs everything except what looks malicious (`YoloPolicy`), including actions that are only
+    /// escalated because the run read untrusted content. Hard blocks that apply in any run stay blocked, and a
+    /// friend in the chat still means everything asks.
     func yoloVerdict(for call: ToolCall, _ decision: GuardrailDecision) -> (applies: Bool, reason: String?) {
         guard yoloOn else { return (false, nil) }
         if taint.hasFriend { return (false, "YOLO is on, but a friend's message is in this chat, so everything beyond bookkeeping asks.") }
+        guard !decision.tripwire else { return (false, nil) }
         let classification = ActionClassifier.classify(tool: call.name, arguments: call.arguments, config: config)
         let untrusted = decision.tainted || taint.isTainted
-        if untrusted {
-            // After reading untrusted content, only calls that cannot change anything or reach anywhere are waved
-            // through: every finding is plain read-only and none is stricter than a normal ask when tainted.
-            let readOnly = !classification.findings.isEmpty
-                && classification.findings.allSatisfy { $0.effect == .observe && $0.tainted <= .ask && !$0.tripwire }
-            if readOnly, decision.verdict <= .ask { return (true, nil) }
-            let sources = taint.sources.map(\.rawValue).joined(separator: ", ")
-            return (false, "YOLO is on, but this run has read untrusted content (\(sources.isEmpty ? "see audit log" : sources)), so anything that changes something still asks. Read-only commands don't.")
+        if let flagged = classification.findings.first(where: { YoloPolicy.looksMalicious($0, untrusted: untrusted) }) {
+            return (false, "YOLO is on, but this looks dangerous (\(flagged.reason)), so it still needs you.")
         }
-        if decision.verdict == .ask { return (true, nil) }
-        guard decision.verdict == .askStrict else { return (false, nil) }
-        // Strict: allowed only when EVERY strict finding is one of the sanctioned kinds.
-        let strict = classification.findings.filter { $0.clean >= .askStrict }
-        if !strict.isEmpty, strict.allSatisfy({ Self.yoloStrictRules.contains($0.rule) && !$0.tripwire }) { return (true, nil) }
-        return (false, "YOLO is on, but this is a high-risk action (\(decision.reasons.first ?? "strict")), which always asks.")
+        // Blocked in every run (rm -rf /, reverse shells, miners...): never lifted.
+        if classification.findings.contains(where: { $0.clean == .deny }) { return (false, nil) }
+        return (true, nil)
     }
 
     // MARK: judging a call
@@ -151,6 +145,10 @@ public actor ToolGate {
 
         switch decision.verdict {
         case .deny:
+            // YOLO: a deny that only comes from untrusted content (ordinary work in a clean run) runs.
+            if !decision.tripwire, yoloVerdict(for: call, decision).applies {
+                return await prepareToRun(call, decision, outcome: "yolo_auto", askedHuman: false)
+            }
             await record(call, decision, outcome: decision.tripwire ? "tripwire" : "denied")
             if decision.tripwire {
                 return await freeze(call, "the agent touched a decoy credential", decision: decision)

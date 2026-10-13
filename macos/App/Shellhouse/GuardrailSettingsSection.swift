@@ -26,9 +26,11 @@ struct GuardrailSettingsSection: View {
                 CardDivider()
                 ToggleRow(
                     title: "YOLO mode — don't ask for approval",
-                    subtitle: "Bots run ordinary actions without a prompt: shell commands, file changes, installs. Still blocked or still asking: "
-                        + "credential theft and exfiltration (hard blocks), anything that changes something after a bot has read untrusted "
-                        + "content (web pages, downloads; read-only commands like `gh --version` still run), friends' messages, and other high-risk actions. Everything is still written to the audit log. Off by default.",
+                    subtitle: "Bots run everything without a prompt, including after reading web pages or downloads: commands, installs, "
+                        + "sudo, deletes, pushes. Still stopped: anything that looks malicious (reading or hunting for keys and credentials, "
+                        + "dumping secrets, curl | bash, sending data out after untrusted content, turning off security controls), actions "
+                        + "that are dangerous in any run (rm -rf /, reverse shells, miners), and every action in a chat with friends. Everything "
+                        + "is written to the audit log. Off by default.",
                     isOn: Binding(
                         get: { yolo },
                         set: { on in if on { confirmingYolo = true } else { yolo = false } }
@@ -75,8 +77,8 @@ struct GuardrailSettingsSection: View {
             Button("Turn on", role: .destructive) { yolo = true }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Bots will run commands and change files in their VMs without asking you first. Hard blocks stay in place, and a bot "
-                + "that has read untrusted content will still ask. You can turn this off at any time.")
+            Text("Bots will run commands, push code and change their VMs without asking you, even after reading web pages. Only "
+                + "actions that look malicious, or are dangerous in any run, still stop for you. You can turn this off at any time.")
         }
     }
 
