@@ -89,6 +89,8 @@ final class GroupChatSession: Identifiable {
     /// The goal owner owes a review turn: something was submitted, checked in or blocked, or the periodic
     /// check found steps waiting for validation (see `startOwnerReviewLoop`).
     private var ownerReviewDue = false
+    /// Members owed a working turn after answering a status request during a live goal (the report itself runs no tools).
+    private var resumeWorkDue: Set<String> = []
     private var ownerReviewTask: Task<Void, Never>?
     private var lastOwnerReview = Date.distantPast
     private var lastReviewedSignature = ""
@@ -142,6 +144,7 @@ final class GroupChatSession: Identifiable {
         memberBotIDs.removeAll { $0 == botID }
         turnLedger.memberLeft(botID)
         forcedReplies[botID] = nil
+        resumeWorkDue.remove(botID)
     }
 
     /// Wipes the shared transcript. Refused while members are working (they would
@@ -486,6 +489,13 @@ final class GroupChatSession: Identifiable {
                 if decision == .none || decision == .optional { decision = .mentionedByBot }
                 debugLog(bot, "goal review turn for the owner")
             }
+            // Back to work after a status report: the report was words only, so the goal would otherwise stall.
+            var resumeTurn = false
+            if resumeWorkDue.remove(botID) != nil, let live = goal, live.isLive, live.status == .active {
+                resumeTurn = true
+                if decision == .none || decision == .optional { decision = .mentionedByBot }
+                debugLog(bot, "resuming goal work after the status report")
+            }
             let snapshot = displayMessages.count
             seenCount[botID] = snapshot
 
@@ -504,7 +514,7 @@ final class GroupChatSession: Identifiable {
             }
             // A stand-up (typed by you, or posted by a routine) is answered from what each member already knows.
             let trigger = displayMessages[min(seen, displayMessages.count)...].last { $0.isSystem != true && $0.speakerBotID != botID }
-            let isStatusReport = Reliability.isOn(.quickReports) && (decision != .optional || owes == .mustReply)
+            let isStatusReport = !resumeTurn && Reliability.isOn(.quickReports) && (decision != .optional || owes == .mustReply)
                 && trigger.map { AddressingAnalyzer.isStatusRequest($0.text) } == true
             // Bots chiming in on each other's small talk is chatter, not conversation. Judged against the
             // newest human message overall: the unseen messages are usually just the other bots' replies.
@@ -570,7 +580,14 @@ final class GroupChatSession: Identifiable {
             }
             if !isIntakeTurn, let live = goal, live.isLive {
                 extraSuffix = goalPrompt(for: live, botID: botID)
-                if ownerReviewTurn, let work = live.ownerReviewWork() { extraSuffix += "\n\n" + work }
+                if ownerReviewTurn || (resumeTurn && live.ownerBotID == botID), let work = live.ownerReviewWork() { extraSuffix += "\n\n" + work }
+                if resumeTurn {
+                    extraSuffix += "\n\nYou just gave the user a status report. Now get back to work on the goal with tools: "
+                        + (live.ownerBotID == botID
+                            ? "validate anything submitted, unblock or reassign stuck steps, @mention whoever should act next, or close the goal if every step is done."
+                            : "continue your open step.")
+                        + " Don't repeat the status report; if nothing needs you, finish silently."
+                }
             }
 
             // During a goal, a member nobody @mentioned with no step of its own has nothing to do
@@ -628,6 +645,8 @@ final class GroupChatSession: Identifiable {
                     + "Done: what you actually did (only things visible in the chat above or in your records). Next: what you will do (from your records, "
                     + "or say you are waiting for tasks). Blockers: real ones visible above, or \"none\". Do not claim results you cannot see, do not run "
                     + "or ask to run commands, and do not @mention anyone."
+                    + (goal?.isLive == true ? " The goal block is the record: call a step done only if it shows done there, and never "
+                        + "say the goal is complete unless it says so. Work you still have to do goes under Next (you resume right after this)." : "")
                 reply = await bot.quickReplyInGroup(
                     groupName: name, otherMembers: others, transcript: formatRecentTranscript(limit: 14, clipTo: 500),
                     instruction: instruction, extraContext: context, style: "a concise stand-up report in plain lines"
@@ -722,6 +741,10 @@ final class GroupChatSession: Identifiable {
             noteBotMessagePosted()
             finishTurn(messageID: turnMessageID, bot: bot, .replied)
             notifyNewMessage(authorID: botID)
+            if isStatusReport, usedQuickPath, let live = goal, live.isLive, live.status == .active,
+               live.ownerBotID == botID || live.hasActionableWork(for: bot.name) {
+                resumeWorkDue.insert(botID)
+            }
         }
     }
 

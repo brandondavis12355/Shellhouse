@@ -201,6 +201,18 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         return !mine.isEmpty && mine.allSatisfy(isWaiting)
     }
 
+    /// `name` has a step it can work on right now: assigned to it (or its part of a per-member step), not done,
+    /// submitted or blocked, and not waiting on unfinished steps.
+    public func hasActionableWork(for name: String) -> Bool {
+        steps.contains { step in
+            guard step.status == .open || step.status == .inProgress, !isWaiting(step) else { return false }
+            if let required = step.requiredMembers, !required.isEmpty {
+                return step.membersRemaining.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+            }
+            return step.assigneeName?.caseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
     public mutating func removeStep(id: String) {
         steps.removeAll { $0.id == id }
     }

@@ -65,6 +65,19 @@ final class OwnerReviewTests: XCTestCase {
         XCTAssertTrue(g.ownerReviewWork()?.contains("Blocked: step 2") == true)
     }
 
+    func testActionableWorkSkipsWaitingSubmittedAndOthersSteps() {
+        var g = GroupGoal(title: "t", ownerBotID: "owner", steps: [
+            .init(text: "Write game.py", assigneeName: "Bugbot"), .init(text: "Write tests", assigneeName: "Prism"),
+        ], stallLimit: 40)
+        g.setDependencies([2: [1]])
+        XCTAssertTrue(g.hasActionableWork(for: "bugbot"))
+        XCTAssertFalse(g.hasActionableWork(for: "Prism"), "waits on step 1")
+        XCTAssertFalse(g.hasActionableWork(for: "Nobody"))
+        _ = g.updateStep(id: g.steps[0].id, status: .done, evidence: "pytest: 3 passed in test_game.py", assigneeName: nil,
+                         turnHadToolCalls: true, byOwner: false, actorName: "Bugbot")
+        XCTAssertFalse(g.hasActionableWork(for: "Bugbot"), "submitted: the owner's move now")
+    }
+
     func testAFinishedGoalAsksTheOwnerToClose() {
         var g = GroupGoal(title: "t", ownerBotID: "owner", steps: [.init(text: "only step")], stallLimit: 40)
         _ = g.updateStep(id: g.steps[0].id, status: .done, evidence: "ran it: output 'ok' printed", assigneeName: nil, turnHadToolCalls: true)
