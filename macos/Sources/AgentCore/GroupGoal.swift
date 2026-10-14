@@ -203,6 +203,17 @@ public struct GroupGoal: Codable, Sendable, Equatable {
 
     /// `name` has a step it can work on right now: assigned to it (or its part of a per-member step), not done,
     /// submitted or blocked, and not waiting on unfinished steps.
+    /// How many steps `name` could work on right now (see `hasActionableWork`).
+    public func actionableStepCount(for name: String) -> Int {
+        steps.filter { step in
+            guard step.status == .open || step.status == .inProgress, !isWaiting(step) else { return false }
+            if let required = step.requiredMembers, !required.isEmpty {
+                return step.membersRemaining.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+            }
+            return step.assigneeName?.caseInsensitiveCompare(name) == .orderedSame
+        }.count
+    }
+
     public func hasActionableWork(for name: String) -> Bool {
         steps.contains { step in
             guard step.status == .open || step.status == .inProgress, !isWaiting(step) else { return false }

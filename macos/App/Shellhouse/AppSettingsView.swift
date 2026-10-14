@@ -43,6 +43,7 @@ struct AppSettingsView: View {
 
                 ModelTiersSettingsSection()
                 ContextWindowSettingsSection()
+                ModelSchedulingSettingsSection()
 
                 AgentEngineSettingsSection()
 

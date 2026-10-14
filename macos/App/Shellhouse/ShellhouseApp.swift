@@ -61,6 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 DebugLog.shared.log(bot: "Connection", colorHex: "#8E8E93", kind: .status, context: "sandbox-manager", text: line)
             }
         }
+        ModelScheduler.waitLog = { line in
+            Task { @MainActor in
+                guard DebugSettings.shared.isEnabled else { return }
+                DebugLog.shared.log(bot: "Model", colorHex: "#8E8E93", kind: .status, context: "scheduler", text: line)
+            }
+        }
         tunnel.start()
         ollama.start()
         setUpStatusItem()

@@ -79,3 +79,29 @@ struct ContextWindowSettingsSection: View {
         }
     }
 }
+
+/// Settings › Model sharing: how many requests the bots send the local model at once, and who goes first.
+struct ModelSchedulingSettingsSection: View {
+    @AppStorage(ModelScheduler.slotsKey) private var slots = ModelScheduler.defaultSlots
+
+    var body: some View {
+        CollapsibleSection("Model sharing", summary: slots == 0 ? "off" : "\(slots) at a time", storageKey: "modelScheduling") {
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Requests at once", selection: $slots) {
+                        ForEach(ModelScheduler.slotChoices, id: \.self) { Text($0 == 0 ? "Off" : "\($0)").tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text("How many requests the bots send your local model at once. When more bots want it, the next free "
+                        + "turn goes to the bot that needs it most: one you're waiting on in a 1:1 chat, then bots with goal "
+                        + "steps ready to work and goal owners with work to review, then bots with open tasks and the busiest "
+                        + "ones lately. Waiting also raises a bot's turn, so nobody is left out. Fewer at once makes each "
+                        + "reply faster; Off sends everything straight to the model in arrival order.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                .padding(16)
+            }
+        }
+    }
+}

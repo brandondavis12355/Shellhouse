@@ -479,10 +479,15 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// remote branch's API key never touches the agent loop or a log; it
     /// goes straight from `SecretStore.resolveOne` into this request's
     /// own `Authorization` header.
-    private func makeModelBackend() async -> any ModelBackend {
+    /// `interactive`: the user is waiting on this run in the 1:1 chat. Local-model requests go through the
+    /// shared `ModelScheduler`, so the bots with the most to do get the model first.
+    private func makeModelBackend(interactive: Bool = false) async -> any ModelBackend {
         switch modelProvider {
         case .ollama:
-            return OllamaBackend(defaultModel: selectedModel, visionOverrides: modelHasVision ? [selectedModel] : [])
+            let local = OllamaBackend(defaultModel: selectedModel, visionOverrides: modelHasVision ? [selectedModel] : [])
+            return ScheduledBackend(local, bot: name) { [weak self] in
+                await MainActor.run { self?.modelPriority(interactive: interactive) ?? 0 }
+            }
         case .remote:
             let apiKey = (try? await SecretStore().resolveOne(name: remoteAPIKeySecretName)) ?? nil
             let url = URL(string: remoteBaseURLText) ?? URL(string: "https://api.openai.com/v1")!
@@ -491,6 +496,19 @@ final class Bot: Identifiable, @unchecked Sendable {
                 visionOverrides: modelHasVision ? [selectedModel] : []
             )
         }
+    }
+
+    /// How much this bot needs the model right now, for `ModelScheduler` (which adds recent use and waiting time).
+    /// The user waiting on a reply comes first, then goal work ready to do, goal reviews owed, and open tasks.
+    func modelPriority(interactive: Bool) -> Double {
+        var score = interactive ? 100.0 : 0
+        for group in botDirectory.allGroups() where group.members.contains(where: { $0.id == id }) {
+            guard let goal = group.goal, goal.isLive, goal.status == .active else { continue }
+            score += Double(min(goal.actionableStepCount(for: name), 3)) * 12
+            if goal.ownerBotID == id, goal.ownerReviewWork() != nil { score += 15 }
+        }
+        score += Double(min(tasks.count, 5)) * 3
+        return score
     }
 
     private func loadPersistedTranscriptAndMemory() {
@@ -3123,7 +3141,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                     newRuntime = chosen
                 } else {
                     newRuntime = AgentRuntime(
-                        model: await makeModelBackend(),
+                        model: await makeModelBackend(interactive: true),
                         sandbox: sandbox,
                         sandboxID: handle.id,
                         tools: toolRegistry,
