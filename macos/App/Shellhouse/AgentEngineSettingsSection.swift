@@ -10,7 +10,7 @@ struct AgentEngineSettingsSection: View {
     private var addressValid: Bool { SmolAgentsService.Config.isPrivateIPv4(config.sandboxAddress) }
 
     var body: some View {
-        CollapsibleSection("Agent engine (experimental)", summary: SmolAgentsService.Config.isPrivateIPv4(config.sandboxAddress) ? "\(config.sandboxAddress):\(config.proxyPort)" : "Not set up", storageKey: "agentEngine") {
+        CollapsibleSection("Agent engine (experimental)", summary: SmolAgentsService.Config.isPrivateIPv4(config.sandboxAddress) ? "\(config.sandboxAddress):\(config.proxyPort)" : "Not set up", symbol: "shippingbox", storageKey: "agentEngine") {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Lets a bot run on smolagents inside its own sandbox. The sandbox reaches your Mac's local models only through a "

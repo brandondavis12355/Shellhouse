@@ -190,7 +190,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         [
             modelProvider.rawValue, selectedModel, String(modelHasVision), remoteBaseURLText,
             maxTokensText, maxIterationsText, String(remoteAPIKeyInput.hashValue), engine.rawValue,
-            String(systemPromptText.hashValue),
+            String(systemPromptText.hashValue), selectedSkillIDs.sorted().joined(separator: ","),
             fallbackProvider?.rawValue ?? "", fallbackModel, fallbackBaseURLText, String(fallbackHasVision), String(fallbackAPIKeyInput.hashValue),
         ].joined(separator: "|")
     }
@@ -399,6 +399,32 @@ final class Bot: Identifiable, @unchecked Sendable {
         fallbackHasVision = config.fallbackHasVision ?? false
     }
 
+    /// Takes every setting from `config` except the id (a settings import). The conversation, memory and
+    /// sandbox stay; a 1:1 chat picks the new settings up on its next message.
+    func apply(_ config: BotConfig) {
+        name = config.name
+        colorHex = config.colorHex
+        avatarStyle = config.avatarStyle
+        tagline = config.tagline
+        group = config.group
+        systemPromptText = BuiltInSystemPrompt.userPortion(of: config.systemPromptText)
+        selectedSkillIDs = SkillLibrary.reconcileSelection(
+            saved: config.selectedSkillIDs, known: config.knownSkillIDs, available: Set(availableSkills.map(\.id))
+        )
+        selectedModel = config.selectedModel
+        modelHasVision = config.modelHasVision
+        maxTokensText = config.maxTokensText
+        maxIterationsText = config.maxIterationsText
+        modelProvider = config.modelProvider ?? .ollama
+        engine = config.engine ?? .builtin
+        remoteBaseURLText = config.remoteBaseURLText ?? ""
+        checksGoalWorkItself = config.checksGoalWorkItself ?? true
+        fallbackProvider = config.fallbackProvider
+        fallbackModel = config.fallbackModel ?? ""
+        fallbackBaseURLText = config.fallbackBaseURLText ?? ""
+        fallbackHasVision = config.fallbackHasVision ?? false
+    }
+
     /// Reconstructs a bot from an imported/duplicated `BotTemplate` — same
     /// settings fields as `init(config:)`, plus the memory and routines a
     /// template carries. Always takes a caller-supplied `id` (never the
@@ -543,7 +569,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                 await MainActor.run { self?.modelPriority(interactive: interactive) ?? 0 }
             }
         case .remote:
-            let apiKey = (try? await SecretStore().resolveOne(name: keyName)) ?? nil
+            // A key typed in Settings is used right away; the Keychain gets it when the sheet closes.
+            let typed = keyName == fallbackAPIKeySecretName ? fallbackAPIKeyInput : (keyName == remoteAPIKeySecretName ? remoteAPIKeyInput : "")
+            let apiKey = typed.isEmpty ? ((try? await SecretStore().resolveOne(name: keyName)) ?? nil) : typed
             let url = URL(string: baseURL) ?? URL(string: "https://api.openai.com/v1")!
             return OpenAICompatibleBackend(baseURL: url, apiKey: apiKey ?? "", defaultModel: model, visionOverrides: vision ? [model] : [])
         }
@@ -1089,7 +1117,6 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// message (the model's already-sent system prompt can't retroactively
     /// gain a skill).
     func refreshAvailableSkills() {
-        guard !hasStarted else { return }
         let updated = SkillLibrary.loadAll()
         let updatedIDs = Set(updated.map(\.id))
         // New skills default to selected (matching a fresh bot's own
@@ -2766,6 +2793,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             return
         }
 
+        if RemoteSandboxManager.sharedToken.value == nil { RemoteSandboxManager.sharedToken.value = token }
         let provider = RemoteSandboxManager(baseURL: managerBaseURL, token: token)
         sandbox = provider
         state = .booting(id)

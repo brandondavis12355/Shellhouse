@@ -97,6 +97,9 @@ public actor ModelScheduler {
         dispatch()
     }
 
+    /// The slot count changed in Settings: hand any newly free slots out now instead of at the next release.
+    public func settingsChanged() { dispatch() }
+
     /// Hands free slots to the best waiting requests.
     private func dispatch() {
         let now = Date()

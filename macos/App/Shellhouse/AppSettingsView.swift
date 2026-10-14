@@ -11,8 +11,14 @@ struct AppSettingsView: View {
     /// Copies the defaults above onto every existing bot.
     var onApplyDefaultsToAllBots: () -> Void = {}
     var onHostChanged: () -> Void = {}
+    /// A new sandbox manager token was saved: bots that couldn't start should try again.
+    var onManagerTokenChanged: () -> Void = {}
+    var onExportSettings: (_ includeSecrets: Bool) -> Void = { _ in }
+    var onImportSettings: () -> Void = {}
+    @State private var exportIncludesSecrets = false
     @State private var appliedDefaults = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
 
     /// A singleton, not a `@Binding` threaded down from `ContentView` —
     /// see `DebugSettings`'s doc comment. `@Bindable` still gives the
@@ -31,7 +37,7 @@ struct AppSettingsView: View {
     var body: some View {
         SheetScaffold(title: "Settings") {
             VStack(alignment: .leading, spacing: 0) {
-                SectionLabel("Display")
+                SettingsGroupHeader(title: "General", symbol: "gearshape", detail: "How the app looks, and what new bots start with")
                 Card {
                     PickerRow(
                         title: "Appearance",
@@ -39,20 +45,33 @@ struct AppSettingsView: View {
                         options: [("system", "System"), ("light", "Light"), ("dark", "Night · Black")]
                     )
                 }
+                CollapsibleSection("Defaults for new bots", summary: "\(defaultMaxIterations) steps · \(defaultMaxTokens) tokens", symbol: "slider.horizontal.3", storageKey: "botDefaults") {
+                Card {
+                    SettingRow("Max tokens") {
+                        TokenLimitField(text: $defaultMaxTokens, width: 120)
+                    }
+                    CardDivider()
+                    SettingRow("Max iterations") {
+                        TextField("40", text: $defaultMaxIterations).themedField().frame(width: 120)
+                    }
+                }
+                HStack {
+                    Button(appliedDefaults ? "Applied to all bots" : "Apply to all bots") {
+                        onApplyDefaultsToAllBots(); appliedDefaults = true
+                    }
+                    .disabled(appliedDefaults)
+                    Spacer()
+                }
+                .padding(.top, 4)
+                .onChange(of: defaultMaxIterations) { appliedDefaults = false }
+                .onChange(of: defaultMaxTokens) { appliedDefaults = false }
+                SectionFooter("Used for new bots, and for every bot still on the old default (they follow as you type). Apply to all bots sets every existing bot, including ones you changed. A run already going keeps its limits; the next one uses the new ones.")
+                }
 
-                GuardrailSettingsSection()
 
-                AccuracySettingsSection()
-
-                ModelTiersSettingsSection()
-                ContextWindowSettingsSection()
-                ModelSchedulingSettingsSection()
-
-                AgentEngineSettingsSection()
-
+                SettingsGroupHeader(title: "Linux host", symbol: "server.rack", detail: "Where every bot's VM runs, and how the app reaches it")
                 HostSettingsSection(onChanged: onHostChanged)
-
-                CollapsibleSection("Sandbox manager token", summary: tokenInfo == nil ? "Not set" : "Set", storageKey: "managerToken") {
+                CollapsibleSection("Sandbox manager token", summary: tokenInfo == nil ? "Not set" : "Set", symbol: "key.fill", storageKey: "managerToken") {
                 Card {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("The shared secret `sandbox-manager` requires on every call (X-Manager-Token). "
@@ -99,45 +118,7 @@ struct AppSettingsView: View {
                 }
                 }
 
-                SectionLabel("Debug")
-                Card {
-                    ToggleRow(
-                        title: "Debug mode",
-                        subtitle: "Shows a live console of every bot's raw activity — status changes, tool calls and "
-                            + "their results, and the model's own token stream — in a right-hand pane, including "
-                            + "from group turns and delegations that are otherwise a black box in the normal chat.",
-                        isOn: $debugSettings.isEnabled
-                    )
-                }
-
-                OllamaSettingsSection()
-
-                SkillsSettingsSection(onChanged: onSkillsChanged)
-
-                CollapsibleSection("Defaults for new bots", summary: "\(defaultMaxIterations) steps · \(defaultMaxTokens) tokens", storageKey: "botDefaults") {
-                Card {
-                    SettingRow("Max tokens") {
-                        TokenLimitField(text: $defaultMaxTokens, width: 120)
-                    }
-                    CardDivider()
-                    SettingRow("Max iterations") {
-                        TextField("40", text: $defaultMaxIterations).themedField().frame(width: 120)
-                    }
-                }
-                HStack {
-                    Button(appliedDefaults ? "Applied to all bots" : "Apply to all bots") {
-                        onApplyDefaultsToAllBots(); appliedDefaults = true
-                    }
-                    .disabled(appliedDefaults)
-                    Spacer()
-                }
-                .padding(.top, 4)
-                .onChange(of: defaultMaxIterations) { appliedDefaults = false }
-                .onChange(of: defaultMaxTokens) { appliedDefaults = false }
-                SectionFooter("Used for new bots, and for every bot still on the old default when you close Settings. Apply to all bots sets every existing bot, including ones you changed. A run already going keeps its limits; the next one uses the new ones.")
-                }
-
-                CollapsibleSection("Resource stats", storageKey: "resourceStats") {
+                CollapsibleSection("Resource stats", symbol: "gauge.with.dots.needle.33percent", storageKey: "resourceStats") {
                 HStack {
                     Spacer()
                     if isRefreshingStats {
@@ -156,6 +137,56 @@ struct AppSettingsView: View {
                     .padding(16)
                 }
                 }
+
+                SettingsGroupHeader(title: "Models", symbol: "cpu", detail: "The local models, and how bots share them")
+                OllamaSettingsSection()
+                ModelTiersSettingsSection()
+                ContextWindowSettingsSection()
+                ModelSchedulingSettingsSection()
+                AgentEngineSettingsSection()
+
+                SettingsGroupHeader(title: "Safety and accuracy", symbol: "checkmark.shield", detail: "What needs your approval, and the checks that keep bots on track")
+                GuardrailSettingsSection()
+                AccuracySettingsSection()
+
+                SettingsGroupHeader(title: "Skills", symbol: "book.closed", detail: "Playbooks bots load when a task calls for them")
+                SkillsSettingsSection(onChanged: onSkillsChanged)
+
+                SettingsGroupHeader(title: "Advanced", symbol: "wrench.and.screwdriver", detail: "Troubleshooting, and moving settings between Macs")
+                Card {
+                    ToggleRow(
+                        title: "Debug mode",
+                        subtitle: "Logs every bot's activity (replies, tool calls and results, approvals, bot-to-bot messages) to the "
+                            + "Debug Console window. Open it from Window › Debug Console (⌥⌘D).",
+                        isOn: $debugSettings.isEnabled
+                    )
+                    CardDivider()
+                    SettingRow("Debug Console", subtitle: "Filters by kind of entry, bot and conversation") {
+                        Button("Open") { openWindow(id: "debug-console") }.buttonStyle(.compactPill)
+                    }
+                }
+                CollapsibleSection("Backup & restore", summary: "Settings file", symbol: "externaldrive", storageKey: "settingsBundle") {
+                    Card {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Save every setting (app settings, each bot's settings, each group's settings) to one file, or "
+                                + "load one. Importing merges: bots and groups are matched by name and created if missing; "
+                                + "conversations and memories are never in the file.")
+                                .font(.system(size: 13)).foregroundStyle(.secondary)
+                            Toggle("Include secrets (tokens and API keys)", isOn: $exportIncludesSecrets)
+                                .toggleStyle(.switch).tint(Theme.positive)
+                            if exportIncludesSecrets {
+                                Text("The file will hold your tokens and keys in plain text. Keep it somewhere safe and delete it after use.")
+                                    .font(.system(size: 12)).foregroundStyle(Theme.warning)
+                            }
+                            HStack {
+                                Button("Export settings…") { onExportSettings(exportIncludesSecrets) }
+                                Button("Import settings…") { onImportSettings() }
+                            }
+                        }
+                        .padding(16)
+                    }
+                }
+
             }
         } footer: {
             SheetFooter {
@@ -164,7 +195,7 @@ struct AppSettingsView: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .frame(width: 540, height: 700)
+        .frame(width: 600, height: 760)
         .task {
             await refreshStats()
             await refreshTokenInfo()
@@ -190,8 +221,10 @@ struct AppSettingsView: View {
         defer { isSavingToken = false }
         do {
             try await SecretStore().put(name: managerTokenName, value: tokenInput)
+            RemoteSandboxManager.sharedToken.value = tokenInput
             tokenInput = ""
-            tokenStatus = "Saved. Restart or re-select a bot to pick it up."
+            tokenStatus = "Saved and in use. Bots that couldn't start are starting again."
+            onManagerTokenChanged()
             await refreshTokenInfo()
         } catch {
             tokenStatus = error.localizedDescription

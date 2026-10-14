@@ -76,6 +76,8 @@ public final class SmolAgentsService: @unchecked Sendable {
     public func engineSettings() async throws -> SmolAgentsEngine.Settings {
         let config = self.config
         guard config.isConfigured else { throw ServiceError.notConfigured }
+        // A port changed in Settings since the proxy started: move it, so it matches the tunnel's forward.
+        if let running = proxy.port, running != UInt16(config.proxyPort) { proxy.stop() }
         if proxy.port == nil { _ = try await proxy.start(port: UInt16(config.proxyPort)) }
         return SmolAgentsEngine.Settings(containerBaseURL: config.containerBaseURL, runnerCommand: config.runnerCommand)
     }

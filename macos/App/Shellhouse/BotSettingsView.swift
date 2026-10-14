@@ -51,7 +51,7 @@ struct BotSettingsView: View {
                 BotSettingsTab(bot: bot, groupChats: groupChats)
 
                 if case .edit = mode {
-                    CollapsibleSection("Danger zone", summary: "Delete or reset", storageKey: "bot.dangerZone") {
+                    CollapsibleSection("Danger zone", summary: "Delete or reset", symbol: "exclamationmark.triangle", storageKey: "bot.dangerZone") {
                     Card {
                         Button { showingDeleteConversationConfirm = true } label: {
                             SettingRow("Delete conversation…", titleColor: Theme.destructive)
@@ -206,7 +206,7 @@ struct BotSettingsTab: View {
                             }
                             .toggleStyle(.switch)
                             .tint(Theme.positive)
-                            .disabled(bot.hasStarted || bot.availableSkills.isEmpty)
+                            .disabled(bot.availableSkills.isEmpty)
 
                             Divider().overlay(Theme.hairline)
 
@@ -229,13 +229,13 @@ struct BotSettingsTab: View {
                                 }
                                 .toggleStyle(.switch)
                                 .tint(Theme.positive)
-                                .disabled(bot.hasStarted)
+
                             }
                         }
                     }
                     .frame(height: 200)
                 }
-                .help(bot.hasStarted ? "Locked in for this conversation — start a new one to use different skills." : "")
+                .help(bot.isBusy ? "A run already going keeps its skills; the next one uses these." : "")
                 .padding(.top, 12)
 
                 ExpandableCard("Permissions", summary: "\(bot.sessionAllowedBinaries.count) session · \(bot.globalAllowedBinaries.count) always · \(bot.blanketShellScopes.count) all-shell") {
@@ -521,7 +521,7 @@ struct BotSettingsTab: View {
                     }
                 }
 
-                CollapsibleSection("Model", summary: bot.selectedModel.isEmpty ? "Not chosen" : bot.selectedModel, storageKey: "bot.model") {
+                CollapsibleSection("Model", summary: bot.selectedModel.isEmpty ? "Not chosen" : bot.selectedModel, symbol: "cpu", storageKey: "bot.model") {
                 Card {
                     PickerRow(
                         title: "Provider",
@@ -725,7 +725,7 @@ struct BotSettingsTab: View {
                 }
             }
 
-            CollapsibleSection("Avatar shape", summary: AvatarStyle(rawValue: bot.avatarStyle)?.label, storageKey: "bot.avatarShape") {
+            CollapsibleSection("Avatar shape", summary: AvatarStyle(rawValue: bot.avatarStyle)?.label, symbol: "face.smiling", storageKey: "bot.avatarShape") {
                 Card {
                     AvatarPicker(colorHex: bot.colorHex, selection: $bot.avatarStyle)
                         .padding(16)

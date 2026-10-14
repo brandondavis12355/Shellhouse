@@ -40,6 +40,8 @@ targets:
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: Resources/Shellhouse.entitlements
         GENERATE_INFOPLIST_FILE: true
+        # URL scheme (shellhouse://) and the .shellhousesettings document type; merged into the generated plist.
+        INFOPLIST_FILE: Resources/Info.plist
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         INFOPLIST_KEY_CFBundleDisplayName: "Shellhouse"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

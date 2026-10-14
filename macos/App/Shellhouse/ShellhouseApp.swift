@@ -52,6 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// SwiftUI scene from AppKit code (there's no simple way to do that).
     private weak var mainWindow: NSWindow?
 
+    /// Settings files and `shellhouse://` links from Finder, `open`, or initial_setup.sh.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        Task { @MainActor in for url in urls { ExternalRequests.shared.handle(url) } }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
         RemoteSandboxManager.connectionLog = { line in
@@ -156,18 +161,47 @@ struct ShellhouseApp: App {
         WindowGroup {
             ContentView()
         }
+        // Opening a settings file or a shellhouse:// link goes to the app delegate, not a new window.
+        .handlesExternalEvents(matching: [])
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)
         // The window can't be dragged smaller than its panes' minimum widths (sidebar + chat + debug).
         .windowResizability(.contentMinSize)
         .commands {
-            CommandGroup(after: .windowList) { TelemetryMenuItem() }
+            // Shellhouse › Settings… (⌘,) opens the app's own Settings sheet.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { NotificationCenter.default.post(name: .openAppSettings, object: nil) }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
+            CommandGroup(after: .windowList) {
+                TelemetryMenuItem()
+                DebugConsoleMenuItem()
+            }
         }
+
+        Window("Debug Console", id: "debug-console") {
+            DebugConsoleWindow()
+        }
+        .defaultSize(width: 1200, height: 820)
+        .handlesExternalEvents(matching: [])
 
         Window("Telemetry", id: "telemetry") {
             TelemetryView()
         }
+        .handlesExternalEvents(matching: [])
         .defaultSize(width: 1100, height: 760)
+    }
+}
+
+extension Notification.Name {
+    static let openAppSettings = Notification.Name("Shellhouse.openAppSettings")
+}
+
+private struct DebugConsoleMenuItem: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Debug Console") { openWindow(id: "debug-console") }
+            .keyboardShortcut("d", modifiers: [.command, .option])
     }
 }
 

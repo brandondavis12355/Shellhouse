@@ -105,7 +105,7 @@ public actor ToolGate {
 
     /// Read live from the setting, not only from the config captured when the run began: a chat that is
     /// already open must honor the switch the moment it is flipped.
-    private var yoloOn: Bool { config.yolo || UserDefaults.standard.bool(forKey: GuardrailConfig.yoloKey) }
+    private var yoloOn: Bool { config.yolo }
 
     func yoloApplies(to call: ToolCall, _ decision: GuardrailDecision) -> Bool {
         yoloVerdict(for: call, decision).applies

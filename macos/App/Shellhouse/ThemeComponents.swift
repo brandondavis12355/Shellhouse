@@ -255,44 +255,89 @@ extension View {
 struct CollapsibleSection<Content: View>: View {
     let title: String
     var summary: String?
+    var symbol: String?
     @AppStorage private var isExpanded: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let content: Content
 
-    init(_ title: String, summary: String? = nil, storageKey: String, @ViewBuilder content: () -> Content) {
+    init(_ title: String, summary: String? = nil, symbol: String? = nil, storageKey: String, @ViewBuilder content: () -> Content) {
         self.title = title
         self.summary = summary
+        self.symbol = symbol
         self._isExpanded = AppStorage(wrappedValue: false, "settings.section.\(storageKey).expanded")
         self.content = content()
     }
 
+    /// Open, the header and everything in it share one outlined group, with the contents indented under a tinted
+    /// rail, so it's plain which settings belong to which section (and where the next section starts).
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Card {
-                Button {
-                    withAnimation(Motion.pick(Motion.smooth, reduceMotion: reduceMotion)) { isExpanded.toggle() }
-                } label: {
-                    SettingRow(title) {
-                        HStack(spacing: 8) {
-                            if let summary { Text(summary).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(1) }
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.tertiary)
-                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        }
+            Button {
+                withAnimation(Motion.pick(Motion.smooth, reduceMotion: reduceMotion)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    if let symbol {
+                        Image(systemName: symbol)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                            .frame(width: 22)
                     }
-                    .contentShape(Rectangle())
+                    Text(title).font(.system(size: 15, weight: isExpanded ? .semibold : .regular))
+                    Spacer(minLength: 8)
+                    if let summary, !isExpanded {
+                        Text(summary).font(.system(size: 14)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
-                .buttonStyle(.plain)
-                .accessibilityHint(isExpanded ? "Collapse" : "Expand")
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityHint(isExpanded ? "Collapse" : "Expand")
             if isExpanded {
-                VStack(alignment: .leading, spacing: 0) { content }
-                    .padding(.top, 8)
-                    .transition(.opacity.combined(with: .offset(y: -6)))
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                HStack(alignment: .top, spacing: 0) {
+                    RoundedRectangle(cornerRadius: 1.5).fill(Theme.accent.opacity(0.45)).frame(width: 3)
+                        .padding(.vertical, 4)
+                    VStack(alignment: .leading, spacing: 0) { content }
+                        .padding(.leading, 10)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+                .padding(.bottom, 12)
+                .transition(.opacity.combined(with: .offset(y: -6)))
             }
         }
-        .padding(.top, 12)
+        .background(Theme.card.opacity(isExpanded ? 0.45 : 1), in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
+                .strokeBorder(isExpanded ? Theme.accent.opacity(0.35) : Color.clear, lineWidth: 1)
+        }
+        .padding(.top, 10)
+    }
+}
+
+/// A heading over a group of settings sections ("Models", "Safety"…), with a short line on what's in it.
+struct SettingsGroupHeader: View {
+    let title: String
+    let symbol: String
+    var detail: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 17, weight: .bold))
+            if let detail {
+                Text(detail).font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 26)
+        .padding(.bottom, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -19,7 +19,7 @@ struct HostSettingsSection: View {
     private var enteredUser: String? { HostSettings.normalizedUser(from: userInput) }
 
     var body: some View {
-        CollapsibleSection("Linux host", summary: settings.host.isEmpty ? "Not set" : settings.host, storageKey: "linuxHost") {
+        CollapsibleSection("Linux host", summary: settings.host.isEmpty ? "Not set" : settings.host, symbol: "server.rack", storageKey: "linuxHost") {
             Card {
         VStack(alignment: .leading, spacing: 10) {
             Text("Where your sandbox host is on the network you're connected to. Use its IP address, or a name like "

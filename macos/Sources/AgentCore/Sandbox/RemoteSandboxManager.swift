@@ -20,12 +20,19 @@ public final class RemoteSandboxManager: SandboxProvider, Sendable {
     static let reconnectDelays: [Double] = [0.5, 1, 2, 3, 5, 8]
 
     private let baseURL: URL
-    private let token: String
+    private let fixedToken: String
     private let session: URLSession
+
+    /// The manager token every connection uses, when the app has set one: saving a new token in Settings
+    /// updates it here, so bots already running use it on their next call (no relaunch).
+    public static let sharedToken = SharedValue<String>()
+
+    /// The token for this request: the shared one when set, else the one this manager was made with.
+    private var token: String { Self.sharedToken.value ?? fixedToken }
 
     public init(baseURL: URL, token: String, session: URLSession = .shared) {
         self.baseURL = baseURL
-        self.token = token
+        self.fixedToken = token
         self.session = session
     }
 

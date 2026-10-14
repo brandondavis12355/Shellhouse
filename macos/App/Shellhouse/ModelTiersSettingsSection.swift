@@ -14,7 +14,7 @@ struct ModelTiersSettingsSection: View {
     @State private var keyError: String?
 
     var body: some View {
-        CollapsibleSection("Fast model", summary: summary, storageKey: "fastModel") {
+        CollapsibleSection("Fast model", summary: summary, symbol: "hare", storageKey: "fastModel") {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("A small model for the quick decisions around each reply (does this need an answer, is it small talk) "
@@ -126,7 +126,7 @@ struct ContextWindowSettingsSection: View {
     @AppStorage(OllamaBackend.contextWindowKey) private var window = OllamaBackend.defaultContextWindow
 
     var body: some View {
-        CollapsibleSection("Context window", summary: "\(window / 1024)k tokens", storageKey: "contextWindow") {
+        CollapsibleSection("Context window", summary: "\(window / 1024)k tokens", symbol: "text.alignleft", storageKey: "contextWindow") {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("Context window", selection: $window) {
@@ -151,7 +151,7 @@ struct ModelSchedulingSettingsSection: View {
     @AppStorage(ModelScheduler.slotsKey) private var slots = ModelScheduler.defaultSlots
 
     var body: some View {
-        CollapsibleSection("Model sharing", summary: slots == 0 ? "off" : "\(slots) at a time", storageKey: "modelScheduling") {
+        CollapsibleSection("Model sharing", summary: slots == 0 ? "off" : "\(slots) at a time", symbol: "person.3.sequence", storageKey: "modelScheduling") {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("Requests at once", selection: $slots) {
@@ -159,6 +159,7 @@ struct ModelSchedulingSettingsSection: View {
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
+                    .onChange(of: slots) { _, _ in Task { await ModelScheduler.shared.settingsChanged() } }
                     Text("How many requests the bots send your local model at once. When more bots want it, the next free "
                         + "turn goes to the bot that needs it most: one you're waiting on in a 1:1 chat, then bots with goal "
                         + "steps ready to work and goal owners with work to review, then bots with open tasks and the busiest "

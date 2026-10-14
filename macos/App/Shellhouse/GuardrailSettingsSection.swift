@@ -14,7 +14,7 @@ struct GuardrailSettingsSection: View {
     @State private var verification: AuditLog.Verification?
 
     var body: some View {
-        CollapsibleSection("Guardrails", summary: yolo ? "YOLO on" : (autoReview ? "Fast-model review on" : "Approvals on"), storageKey: "guardrails") {
+        CollapsibleSection("Guardrails", summary: yolo ? "YOLO on" : (autoReview ? "Fast-model review on" : "Approvals on"), symbol: "checkmark.shield", storageKey: "guardrails") {
             Card {
                 ToggleRow(
                     title: "Let the fast model approve routine actions",

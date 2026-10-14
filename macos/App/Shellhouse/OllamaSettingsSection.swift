@@ -100,7 +100,7 @@ struct OllamaSettingsSection: View {
     @State private var pullStatus: String?
 
     var body: some View {
-        CollapsibleSection("Ollama", summary: binaryPath == nil ? "Not found" : "\(models.count) models", storageKey: "ollama") {
+        CollapsibleSection("Ollama", summary: binaryPath == nil ? "Not found" : "\(models.count) models", symbol: "shippingbox.circle", storageKey: "ollama") {
             HStack {
                 Spacer()
                 Spacer()

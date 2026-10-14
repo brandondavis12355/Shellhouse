@@ -40,7 +40,7 @@ struct SkillsSettingsSection: View {
     private var builtInSkills: [Skill] { skills.filter { !SkillLibrary.isUserSkill(id: $0.id) } }
 
     var body: some View {
-        CollapsibleSection("Skills", summary: "\(skills.count) skills", storageKey: "skills") {
+        CollapsibleSection("Skills", summary: "\(skills.count) skills", symbol: "book.closed", storageKey: "skills") {
             HStack {
                 Spacer()
                 Spacer()

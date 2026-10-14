@@ -20,7 +20,7 @@ enum ModelProvider: String, Codable, CaseIterable {
     case remote
 }
 
-struct BotConfig: Codable {
+struct BotConfig: Codable, Equatable {
     var id: String
     var name: String
     var colorHex: String

@@ -89,11 +89,23 @@ public struct GuardrailConfig: Sendable {
     /// Lets provably read-only shell pipelines (`ls | grep x`) run without a
     /// prompt. Off by default: it is the one place the policy lowers the
     /// baseline, so it is an explicit opt-in.
-    public var autoAllowReadOnlyShell = false
+    public var autoAllowReadOnlyShell: Bool {
+        get { followsSettings ? UserDefaults.standard.bool(forKey: Self.autoAllowReadOnlyShellKey) : fixedAutoAllowReadOnlyShell }
+        set { fixedAutoAllowReadOnlyShell = newValue; followsSettings = false }
+    }
     /// YOLO mode: skip the approval prompt for ordinary, clean-run actions. It never lifts a hard
     /// block, and runs that have read untrusted content (web, downloads, files, friends) still ask.
-    public var yolo = false
+    public var yolo: Bool {
+        get { followsSettings ? UserDefaults.standard.bool(forKey: Self.yoloKey) : fixedYolo }
+        set { fixedYolo = newValue; followsSettings = false }
+    }
+    /// `standard`: the opt-ins above are read from Settings at each use, so a chat already running honors a
+    /// change at once (switching YOLO off included). Setting one explicitly pins both.
+    private var followsSettings = false
+    private var fixedAutoAllowReadOnlyShell = false
+    private var fixedYolo = false
     public init() {}
+    public static let autoAllowReadOnlyShellKey = "guardrails.autoAllowReadOnlyShell"
     public static let yoloKey = "guardrails.yolo"
     public static let trustedGitHubOwnersKey = "guardrails.trustedGitHubOwners"
 
@@ -107,8 +119,7 @@ public struct GuardrailConfig: Sendable {
     /// Opt-ins read from UserDefaults (App Settings).
     public static var standard: GuardrailConfig {
         var config = GuardrailConfig()
-        config.autoAllowReadOnlyShell = UserDefaults.standard.bool(forKey: "guardrails.autoAllowReadOnlyShell")
-        config.yolo = UserDefaults.standard.bool(forKey: GuardrailConfig.yoloKey)
+        config.followsSettings = true
         return config
     }
 }

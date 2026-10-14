@@ -51,6 +51,7 @@ extension Color {
 /// across every bot for the life of this app launch.
 struct ContentView: View {
     @State private var bots: [Bot] = []
+    @Environment(\.openWindow) private var openWindow
     @State private var groupChats: [GroupChatSession] = []
     /// One selection across both sidebar sections — tagged `"bot:<id>"` or
     /// `"group:<id>"` (see `selectedBot`/`selectedGroup`) since a single
@@ -265,15 +266,18 @@ struct ContentView: View {
                     saveBots()
                     defaultsWhenSettingsOpened = (defaultMaxIterations, defaultMaxTokens)
                 },
-                onHostChanged: {
-                    // Give the new tunnel a few seconds, then re-boot any bot that
-                    // never got its sandbox (boot() itself waits for the tunnel).
-                    for bot in bots where bot.handle == nil { Task { await bot.boot() } }
-                }
+                onHostChanged: { rebootStalledBots() },
+                onManagerTokenChanged: { rebootStalledBots() },
+                onExportSettings: { includeSecrets in exportSettings(includeSecrets: includeSecrets) },
+                onImportSettings: { importSettingsFromPanel() }
             )
         }
+        .background(liveSettingsObserver)
+        .onReceive(NotificationCenter.default.publisher(for: .openAppSettings)) { _ in showingAppSettings = true }
         .sheet(item: $botSettingsTarget) { bot in
             BotSettingsView(bot: bot, groupChats: groupChats, onDeleteBot: { deleteBotPermanently(bot) })
+                // Saved as you edit (debounced), so nothing waits for the sheet to close.
+                .onChange(of: bot.config) { _, _ in scheduleSaveBots() }
         }
         // The bot settings sheet is where every persisted per-bot field
         // (name/color/role/system prompt/skills/model/budgets — see
@@ -439,19 +443,10 @@ struct ContentView: View {
             FriendsManager.shared.onDisconnected = { for group in groupChats { group.stopRelay() } }
         }
         .onChange(of: DebugSettings.shared.isEnabled) { _, isOn in
-            if isOn { StartupConfigLogger.log(bots: bots, groups: groupChats) }
-        }
-        // A plain sibling of `NavigationSplitView`, not a third column
-        // of it or a `.safeAreaInset` on it — `NavigationSplitView`
-        // manages its own toolbar/sidebar chrome and safe-area handling
-        // internally, and layering another inset on top of that rendered
-        // detached from the window instead of docked inside it. A flat
-        // sibling has no such interaction: it's an ordinary, fully
-        // clipped part of this same window's layout.
-        if DebugSettings.shared.isEnabled {
-            DebugConsoleView(bots: bots)
-                .frame(minWidth: 260, idealWidth: 380, maxWidth: 700)
-                .background(Theme.bg)
+            if isOn {
+                StartupConfigLogger.log(bots: bots, groups: groupChats)
+                openWindow(id: "debug-console")
+            }
         }
         }
     }
@@ -597,6 +592,175 @@ struct ContentView: View {
         }
     }
 
+    /// Invisible: carries the handlers that apply settings the moment they change (kept out of `body`'s long
+    /// modifier chain, which the compiler can't type-check in time otherwise).
+    private var liveSettingsObserver: some View {
+        Color.clear
+            // Settings files opened from Finder, `open`, or initial_setup.sh.
+            .onChange(of: ExternalRequests.shared.pendingSettingsFiles) { _, files in
+                guard !files.isEmpty else { return }
+                ExternalRequests.shared.pendingSettingsFiles = []
+                Task { @MainActor in
+                    for url in files {
+                        await importSettings(from: url, askFirst: SettingsBundle.isQuarantined(url), receipt: true)
+                    }
+                }
+            }
+            // Defaults for new bots apply as you type, not when the sheet closes: bots still on the old default follow.
+            .onChange(of: defaultMaxIterations) { _, _ in
+                applyChangedBotDefaults(); defaultsWhenSettingsOpened = (defaultMaxIterations, defaultMaxTokens)
+            }
+            .onChange(of: defaultMaxTokens) { _, _ in
+                applyChangedBotDefaults(); defaultsWhenSettingsOpened = (defaultMaxIterations, defaultMaxTokens)
+            }
+    }
+
+    // MARK: - Settings export / import
+
+    private func exportSettings(includeSecrets: Bool) {
+        Task { @MainActor in
+            guard let data = await SettingsBundle.export(bots: bots.map(\.config), groups: groupChats.map(\.config),
+                                                         includeSecrets: includeSecrets) else {
+                showExportError("Couldn't build the settings file.", SettingsBundle.BundleError.notSettings)
+                return
+            }
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [UTType(filenameExtension: SettingsBundle.fileExtension) ?? .propertyList]
+            panel.canCreateDirectories = true
+            panel.nameFieldStringValue = includeSecrets ? "Shellhouse Settings (with secrets).shellhousesettings" : "Shellhouse Settings.shellhousesettings"
+            let finish: (NSApplication.ModalResponse) -> Void = { response in
+                guard response == .OK, let url = panel.url else { return }
+                do {
+                    try data.write(to: url, options: .atomic)
+                    // Secrets in the file: only you can read it.
+                    if includeSecrets { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
+                } catch {
+                    showExportError("Couldn't save the settings to \(url.lastPathComponent).", error)
+                }
+            }
+            if let window = NSApp.keyWindow ?? NSApp.mainWindow { panel.beginSheetModal(for: window, completionHandler: finish) }
+            else { panel.begin(completionHandler: finish) }
+        }
+    }
+
+    private func importSettingsFromPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: SettingsBundle.fileExtension) ?? .propertyList, .propertyList, .xml]
+        panel.allowsMultipleSelection = false
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in await importSettings(from: url, askFirst: false, receipt: false) }
+        }
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow { panel.beginSheetModal(for: window, completionHandler: finish) }
+        else { panel.begin(completionHandler: finish) }
+    }
+
+    /// `askFirst`: the file came from outside the app and macOS marks it as downloaded, so show what it would change
+    /// before applying. `receipt`: overwrite the file afterwards so any secrets in it don't stay on disk.
+    @MainActor
+    private func importSettings(from url: URL, askFirst: Bool, receipt: Bool) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let contents: SettingsBundle.Contents
+        do {
+            contents = try SettingsBundle.parse(try Data(contentsOf: url))
+        } catch {
+            showExportError("Couldn't import \(url.lastPathComponent).", error)
+            return
+        }
+        if askFirst {
+            let alert = NSAlert()
+            alert.messageText = "Import settings from \(url.lastPathComponent)?"
+            alert.informativeText = "This file was downloaded. It would change \(contents.summary)"
+                + (contents.host.map { ", and connect the app to the Linux host \($0)" } ?? "")
+                + ". Only import settings from someone you trust."
+            alert.addButton(withTitle: "Import")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        await applySettings(contents)
+        if receipt { SettingsBundle.writeReceipt(to: url, summary: contents.summary) }
+        let done = NSAlert()
+        done.messageText = "Settings imported"
+        done.informativeText = "Applied \(contents.summary). Everything takes effect now."
+        if !receipt || askFirst { done.runModal() }
+    }
+
+    @MainActor
+    private func applySettings(_ contents: SettingsBundle.Contents) async {
+        SettingsBundle.applyAppSettings(contents)
+        await runShellPermissions.reloadFromDefaults()
+
+        // Bots: matched by id, then by name; new ones are created and started.
+        var idMap: [String: String] = [:]
+        var created: [Bot] = []
+        for config in contents.bots {
+            if let bot = bots.first(where: { $0.id == config.id })
+                ?? bots.first(where: { $0.name.caseInsensitiveCompare(config.name) == .orderedSame }) {
+                bot.apply(config)
+                idMap[config.id] = bot.id
+            } else {
+                let bot = Bot(config: config, permissions: runShellPermissions, botDirectory: botDirectory)
+                bots.append(bot)
+                created.append(bot)
+                idMap[config.id] = bot.id
+            }
+        }
+        if !contents.bots.isEmpty {
+            botDirectory.sync(bots)
+            saveBots()
+        }
+
+        // Secrets, with per-bot model keys renamed to the matching local bot.
+        let store = SecretStore()
+        for (name, value) in contents.secrets {
+            var localName = name
+            for (imported, local) in idMap where imported != local {
+                let importedKey = "REMOTE_API_KEY_" + imported.uppercased().replacingOccurrences(of: "-", with: "_")
+                if name.hasPrefix(importedKey) {
+                    localName = "REMOTE_API_KEY_" + local.uppercased().replacingOccurrences(of: "-", with: "_") + name.dropFirst(importedKey.count)
+                }
+            }
+            try? await store.put(name: localName, value: value)
+        }
+        if let token = contents.secrets[managerTokenName] { RemoteSandboxManager.sharedToken.value = token }
+
+        // Groups: matched by id, then by name; members mapped to this app's bots.
+        for record in contents.groups {
+            let members = record.memberBotIDs.compactMap { id in idMap[id] ?? (bots.contains { $0.id == id } ? id : nil) }
+            let coordinator = record.coordinatorBotID.flatMap { idMap[$0] ?? $0 }.flatMap { id in members.contains(id) ? id : nil }
+            if let group = groupChats.first(where: { $0.id == record.id })
+                ?? groupChats.first(where: { $0.name.caseInsensitiveCompare(record.name) == .orderedSame }) {
+                group.name = record.name
+                if !members.isEmpty { group.memberBotIDs = members }
+                group.coordinatorBotID = coordinator ?? group.coordinatorBotID
+                if let limit = record.stallLimit { group.stallLimit = limit }
+                if let minutes = record.confirmTimeoutMinutes { group.confirmTimeoutMinutes = minutes }
+            } else if !members.isEmpty {
+                groupChats.append(GroupChatSession(
+                    id: record.id, name: record.name, memberBotIDs: members, botDirectory: botDirectory,
+                    coordinatorBotID: coordinator, stallLimit: record.stallLimit, confirmTimeoutMinutes: record.confirmTimeoutMinutes,
+                    relayGroupID: nil
+                ))
+            }
+        }
+        if !contents.groups.isEmpty {
+            botDirectory.syncGroups(groupChats)
+            saveGroupChats()
+        }
+
+        // The host and the smolagents forward: reconnect the tunnel now.
+        if contents.app["linuxHostSettings.v1"] != nil || contents.app["smolagents.config.v1"] != nil {
+            let host = HostSettingsStore.load()
+            AppDelegate.shared?.tunnel.reconfigure(.init(
+                host: host.host, user: host.user, managerSocketPath: host.managerSocketPath,
+                reverseForwards: SmolAgentsService.reverseForwards()
+            ))
+        }
+        for bot in created { Task { await bot.boot() } }
+        rebootStalledBots()
+    }
+
     private func showExportError(_ message: String, _ error: Error) {
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -691,6 +855,25 @@ struct ContentView: View {
             }
         }
         if changed { saveBots() }
+    }
+
+    /// Re-boots bots that have no sandbox or failed to start: after the host or the manager token changed.
+    /// (`boot()` waits for the tunnel itself.)
+    private func rebootStalledBots() {
+        for bot in bots where !bot.isBusy {
+            if bot.handle == nil { Task { await bot.boot() }; continue }
+            if case .failed = bot.state { Task { await bot.boot() } }
+        }
+    }
+
+    @State private var saveBotsTask: Task<Void, Never>?
+    private func scheduleSaveBots() {
+        saveBotsTask?.cancel()
+        saveBotsTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled else { return }
+            saveBots()
+        }
     }
 
     private func saveBots() {

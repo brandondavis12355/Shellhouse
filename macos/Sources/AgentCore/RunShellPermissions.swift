@@ -45,6 +45,13 @@ public actor RunShellPermissions {
         blanketEveryBot = UserDefaults.standard.bool(forKey: Self.blanketEveryBotKey)
     }
 
+    /// Re-reads the persistent grants (after a settings import replaced them); session grants are kept.
+    public func reloadFromDefaults() {
+        globalAllowed = Set(UserDefaults.standard.stringArray(forKey: Self.defaultsKey) ?? [])
+        blanketPersistentBots = Set(UserDefaults.standard.stringArray(forKey: Self.blanketBotsKey) ?? [])
+        blanketEveryBot = UserDefaults.standard.bool(forKey: Self.blanketEveryBotKey)
+    }
+
     /// `botID` is the bot's sandbox/handle id (what `AgentRuntime` calls `sandboxID`).
     public func isBlanketAllowed(botID: String) -> Bool {
         // The "every bot, always" grant is retired (docs/GUARDRAILS.md, L3): a

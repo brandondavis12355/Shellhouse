@@ -68,7 +68,7 @@ public actor SecretStore {
 
     /// Environment-variable names only. A crafted name must not be able to
     /// become a shell fragment when exported in the guest.
-    static func isValidName(_ name: String) -> Bool {
+    public static func isValidName(_ name: String) -> Bool {
         guard !name.isEmpty, name.count <= 64 else { return false }
         guard let first = name.first, first.isUppercase, first.isLetter else { return false }
         return name.allSatisfy { $0.isUppercase || $0.isNumber || $0 == "_" }

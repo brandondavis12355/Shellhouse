@@ -96,6 +96,8 @@ macos/
 
 ## Building
 
+The quickest way is `./build.sh` from the repo root: it builds, installs to /Applications and connects the app to the Linux box ([README.md › Getting started](../README.md#getting-started), which also covers the one-time Xcode setup). By hand:
+
 ```bash
 cd macos
 echo 'DEVELOPMENT_TEAM = YOUR_TEAM_ID' > Signing.local.xcconfig   # once; git-ignored

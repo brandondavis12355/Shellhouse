@@ -64,41 +64,98 @@ The repo also contains the **Docker/Python reference stack** the app grew out of
 | [`group-relay/`](group-relay/) | Optional server for sharing group chats with friends (compose profile `relay`) |
 | [`api/`](api/), [`web/`](web/), [`evals/`](evals/) | The Docker/Python reference stack and its evaluation suites |
 | [`docs/`](docs/) | Security model, guardrails, reliability, egress, Firecracker and design notes |
-| [`scripts/`](scripts/) | Host helpers, such as the sshd drop-in for the model proxy |
+| [`scripts/`](scripts/) | Host helpers used by `initial_setup.sh` and `uninstall.sh`, and the sshd drop-in for the model proxy |
+| `initial_setup.sh`, `build.sh`, `uninstall.sh` | Set up the Linux box, build and install the app, and remove it all again |
 
 ## Getting started
 
-You need an Apple Silicon Mac (macOS 14+) and a Linux host with Docker that the Mac can reach over SSH. The host can be a spare machine or a VM.
-
-### 1. Linux host setup
-
-The app expects the stack in `~/shellhouse` on the host, because it connects to the manager's socket at `~/shellhouse/sandbox-manager-run/manager.sock`.
+You need an Apple Silicon Mac (macOS 14+) with Xcode, and a Linux box (Ubuntu/Debian or Fedora; a spare machine or a VM) that you can reach over normal SSH with a user that has sudo rights.
 
 ```bash
-git clone https://github.com/brandondavis12355/Shellhouse.git ~/shellhouse
-cd ~/shellhouse
-./setup.sh                                           # .env, manager token, docker GID, sandbox seed
-docker compose up -d --build sandbox sandbox-manager
+git clone https://github.com/brandondavis12355/Shellhouse.git
+cd Shellhouse
+./initial_setup.sh      # sets up the Linux box over SSH
+./build.sh              # builds the app, installs it in /Applications and connects it to the box
 ```
 
-`setup.sh` writes the manager token to `.env`; you'll paste it into the app. The optional smolagents engine also needs `bash scripts/enable-model-proxy-forward.sh` on the host. Run it with `--dry-run` first to see what it changes.
+Then add your first bot from the sidebar's **+** menu. Everything uses the default settings; change them in **Settings**, where every change applies right away.
 
-### 2. The Mac app
+### What `initial_setup.sh` does
+
+It asks for the Linux box's IP address (or hostname) and your SSH user, then:
+
+1. **Connects over SSH.** It uses your password or SSH key, asks only once, and offers to install your key so later runs don't ask.
+2. **Copies the server side** of this repo to `~/shellhouse` on the box. The box's own `.env`, seed folders and manager socket are never overwritten.
+3. **Sets up the box.** It asks for your sudo password once:
+   - installs Docker and Docker Compose if they're missing, and adds you to the `docker` group;
+   - makes sure sshd allows the port and socket forwarding the app uses;
+   - writes `.env` with a fresh manager token;
+   - builds the sandbox image (the first build takes a while) and starts the sandbox manager.
+4. **Prepares the app's settings:** the host, the user and the manager token, in `~/.config/shellhouse`, readable only by you. If the app is already installed it hands them over right away; otherwise `build.sh` does it. The token is never printed. The file is overwritten once the app has it.
+
+Everything it changes on the box is recorded in `~/.shellhouse-install-state`, which is what `uninstall.sh` reverts. It's safe to run again: it picks up where it left off.
+
+| Option | Effect |
+|---|---|
+| `--host ADDR` / `--user NAME` | Skip the questions |
+| `--with-smolagents` | Also allow the optional smolagents engine's model-proxy forward ([docs/SMOLAGENTS.md](docs/SMOLAGENTS.md)) |
+| `--no-sudo-in-sandboxes` | Don't give bots sudo inside their own VMs. By default they have it, so they can `apt-get install` what a task needs |
+| `--yes` | Accept every default |
+
+The box's SSH port must be 22, since the app's tunnel uses it.
+
+### What `build.sh` does
+
+1. Checks Xcode (license, first-launch components) and installs [XcodeGen](https://github.com/yonaskolb/XcodeGen) with Homebrew if needed.
+2. Finds your Apple signing team, or asks for it, and saves it to `macos/Signing.local.xcconfig` (git-ignored).
+3. Builds a Release copy and installs it as `/Applications/Shellhouse.app`, quitting a running copy first.
+4. Installs [Ollama](https://ollama.com) with Homebrew if it's missing, and pulls the default models: `qwen2.5:7b-instruct` for chat and `nomic-embed-text` for memory search. Skip this with `--no-models`.
+5. Starts the app and connects it to the box `initial_setup.sh` prepared:
+   - it authorizes the app's own SSH key on the box (only the public key leaves the app);
+   - it imports the host and the manager token.
+
+Other options: `--debug`, `--team TEAMID`, `--no-launch`, `--yes`. The build log is in `~/.config/shellhouse/build.log`.
+
+### Before the first `build.sh`: one-time Xcode setup
+
+`xcodebuild` can't sign in to your Apple account by itself, so do this once in Xcode:
+
+1. **Install Xcode** from the App Store and open it once. Accept the license, and let it install its components.
+2. **Sign in:** Xcode › Settings › Accounts › **+** › Apple ID. A free personal team works. The team ID is the 10-character code shown for your team.
+3. **Create the signing certificate:** in Accounts, select your team › **Manage Certificates…** › **+** › **Apple Development**.
+4. **Build once from Xcode**, so it can create the provisioning profile the sandboxed app needs:
+   ```bash
+   cd macos && xcodegen generate && open "Shellhouse.xcodeproj"
+   ```
+   Select the **Shellhouse** target › Signing & Capabilities › choose your team, then press ⌘B. You only need to do this again if you change teams.
+
+After that, `./build.sh` handles everything from the command line. If it reports a signing or provisioning error, step 4 is what's missing.
+
+### Removing it
 
 ```bash
-brew install xcodegen
-cd macos
-echo 'DEVELOPMENT_TEAM = YOUR_TEAM_ID' > Signing.local.xcconfig   # git-ignored
-scripts/build.sh                                                   # generate, build, launch
+./uninstall.sh            # cleans the Linux box over SSH, as if Shellhouse had never been there
+./uninstall.sh --mac      # also removes the app, its data and its Keychain items from this Mac
 ```
 
-Then in **Settings**:
+It asks you to type the box's address to confirm. It removes:
+- every container, volume, network and image the stack or the sandbox manager created;
+- `~/shellhouse`;
+- the app's SSH key;
+- the sshd changes;
+- the packages and `docker` group membership that `initial_setup.sh` added. Anything that was on the box before stays. Add `--keep-packages` to keep Docker.
 
-- **Linux host:** enter the host and SSH user, press **Copy authorize command**, run it once in Terminal, then press **Test**.
-- **Sandbox manager token:** paste `MANAGER_TOKEN` from the host's `~/shellhouse/.env`.
-- **Ollama:** pull a tool-calling model such as `qwen2.5:7b-instruct`.
+### Settings files
 
-Add your first bot from the sidebar **+** menu. Building from Xcode and signing are covered in [macos/README.md › Building](macos/README.md#building).
+**Settings › Backup & restore** exports every setting to one `.shellhousesettings` file:
+- app settings;
+- each bot's settings;
+- each group's settings;
+- secrets, only if you choose to include them.
+
+Conversations and memories are never included.
+
+Importing merges: bots and groups are matched by name and created if they're missing. Opening a `.shellhousesettings` file imports it too. A downloaded file asks before it changes anything.
 
 ### Or: the Docker reference stack
 
