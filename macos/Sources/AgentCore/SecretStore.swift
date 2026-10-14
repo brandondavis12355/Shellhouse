@@ -235,6 +235,24 @@ public actor SecretStore {
         var out = text
         for value in values where value.count >= 6 {
             out = out.replacingOccurrences(of: value, with: "[REDACTED]")
+            // A tool's own masking ("Token: github_pat_11AB…_****", from `gh auth status`) still shows the
+            // start of the value: hide that too.
+            if value.count >= 20 {
+                out = out.replacingOccurrences(of: NSRegularExpression.escapedPattern(for: String(value.prefix(10))) + #"\S*"#,
+                                               with: "[REDACTED]", options: .regularExpression)
+            }
+        }
+        return Self.maskTokenShapes(out)
+    }
+
+    /// Known credential shapes, whole or cut short with `*` (GitHub tokens, OpenAI- and Google-style keys),
+    /// masked whether or not the value is one this app handed out.
+    public nonisolated static func maskTokenShapes(_ text: String) -> String {
+        let patterns = [#"github_pat_[A-Za-z0-9_]{6,}\**"#, #"\bgh[pousr]_[A-Za-z0-9]{6,}\**"#,
+                        #"\bsk-[A-Za-z0-9_-]{12,}\**"#, #"\bAIza[0-9A-Za-z_-]{12,}\**"#]
+        var out = text
+        for pattern in patterns {
+            out = out.replacingOccurrences(of: pattern, with: "[REDACTED]", options: .regularExpression)
         }
         return out
     }

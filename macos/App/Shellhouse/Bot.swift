@@ -191,6 +191,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             modelProvider.rawValue, selectedModel, String(modelHasVision), remoteBaseURLText,
             maxTokensText, maxIterationsText, String(remoteAPIKeyInput.hashValue), engine.rawValue,
             String(systemPromptText.hashValue),
+            fallbackProvider?.rawValue ?? "", fallbackModel, fallbackBaseURLText, String(fallbackHasVision), String(fallbackAPIKeyInput.hashValue),
         ].joined(separator: "|")
     }
     /// Whether THIS chat specifically (not a delegation/group turn — see
@@ -260,6 +261,15 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// cleared back to "" by `persistRemoteAPIKeyIfChanged()` when the
     /// settings sheet closes.
     var remoteAPIKeyInput = ""
+    /// A second model for when the main one can't be reached after a few tries (`FallbackBackend`). `nil`: none.
+    var fallbackProvider: ModelProvider?
+    var fallbackModel = ""
+    var fallbackBaseURLText = ""
+    var fallbackHasVision = false
+    /// UI scratch for the fallback's API key, same as `remoteAPIKeyInput`.
+    var fallbackAPIKeyInput = ""
+    /// Whether requests are on the fallback right now, kept across this bot's runs.
+    let fallbackState = FallbackState()
     /// ONLY what the user (or `create_bot`) added — the built-in prompt
     /// (`BuiltInSystemPrompt.text`) is always applied separately and is not
     /// editable. See `fullSystemPrompt`.
@@ -383,6 +393,10 @@ final class Bot: Identifiable, @unchecked Sendable {
         engine = config.engine ?? .builtin
         remoteBaseURLText = config.remoteBaseURLText ?? ""
         checksGoalWorkItself = config.checksGoalWorkItself ?? true
+        fallbackProvider = config.fallbackProvider
+        fallbackModel = config.fallbackModel ?? ""
+        fallbackBaseURLText = config.fallbackBaseURLText ?? ""
+        fallbackHasVision = config.fallbackHasVision ?? false
     }
 
     /// Reconstructs a bot from an imported/duplicated `BotTemplate` — same
@@ -410,6 +424,10 @@ final class Bot: Identifiable, @unchecked Sendable {
         modelProvider = template.modelProvider ?? .ollama
         remoteBaseURLText = template.remoteBaseURLText ?? ""
         checksGoalWorkItself = template.checksGoalWorkItself ?? true
+        fallbackProvider = template.fallbackProvider
+        fallbackModel = template.fallbackModel ?? ""
+        fallbackBaseURLText = template.fallbackBaseURLText ?? ""
+        fallbackHasVision = template.fallbackHasVision ?? false
         memoryBook = MemoryBook(legacy: template.memories)
         memories = memoryBook.texts
         routines = template.routines
@@ -436,7 +454,8 @@ final class Bot: Identifiable, @unchecked Sendable {
             systemPromptText: systemPromptText, selectedSkillIDs: selectedSkillIDs, selectedModel: selectedModel,
             modelHasVision: modelHasVision, maxTokensText: maxTokensText, maxIterationsText: maxIterationsText,
             memories: memories, routines: routines, modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText,
-            checksGoalWorkItself: checksGoalWorkItself
+            checksGoalWorkItself: checksGoalWorkItself, fallbackProvider: fallbackProvider, fallbackModel: fallbackModel,
+            fallbackBaseURLText: fallbackBaseURLText, fallbackHasVision: fallbackHasVision
         )
     }
 
@@ -455,7 +474,9 @@ final class Bot: Identifiable, @unchecked Sendable {
             systemPromptText: systemPromptText, selectedSkillIDs: selectedSkillIDs, selectedModel: selectedModel,
             modelHasVision: modelHasVision, maxTokensText: maxTokensText, maxIterationsText: maxIterationsText,
             modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText,
-            engine: engine, knownSkillIDs: Set(availableSkills.map(\.id)), checksGoalWorkItself: checksGoalWorkItself
+            engine: engine, knownSkillIDs: Set(availableSkills.map(\.id)), checksGoalWorkItself: checksGoalWorkItself,
+            fallbackProvider: fallbackProvider, fallbackModel: fallbackModel, fallbackBaseURLText: fallbackBaseURLText,
+            fallbackHasVision: fallbackHasVision
         )
     }
 
@@ -481,7 +502,17 @@ final class Bot: Identifiable, @unchecked Sendable {
             notes: "Remote model provider API key for bot '\(name)'"
         )
         remoteAPIKeyInput = ""
+        if !fallbackAPIKeyInput.isEmpty {
+            try? await SecretStore().put(
+                name: fallbackAPIKeySecretName, value: fallbackAPIKeyInput,
+                notes: "Fallback model provider API key for bot '\(name)'"
+            )
+            fallbackAPIKeyInput = ""
+        }
     }
+
+    /// Keychain name for the fallback model's API key (covered by the app-internal `REMOTE_API_KEY_` prefix).
+    var fallbackAPIKeySecretName: String { remoteAPIKeySecretName + "_FALLBACK" }
 
     /// The actual `ModelBackend` this bot's runtime talks to — local
     /// Ollama, or the configured remote OpenAI-compatible endpoint. The
@@ -491,19 +522,42 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// `interactive`: the user is waiting on this run in the 1:1 chat. Local-model requests go through the
     /// shared `ModelScheduler`, so the bots with the most to do get the model first.
     private func makeModelBackend(interactive: Bool = false) async -> any ModelBackend {
-        switch modelProvider {
+        let primary = await makeBackend(provider: modelProvider, model: selectedModel, baseURL: remoteBaseURLText,
+                                        keyName: remoteAPIKeySecretName, vision: modelHasVision, interactive: interactive)
+        let fallbackName = fallbackModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let fallbackProvider, !fallbackName.isEmpty else { return primary }
+        let fallback = await makeBackend(provider: fallbackProvider, model: fallbackName, baseURL: fallbackBaseURLText,
+                                         keyName: fallbackAPIKeySecretName, vision: fallbackHasVision, interactive: interactive)
+        let mainName = selectedModel
+        return FallbackBackend(primary: primary, fallback: fallback, fallbackModel: fallbackName, state: fallbackState) { [weak self] toFallback, reason in
+            Task { @MainActor in self?.noteModelSwitch(toFallback: toFallback, reason: reason, main: mainName, fallback: fallbackName) }
+        }
+    }
+
+    private func makeBackend(provider: ModelProvider, model: String, baseURL: String, keyName: String, vision: Bool,
+                             interactive: Bool) async -> any ModelBackend {
+        switch provider {
         case .ollama:
-            let local = OllamaBackend(defaultModel: selectedModel, visionOverrides: modelHasVision ? [selectedModel] : [])
+            let local = OllamaBackend(defaultModel: model, visionOverrides: vision ? [model] : [])
             return ScheduledBackend(local, bot: name) { [weak self] in
                 await MainActor.run { self?.modelPriority(interactive: interactive) ?? 0 }
             }
         case .remote:
-            let apiKey = (try? await SecretStore().resolveOne(name: remoteAPIKeySecretName)) ?? nil
-            let url = URL(string: remoteBaseURLText) ?? URL(string: "https://api.openai.com/v1")!
-            return OpenAICompatibleBackend(
-                baseURL: url, apiKey: apiKey ?? "", defaultModel: selectedModel,
-                visionOverrides: modelHasVision ? [selectedModel] : []
-            )
+            let apiKey = (try? await SecretStore().resolveOne(name: keyName)) ?? nil
+            let url = URL(string: baseURL) ?? URL(string: "https://api.openai.com/v1")!
+            return OpenAICompatibleBackend(baseURL: url, apiKey: apiKey ?? "", defaultModel: model, visionOverrides: vision ? [model] : [])
+        }
+    }
+
+    /// One line in the bot's chat (and the debug console) each time requests move between its models.
+    private func noteModelSwitch(toFallback: Bool, reason: String, main: String, fallback: String) {
+        let text = toFallback
+            ? "Couldn't reach my main model (\(main): \(reason)), so I'm using my fallback model (\(fallback)) for now. I'll try the main one again in a few minutes."
+            : "My main model (\(main)) is answering again, so I'm back on it."
+        displayMessages.append(DisplayMessage(role: .assistant, text: "(Model) " + text))
+        persistTranscript()
+        if DebugSettings.shared.isEnabled {
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "model", text: text)
         }
     }
 
@@ -1926,11 +1980,37 @@ final class Bot: Identifiable, @unchecked Sendable {
     }
 
     private func makeFastBackend() async -> (backend: any ModelBackend, model: String) {
-        if let remote = await remoteFastBackend(timeout: 120) { return remote }
-        guard modelProvider == .ollama else { return (await makeModelBackend(), selectedModel) }
-        let model = ModelTiers.cheapModel(main: selectedModel)
-        return (OllamaBackend(defaultModel: model, timeout: 120), model)
+        await fastTier(remoteTimeout: 30, localTimeout: 120)
     }
+
+    /// The fast tier: the remote fast model when one is set, else the local small model. A remote one that doesn't
+    /// answer (down, hanging, rate-limited) hands over to the local tier for a few minutes, for every bot at once
+    /// (`fastTierState`), instead of each gate and review waiting out its timeout.
+    private func fastTier(remoteTimeout: TimeInterval, localTimeout: TimeInterval) async -> (backend: any ModelBackend, model: String) {
+        let local: (backend: any ModelBackend, model: String)
+        if modelProvider == .ollama {
+            let model = ModelTiers.cheapModel(main: selectedModel)
+            local = (OllamaBackend(defaultModel: model, timeout: localTimeout), model)
+        } else {
+            local = (await makeModelBackend(), selectedModel)
+        }
+        guard let remote = await remoteFastBackend(timeout: remoteTimeout) else { return local }
+        let remoteName = remote.model
+        let backend = FallbackBackend(primary: remote.backend, fallback: local.backend, fallbackModel: local.model,
+                                      state: Self.fastTierState, retryDelays: []) { toFallback, reason in
+            Task { @MainActor in
+                guard DebugSettings.shared.isEnabled else { return }
+                DebugLog.shared.log(bot: "Model", colorHex: "#888888", kind: .status, context: "fast model",
+                                    text: toFallback
+                                        ? "remote fast model \(remoteName) didn't answer (\(reason)); using the local fast model for a few minutes"
+                                        : "remote fast model \(remoteName) is answering again")
+            }
+        }
+        return (backend, remote.model)
+    }
+
+    /// Shared by every bot: the remote fast model is one service.
+    static let fastTierState = FallbackState()
 
     /// `ask_helpers`: independent, tool-less sub-prompts answered in parallel by the fast tier.
     /// With Ollama's OLLAMA_NUM_PARALLEL > 1 they genuinely run at the same time.
@@ -2733,6 +2813,13 @@ final class Bot: Identifiable, @unchecked Sendable {
         }
         status = "Ready"
         await refreshPermissions()
+    }
+
+    /// The local model list, for a bot whose main model is remote (boot only loads it for local ones): the
+    /// fallback model picker needs it.
+    func loadLocalModelsIfNeeded() async {
+        guard availableModels.isEmpty, let models = try? await OllamaBackend().availableModels(), !models.isEmpty else { return }
+        availableModels = models.sorted()
     }
 
     /// The tunnel is a child process started on app launch (`AppDelegate`);
@@ -3757,9 +3844,6 @@ extension Bot {
 
     /// The fast tier with a short timeout: a slow review would stall the bot more than a prompt does.
     private func reviewerBackend() async -> (backend: any ModelBackend, model: String) {
-        if let remote = await remoteFastBackend(timeout: 30) { return remote }
-        guard modelProvider == .ollama else { return (await makeModelBackend(), selectedModel) }
-        let model = ModelTiers.cheapModel(main: selectedModel)
-        return (OllamaBackend(defaultModel: model, timeout: 30), model)
+        await fastTier(remoteTimeout: 20, localTimeout: 30)
     }
 }

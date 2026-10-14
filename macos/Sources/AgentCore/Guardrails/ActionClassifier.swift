@@ -661,12 +661,18 @@ public enum ActionClassifier {
     static func isGitHubCredentialUse(_ command: String, secretNames: [String], config: GuardrailConfig) -> Bool {
         guard !secretNames.isEmpty, secretNames.allSatisfy({ $0 == "GITHUB_TOKEN" || $0 == "GH_TOKEN" }) else { return false }
         let command = withoutExitCodeBoilerplate(command)
-        guard !command.contains("$"), !command.contains("`"), !command.contains(">"), !command.contains("|") else { return false }
+        guard !command.contains("$"), !command.contains("`"), !command.contains(">") else { return false }
         let analysis = ShellAnalyzer.analyze(command, environment: ShellAnalyzer.Environment(home: config.home, cwd: config.cwd))
         guard isSimpleCommandLine(analysis) else { return false }
         let programs = analysis.commands.compactMap(\.program)
         // `echo` labels between steps are fine: with no `$` or backticks allowed above, they can't print anything secret.
-        guard !programs.isEmpty, programs.allSatisfy({ ["git", "gh", "cd", "ls", "echo"].contains($0) }) else { return false }
+        // Text filters (`| grep -c fetch`, `| wc -l`) only see what git printed, or read repo files; the token lives in
+        // the environment, so the one way they could reach it, /proc/…/environ, is refused.
+        let filters: Set<String> = ["grep", "wc", "sort", "uniq", "head", "tail", "cut", "tr"]
+        guard !programs.isEmpty, programs.allSatisfy({ ["git", "gh", "cd", "ls", "echo"].contains($0) || filters.contains($0) }) else { return false }
+        for cmd in analysis.commands where filters.contains(cmd.program ?? "") {
+            guard !cmd.args.contains(where: { $0.contains("/proc") || $0.contains("environ") || $0.hasPrefix("/dev/") }) else { return false }
+        }
         let gitVerbs: Set<String> = ["clone", "pull", "fetch", "push", "ls-remote", "status", "log", "remote", "checkout", "switch", "branch",
                                      "diff", "show", "rev-parse", "ls-tree", "ls-files", "cat-file", "rev-list", "merge-base",
                                      "merge", "rebase", "tag", "describe", "stash", "add", "commit", "blame", "shortlog"]

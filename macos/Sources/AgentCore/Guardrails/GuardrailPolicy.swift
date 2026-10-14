@@ -123,7 +123,8 @@ public enum TaintRules {
         guard !plain.contains("://"), !plain.contains("git@") else { return false }
         let analysis = ShellAnalyzer.analyze(plain)
         guard ActionClassifier.isSimpleCommandLine(analysis),
-              analysis.commands.allSatisfy({ ["git", "cd", "ls", "echo"].contains($0.program ?? "") }) else { return false }
+              analysis.commands.allSatisfy({ ["git", "cd", "ls", "echo", "grep", "wc", "sort", "uniq", "head", "tail", "cut", "tr"]
+                  .contains($0.program ?? "") }) else { return false }
         let output = ((observation["stdout"] as? String) ?? "") + "\n" + ((observation["stderr"] as? String) ?? "")
         return !output.split(separator: "\n").contains { $0.hasPrefix("From ") || $0.hasPrefix("remote:") }
     }

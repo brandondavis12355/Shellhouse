@@ -596,6 +596,59 @@ struct BotSettingsTab: View {
 
                     CardDivider()
 
+                    PickerRow(
+                        title: "Fallback model",
+                        subtitle: "Used when the main model can't be reached after a few tries (no connection, timeouts, server errors, rate limits). The bot switches back on its own a few minutes later.",
+                        selection: Binding(get: { bot.fallbackProvider }, set: { bot.fallbackProvider = $0 }),
+                        options: [(nil as ModelProvider?, "None"), (ModelProvider.ollama, "Local (Ollama)"), (ModelProvider.remote, "Remote (OpenAI-compatible)")]
+                    )
+                    .disabled(bot.isBusy)
+                    if let fallbackProvider = bot.fallbackProvider {
+                        CardDivider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            if fallbackProvider == .ollama {
+                                if bot.availableModels.isEmpty {
+                                    Text("No local models found. Is Ollama running?").font(.caption).foregroundStyle(.secondary)
+                                } else {
+                                    Picker("Model", selection: $bot.fallbackModel) {
+                                        Text("Choose…").tag("")
+                                        // A model typed in for a remote fallback before switching to local stays selectable.
+                                        if !bot.fallbackModel.isEmpty, !bot.availableModels.contains(bot.fallbackModel) {
+                                            Text(bot.fallbackModel).tag(bot.fallbackModel)
+                                        }
+                                        ForEach(bot.availableModels, id: \.self) { model in Text(model).tag(model) }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .fixedSize()
+                                }
+                            } else {
+                                HStack(spacing: 8) {
+                                    Text("Presets").font(.caption).foregroundStyle(.secondary)
+                                    Button("Google Gemini") {
+                                        bot.fallbackBaseURLText = OpenAICompatibleBackend.geminiBaseURL
+                                        if !bot.fallbackModel.lowercased().hasPrefix("gemini") { bot.fallbackModel = "gemini-3.8-flash" }
+                                    }
+                                    Button("OpenAI") { bot.fallbackBaseURLText = "https://api.openai.com/v1" }
+                                    Spacer()
+                                }
+                                TextField("Base URL (e.g. https://api.openai.com/v1)", text: $bot.fallbackBaseURLText)
+                                    .themedField()
+                                TextField("Model id", text: $bot.fallbackModel)
+                                    .themedField()
+                                SecureField("API key (leave blank to keep the saved one)", text: $bot.fallbackAPIKeyInput)
+                                    .themedField()
+                                    .help("Stored in the Keychain, never in bots.json.")
+                            }
+                            Toggle("Fallback model has vision", isOn: $bot.fallbackHasVision)
+                                .toggleStyle(.switch).tint(Theme.positive)
+                        }
+                        .padding(16)
+                        .disabled(bot.isBusy)
+                        .task(id: fallbackProvider) { if fallbackProvider == .ollama { await bot.loadLocalModelsIfNeeded() } }
+                    }
+
+                    CardDivider()
+
                     SettingRow("Max tokens") {
                         TokenLimitField(text: $bot.maxTokensText, width: 110)
                     }

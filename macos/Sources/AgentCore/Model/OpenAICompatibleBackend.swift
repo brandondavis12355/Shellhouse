@@ -53,7 +53,13 @@ public actor OpenAICompatibleBackend: ModelBackend {
         temperature: Double
     ) async throws -> ModelReply {
         let started = Date()
-        let (data, response) = try await send(messages: messages, tools: tools, model: model, temperature: temperature)
+        var (data, response) = try await send(messages: messages, tools: tools, model: model, temperature: temperature,
+                                              maxTokens: Self.replyTokenLimit)
+        // A server that doesn't take `max_tokens` (or caps it lower): ask again with its own default.
+        if (response as? HTTPURLResponse)?.statusCode == 400,
+           (String(data: data, encoding: .utf8) ?? "").lowercased().contains("max_tokens") {
+            (data, response) = try await send(messages: messages, tools: tools, model: model, temperature: temperature, maxTokens: nil)
+        }
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             Telemetry.recorder.modelCall(model: model ?? "remote", promptTokens: 0, completionTokens: 0,
@@ -70,7 +76,8 @@ public actor OpenAICompatibleBackend: ModelBackend {
         messages: [ChatMessage],
         tools: [ToolSchema],
         model: String?,
-        temperature: Double
+        temperature: Double,
+        maxTokens: Int?
     ) async throws -> (Data, URLResponse) {
         var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
         request.httpMethod = "POST"
@@ -81,7 +88,8 @@ public actor OpenAICompatibleBackend: ModelBackend {
             model: model ?? defaultModel,
             messages: Self.wireMessages(messages),
             tools: tools.isEmpty ? nil : tools.map(Tool.init),
-            temperature: temperature
+            temperature: temperature,
+            max_tokens: maxTokens
         )
         request.httpBody = try ModelRequestEncoding.encode(body)
         return try await session.data(for: request)
@@ -132,7 +140,12 @@ public actor OpenAICompatibleBackend: ModelBackend {
         let messages: [Message]
         let tools: [Tool]?
         let temperature: Double
+        let max_tokens: Int?
     }
+
+    /// Room for a whole file in one `write_file` call. Left to the server, some providers stop a reply at a
+    /// thousand or two tokens, cutting a tool call off mid-argument.
+    static let replyTokenLimit = 8192
 
     /// Vision content uses OpenAI's multi-part `content` array
     /// (`text`/`image_url` parts) instead of a flat string whenever this

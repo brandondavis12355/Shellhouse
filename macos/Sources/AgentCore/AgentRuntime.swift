@@ -137,7 +137,7 @@ public actor AgentRuntime {
     private var lastPromptTokens = 0
     private var schemaTokens = 0
     /// The local model (also when wrapped by `ModelScheduler`): it keeps the prompt cached, so only new tokens count.
-    private var isLocalModel: Bool { ((model as? ScheduledBackend)?.inner ?? model) is OllamaBackend }
+    private var isLocalModel: Bool { model.innermost is OllamaBackend }
     private var countsResentContext: Bool { !isLocalModel }
     /// Why the current turn stopped early, for telemetry (nil = it finished).
     private var stopReason: String?

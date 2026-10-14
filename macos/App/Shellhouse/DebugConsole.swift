@@ -423,7 +423,7 @@ enum StartupConfigLogger {
                     ? "ollama/\(bot.selectedModel)"
                     : "remote/\(bot.selectedModel) @ \(URL(string: bot.remoteBaseURLText)?.host ?? "?")"
                 let shell = bot.blanketShellScopes.isEmpty ? "" : " · ALL-shell grants: \(bot.blanketShellScopes.count)"
-                lines.append("• \(bot.name) — \(model) · skills \(bot.selectedSkillIDs.count) · memories \(bot.memories.count) · routines \(bot.routines.count) · max iter \(bot.maxIterationsText) · max tokens \(bot.maxTokensText)\(shell)")
+                lines.append("• \(bot.name) — \(model) · skills \(bot.selectedSkillIDs.count) · memories \(bot.memories.count) · routines \(bot.routines.count) · max iter \(bot.maxIterationsText) · max tokens \(bot.maxTokensText)\(bot.fallbackProvider != nil && !bot.fallbackModel.isEmpty ? " · fallback \(bot.fallbackProvider == .ollama ? "ollama" : "remote")/\(bot.fallbackModel)" : "")\(shell)")
             }
 
             lines.append("── Groups (\(groups.count)) ──")

@@ -1154,8 +1154,9 @@ public struct ToolRegistry: Sendable {
                         sandboxID, command: command, timeout: timeout, env: resolved.isEmpty ? nil : resolved
                     )
                     let secretValues = Array(resolved.values)
-                    let stdout = secretValues.isEmpty ? result.stdout : secretStore.mask(result.stdout, values: secretValues)
-                    let stderr = secretValues.isEmpty ? result.stderr : secretStore.mask(result.stderr, values: secretValues)
+                    // Masked even without use_secrets: a CLI logged in on its own (gh, a .env file) can print one too.
+                    let stdout = secretStore.mask(result.stdout, values: secretValues)
+                    let stderr = secretStore.mask(result.stderr, values: secretValues)
                     var out: [String: Any] = ["exit_code": Int(result.exitCode), "stdout": stdout, "stderr": stderr]
                     if result.exitCode == 124, stderr.hasPrefix("Timed out") {
                         out["hint"] = "The command may still be running, and its output is lost. For anything this slow, use "

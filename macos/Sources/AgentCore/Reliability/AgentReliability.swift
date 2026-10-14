@@ -449,6 +449,7 @@ public enum ClaimCheck {
 public enum ToolCallRecovery {
     public static func extract(from content: String, toolNames: Set<String>) -> ToolCall? {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let tagged = taggedCall(in: text, toolNames: toolNames) { return tagged }
         guard text.count < 4_000, text.contains("{") else { return nil }
         for candidate in jsonObjects(in: text) {
             guard let data = candidate.data(using: .utf8),
@@ -461,6 +462,34 @@ public enum ToolCallRecovery {
             return ToolCall(name: name, arguments: arguments.mapValues { AnyCodable($0) })
         }
         return nil
+    }
+
+    /// The XML-ish format some models write their calls in (`<longcat_tool_call>`, GLM's `<tool_call>`):
+    /// `<x_tool_call>write_file <x_arg_key>path</x_arg_key><x_arg_value>a.txt</x_arg_value> … </x_tool_call>`.
+    /// Text before the tag (a sentence of narration) is ignored; an unclosed last value runs to the end of the
+    /// reply. No length cap: a call carrying a whole file is long. Values stay strings (a file's content may itself
+    /// be JSON); `ToolCallValidator.coerced` turns them into numbers, booleans or arrays where the schema says so.
+    static func taggedCall(in text: String, toolNames: Set<String>) -> ToolCall? {
+        guard let open = text.range(of: #"<([A-Za-z]+_)?tool_call>"#, options: .regularExpression) else { return nil }
+        let prefix = String(text[open]).dropFirst().dropLast("tool_call>".count)
+        var body = String(text[open.upperBound...])
+        if let close = body.range(of: "</\(prefix)tool_call>") { body = String(body[..<close.lowerBound]) }
+        let name = body.prefix { $0 != "<" && !$0.isNewline }.trimmingCharacters(in: .whitespaces)
+        guard toolNames.contains(name) else { return nil }
+        let keyTag = "\(prefix)arg_key", valueTag = "\(prefix)arg_value"
+        var arguments: [String: AnyCodable] = [:]
+        var rest = Substring(body)
+        while let keyOpen = rest.range(of: "<\(keyTag)>"), let keyClose = rest.range(of: "</\(keyTag)>", range: keyOpen.upperBound..<rest.endIndex) {
+            let key = rest[keyOpen.upperBound..<keyClose.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            rest = rest[keyClose.upperBound...]
+            guard let valueOpen = rest.range(of: "<\(valueTag)>") else { break }
+            let valueEnd = rest.range(of: "</\(valueTag)>", range: valueOpen.upperBound..<rest.endIndex)
+            let raw = String(rest[valueOpen.upperBound..<(valueEnd?.lowerBound ?? rest.endIndex)])
+            if !key.isEmpty { arguments[key] = AnyCodable(raw) }
+            guard let valueEnd else { break }
+            rest = rest[valueEnd.upperBound...]
+        }
+        return ToolCall(name: name, arguments: arguments)
     }
 
     /// Top-level balanced `{...}` spans, in order.
@@ -499,7 +528,14 @@ extension ToolCallValidator {
             case ("boolean", let s as String):
                 if ["true", "yes"].contains(s.lowercased()) { args[key] = AnyCodable(true) }
                 else if ["false", "no"].contains(s.lowercased()) { args[key] = AnyCodable(false) }
-            case ("array", let s as String): args[key] = AnyCodable([s])
+            case ("array", let s as String):
+                // `["GITHUB_TOKEN"]` written out as text (a tag-style call) is the array itself.
+                if let data = s.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+                   let array = try? JSONSerialization.jsonObject(with: data) as? [Any] {
+                    args[key] = AnyCodable(array)
+                } else {
+                    args[key] = AnyCodable([s])
+                }
             case ("string", let n as Int): args[key] = AnyCodable(String(n))
             default: break
             }

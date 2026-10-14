@@ -225,6 +225,21 @@ enum WorkspaceTools {
         return (nil, "\(path) doesn't parse yet: \(why)")
     }
 
+    /// The sandbox manager answers a missing file with a bare 500. Say what actually went wrong, so the model looks
+    /// for the right path instead of retrying or calling it a server fault.
+    static func readFailure(_ error: Error, path: String, sandbox: SandboxProvider, sandboxID: String) async -> String {
+        let message = error.localizedDescription
+        guard message.contains("(500)") else { return message }
+        let quoted = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let probe = try? await sandbox.exec(sandboxID, command: "cd /workspace 2>/dev/null; if [ -d \(quoted) ]; then echo dir; "
+            + "elif [ -e \(quoted) ]; then echo exists; else echo missing; fi", timeout: 10, env: nil)
+        switch probe?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "missing": return "No such file: \(path) (relative paths start in /workspace). Find it with list_files or search_files."
+        case "dir": return "\(path) is a directory: use list_files."
+        default: return message
+        }
+    }
+
     static func executors(tracker: FileReadTracker) -> [String: ToolRegistry.Executor] {
         var out: [String: ToolRegistry.Executor] = [:]
 
@@ -237,7 +252,7 @@ enum WorkspaceTools {
                 page["path"] = path
                 return page
             } catch {
-                return ["error": error.localizedDescription]
+                return ["error": await readFailure(error, path: path, sandbox: sandbox, sandboxID: sandboxID)]
             }
         }
 

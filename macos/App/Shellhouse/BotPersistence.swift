@@ -46,6 +46,11 @@ struct BotConfig: Codable {
     var knownSkillIDs: Set<String>? = nil
     /// `nil` (saved before this existed) means true.
     var checksGoalWorkItself: Bool? = nil
+    /// The fallback model (all `nil` in configs saved before it existed: no fallback). Its API key is in the Keychain.
+    var fallbackProvider: ModelProvider? = nil
+    var fallbackModel: String? = nil
+    var fallbackBaseURLText: String? = nil
+    var fallbackHasVision: Bool? = nil
 }
 
 /// A bot's settings plus memory and routines, portable across export/
@@ -76,6 +81,10 @@ struct BotTemplate: Codable {
     var modelProvider: ModelProvider?
     var remoteBaseURLText: String?
     var checksGoalWorkItself: Bool? = nil
+    var fallbackProvider: ModelProvider? = nil
+    var fallbackModel: String? = nil
+    var fallbackBaseURLText: String? = nil
+    var fallbackHasVision: Bool? = nil
 
     /// XML rather than JSON — an XML property list (`PropertyListEncoder`
     /// with `.xml` output), the standard Foundation-native way to get a
