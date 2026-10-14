@@ -659,8 +659,10 @@ public enum ActionClassifier {
         let analysis = ShellAnalyzer.analyze(command, environment: ShellAnalyzer.Environment(home: config.home, cwd: config.cwd))
         guard isSimpleCommandLine(analysis) else { return false }
         let programs = analysis.commands.compactMap(\.program)
-        guard !programs.isEmpty, programs.allSatisfy({ ["git", "gh", "cd", "ls"].contains($0) }) else { return false }
-        let gitVerbs: Set<String> = ["clone", "pull", "fetch", "push", "ls-remote", "status", "log", "remote", "checkout", "switch", "branch"]
+        // `echo` labels between steps are fine: with no `$` or backticks allowed above, they can't print anything secret.
+        guard !programs.isEmpty, programs.allSatisfy({ ["git", "gh", "cd", "ls", "echo"].contains($0) }) else { return false }
+        let gitVerbs: Set<String> = ["clone", "pull", "fetch", "push", "ls-remote", "status", "log", "remote", "checkout", "switch", "branch",
+                                     "diff", "show", "rev-parse"]
         for cmd in analysis.commands where cmd.program == "git" {
             let verb = cmd.args.first { !$0.hasPrefix("-") } ?? ""
             // Setting the commit identity is routine and touches nothing credential-related.
@@ -700,8 +702,10 @@ public enum ActionClassifier {
     static func withoutExitCodeBoilerplate(_ command: String) -> String {
         var out = command.replacingOccurrences(of: #"\s*2>&1"#, with: "", options: .regularExpression)
         out = out.replacingOccurrences(of: #"\s*(;|&&)\s*echo\s+["']?[A-Za-z_ ]*[=:]?\s*\$\?["']?\s*$"#, with: "", options: .regularExpression)
-        // Trimming the output (`| head -20`, `| tail -5`) changes nothing the command does.
-        out = out.replacingOccurrences(of: #"\s*\|\s*(head|tail)(\s+-n)?(\s+-?[0-9]+)?\s*$"#, with: "", options: .regularExpression)
+        // Trimming the output (`| head -20`, `| tail -5`), at the end or before the next command, and discarding
+        // errors (`2>/dev/null`) change nothing the command does.
+        out = out.replacingOccurrences(of: #"\s*\|\s*(head|tail)(\s+-n)?(\s+-?[0-9]+)?\s*(?=(&&|;|\|\||$))"#, with: " ", options: .regularExpression)
+        out = out.replacingOccurrences(of: #"\s*2>\s*/dev/null"#, with: "", options: .regularExpression)
         return out.trimmingCharacters(in: .whitespaces)
     }
 
@@ -744,7 +748,12 @@ public enum ActionClassifier {
             findings.append(Finding(.exec, "shell.heredoc_exec", "feeds a here-document to an interpreter", clean: .ask, tainted: .askStrict))
         }
 
-        let names = analysis.commands.compactMap { cmd -> String? in cmd.program.flatMap(ShellAnalyzer.recognizedName(of:)) }
+        // curl/wget aimed only at this VM's own loopback fetch nothing from outside: leave them out of the checks below.
+        let names = analysis.commands.compactMap { cmd -> String? in
+            guard let name = cmd.program.flatMap(ShellAnalyzer.recognizedName(of:)) else { return nil }
+            if downloaders.contains(name), !cmd.programIsDynamic, targetsOnlyLoopback(cmd.args) { return "local-http" }
+            return name
+        }
         // Pipelines that fetch or decode and then execute.
         if analysis.hasPipe {
             let fetches = names.contains { downloaders.contains($0) || $0 == "nc" || $0 == "ncat" }
@@ -1446,7 +1455,26 @@ public enum ActionClassifier {
 
     // MARK: network downloaders / installers / interpreters
 
+    /// Every URL a curl/wget call names is this machine's own loopback (`localhost`, `127.x`, `::1`, `0.0.0.0`):
+    /// a bot testing the server it just started on its own VM. Nothing leaves the VM and nothing outside comes in.
+    static func targetsOnlyLoopback(_ args: [String]) -> Bool {
+        let hosts = args.compactMap { arg -> String? in
+            let candidate = arg.hasPrefix("--url=") ? String(arg.dropFirst(6)) : arg
+            guard !candidate.hasPrefix("-") else { return nil }
+            if candidate.contains("://") { return URL(string: candidate)?.host?.lowercased() }
+            if looksLikeHostArg(candidate) { return URL(string: "http://" + candidate)?.host?.lowercased() }
+            return nil
+        }
+        guard !hosts.isEmpty else { return false }
+        return hosts.allSatisfy { host in
+            host == "localhost" || host == "0.0.0.0" || host == "::1" || host == "[::1]" || host.hasPrefix("127.")
+        }
+    }
+
     static func classifyDownloader(name: String, args: [String], dyn: [Bool]) -> [Finding] {
+        if !dyn.contains(true), targetsOnlyLoopback(args) {
+            return [Finding(.exec, "local.http", "\(name) to a server on this VM (localhost)", clean: .allow, tainted: .allow)]
+        }
         var out: [Finding] = []
         let uploadOptions: Set<String> = ["-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "-F", "--form", "-T", "--upload-file", "--post-data", "--post-file", "--body-data", "--body-file", "--json"]
         let uploads = args.contains(where: { a in

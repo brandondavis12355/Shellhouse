@@ -121,7 +121,7 @@ struct AppSettingsView: View {
                         TextField("40", text: $defaultMaxIterations).themedField().frame(width: 120)
                     }
                 }
-                SectionFooter("Applied when a bot is created; each bot can still change its own after, in that bot's own settings.")
+                SectionFooter("Used for new bots, and for every bot still on the old default when you close Settings. A bot you gave its own value in its settings keeps it.")
                 }
 
                 CollapsibleSection("Resource stats", storageKey: "resourceStats") {

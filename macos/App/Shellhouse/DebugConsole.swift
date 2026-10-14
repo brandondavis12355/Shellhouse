@@ -135,6 +135,12 @@ final class DebugLog {
         trim()
     }
 
+    /// A reply that ended up with no text to show (the runtime blanked a repeat): drop what its stream wrote.
+    func discardStreaming(bot: String, context: String?) {
+        flushPendingDelta()
+        if let last = entries.last, last.isStreaming, last.botName == bot, last.context == context { entries.removeLast() }
+    }
+
     func clear() {
         pendingDelta = nil
         entries.removeAll()

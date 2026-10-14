@@ -500,6 +500,14 @@ final class Bot: Identifiable, @unchecked Sendable {
         }
     }
 
+    /// A number typed into a settings field: spaces and thousands separators ("100 ", "200,000") are fine;
+    /// anything unreadable falls back to the default, and the value is kept within `range`.
+    static func parsedLimit(_ text: String, default fallback: Int, range: ClosedRange<Int>) -> Int {
+        let digits = text.filter { !$0.isWhitespace && $0 != "," && $0 != "_" }
+        guard let value = Int(digits) else { return fallback }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+
     /// How much this bot needs the model right now, for `ModelScheduler` (which adds recent use and waiting time).
     /// The user waiting on a reply comes first, then goal work ready to do, goal reviews owed, and open tasks.
     func modelPriority(interactive: Bool) -> Double {
@@ -2336,8 +2344,8 @@ final class Bot: Identifiable, @unchecked Sendable {
             }
             let model = selectedModel
             let budgets = AgentRuntime.Budgets(
-                maxIterations: Int(maxIterationsText) ?? 40,
-                maxTokens: Int(maxTokensText) ?? 200_000
+                maxIterations: Self.parsedLimit(maxIterationsText, default: 40, range: 1...1_000),
+                maxTokens: Self.parsedLimit(maxTokensText, default: 200_000, range: 1_000...50_000_000)
             )
             let selectedSkills = availableSkills.filter { selectedSkillIDs.contains($0.id) }
 
@@ -3067,8 +3075,8 @@ final class Bot: Identifiable, @unchecked Sendable {
             } else {
                 let model = selectedModel
                 let budgets = AgentRuntime.Budgets(
-                    maxIterations: Int(maxIterationsText) ?? 40,
-                    maxTokens: Int(maxTokensText) ?? 200_000
+                    maxIterations: Self.parsedLimit(maxIterationsText, default: 40, range: 1...1_000),
+                    maxTokens: Self.parsedLimit(maxTokensText, default: 200_000, range: 1_000...50_000_000)
                 )
                 let selectedSkills = availableSkills.filter { selectedSkillIDs.contains($0.id) }
                 let toolRegistry = ToolRegistry(
@@ -3450,7 +3458,10 @@ final class Bot: Identifiable, @unchecked Sendable {
         case .message(let message):
             // Empty assistant turns (a tool call with no text) are noise, and tool results are already logged
             // once as "← tool: …" by `.toolCompleted`.
-            guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, message.role != .tool else { return }
+            guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, message.role != .tool else {
+                if message.role == .assistant { DebugLog.shared.discardStreaming(bot: name, context: context) }
+                return
+            }
             var text = message.content
             if message.role == .assistant, !message.isTaskSummary, !text.isEmpty {
                 let key = context ?? ""

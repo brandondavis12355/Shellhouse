@@ -45,6 +45,17 @@ work.
   others wait for its result instead of trying the same clone.
 - Never put a token in a URL, a file or a commit, and never print it.
 
+## Python projects
+- Install packages into the project's virtual environment, never the system
+  Python (it refuses: PEP 668): `python3 -m venv .venv` once, then
+  `.venv/bin/pip install …`.
+- Run everything with `.venv/bin/python` (tests, servers, scripts). Each
+  run_shell starts a fresh shell, so `source .venv/bin/activate` only lasts
+  for that one command.
+- To try a server you started, `curl http://127.0.0.1:<port>/…` on your own
+  VM; start it with `run_shell` `background: true` and check its log with
+  `check_job` if it doesn't answer.
+
 ## Doing the work well
 For anything beyond a one-line fix, load the skill for the stage you're in:
 - `planning-code-work`: read first, decide files and interfaces, break the

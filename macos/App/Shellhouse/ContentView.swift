@@ -92,6 +92,8 @@ struct ContentView: View {
     @AppStorage("appearanceMode") private var appearanceMode = "dark"
     @AppStorage("defaultMaxTokens") private var defaultMaxTokens = "200000"
     @AppStorage("defaultMaxIterations") private var defaultMaxIterations = "40"
+    /// The defaults as they were when Settings opened, to tell which bots were following them.
+    @State private var defaultsWhenSettingsOpened = (iterations: "40", tokens: "200000")
 
     private var preferredColorScheme: ColorScheme? {
         switch appearanceMode {
@@ -246,7 +248,10 @@ struct ContentView: View {
         .sheet(isPresented: $showingFriends) {
             FriendsView()
         }
-        .sheet(isPresented: $showingAppSettings) {
+        .onChange(of: showingAppSettings) { _, open in
+            if open { defaultsWhenSettingsOpened = (defaultMaxIterations, defaultMaxTokens) }
+        }
+        .sheet(isPresented: $showingAppSettings, onDismiss: applyChangedBotDefaults) {
             AppSettingsView(
                 appearanceMode: $appearanceMode,
                 defaultMaxTokens: $defaultMaxTokens,
@@ -663,6 +668,20 @@ struct ContentView: View {
         ContextSummaryStore.delete(id: bot.id)
         BotTaskStore.delete(id: bot.id)
         Task { await bot.destroySandbox() }
+    }
+
+    /// Bots still on the old default follow a changed default (a bot given its own value keeps it).
+    private func applyChangedBotDefaults() {
+        var changed = false
+        for bot in bots {
+            if bot.maxIterationsText == defaultsWhenSettingsOpened.iterations, bot.maxIterationsText != defaultMaxIterations {
+                bot.maxIterationsText = defaultMaxIterations; changed = true
+            }
+            if bot.maxTokensText == defaultsWhenSettingsOpened.tokens, bot.maxTokensText != defaultMaxTokens {
+                bot.maxTokensText = defaultMaxTokens; changed = true
+            }
+        }
+        if changed { saveBots() }
     }
 
     private func saveBots() {

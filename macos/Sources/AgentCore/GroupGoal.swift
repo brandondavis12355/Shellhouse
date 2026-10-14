@@ -196,13 +196,19 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             if let required = step.requiredMembers, !required.isEmpty {
                 return step.membersRemaining.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
             }
-            return step.assigneeName?.caseInsensitiveCompare(name) == .orderedSame
+            return Self.step(step, belongsTo: name)
         }
         return !mine.isEmpty && mine.allSatisfy(isWaiting)
     }
 
     /// `name` has a step it can work on right now: assigned to it (or its part of a per-member step), not done,
     /// submitted or blocked, and not waiting on unfinished steps.
+    /// A single-member step is `name`'s when it's assigned to them, or unassigned and its text starts "Name: …".
+    public static func step(_ step: Step, belongsTo name: String) -> Bool {
+        if let assignee = step.assigneeName, !assignee.isEmpty { return assignee.caseInsensitiveCompare(name) == .orderedSame }
+        return step.text.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix(name.lowercased() + ":")
+    }
+
     /// How many steps `name` could work on right now (see `hasActionableWork`).
     public func actionableStepCount(for name: String) -> Int {
         steps.filter { step in
@@ -210,7 +216,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             if let required = step.requiredMembers, !required.isEmpty {
                 return step.membersRemaining.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
             }
-            return step.assigneeName?.caseInsensitiveCompare(name) == .orderedSame
+            return Self.step(step, belongsTo: name)
         }.count
     }
 
@@ -220,7 +226,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             if let required = step.requiredMembers, !required.isEmpty {
                 return step.membersRemaining.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
             }
-            return step.assigneeName?.caseInsensitiveCompare(name) == .orderedSame
+            return Self.step(step, belongsTo: name)
         }
     }
 
