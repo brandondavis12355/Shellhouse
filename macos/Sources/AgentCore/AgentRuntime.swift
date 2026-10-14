@@ -559,10 +559,13 @@ public actor AgentRuntime {
                     break
                 }
                 if ReplyQuality.looksLikeNarration(plain) || ReplyQuality.endsWithIntent(plain) {
-                    // It said what it would do next: one short push to do it, so the retry is the action itself.
+                    // It announced a step without taking it. Left in the context, that sentence is what a local
+                    // model copies on the next try ("I'll verify the server runs." again and again), so take it
+                    // out and ask only for the action.
                     lastNarration = plain
-                    messages.append(ChatMessage(role: .user, content: "You said what you'll do next but didn't call a tool. "
-                        + "Call it now in this reply; don't repeat that text. Next time, put the tool call in the same reply as any sentence about it."))
+                    messages.removeLast()
+                    let nudge = "Make the tool call for your next step now. No sentence about it first: just the call."
+                    if messages.last?.content != nudge { messages.append(ChatMessage(role: .user, content: nudge)) }
                     continue
                 }
                 messages.append(ChatMessage(

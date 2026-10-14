@@ -91,6 +91,11 @@ final class DebugLog {
 
     func log(bot: String, colorHex: String, kind: DebugLogEntry.Kind, context: String? = nil, text: String) {
         flushPendingDelta()
+        // The finished reply replaces the entry its stream was building, rather than logging the same text twice.
+        if kind == .message, let last = entries.last, last.isStreaming, last.botName == bot, last.context == context {
+            entries[entries.count - 1] = DebugLogEntry(botName: bot, botColorHex: colorHex, kind: kind, context: context, text: Self.cap(text))
+            return
+        }
         entries.append(DebugLogEntry(botName: bot, botColorHex: colorHex, kind: kind, context: context, text: Self.cap(text)))
         trim()
     }
