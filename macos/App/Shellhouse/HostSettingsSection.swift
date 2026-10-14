@@ -148,7 +148,8 @@ struct HostSettingsSection: View {
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             _ = try? AppSSHIdentity.shared.ensureKey()
-            task.arguments = AppSSHIdentity.shared.clientOptions() + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=accept-new",
+            task.arguments = AppSSHIdentity.shared.clientOptions() + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
+                              "-o", "StrictHostKeyChecking=" + AppSSHIdentity.shared.hostKeyChecking(for: host),
                               "--", "\(user)@\(host)", "hostname"]
             let out = Pipe(), err = Pipe()
             task.standardOutput = out

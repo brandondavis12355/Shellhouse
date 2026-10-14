@@ -750,6 +750,8 @@ struct ContentView: View {
             try? await store.put(name: localName, value: value)
         }
         if let token = contents.secrets[managerTokenName] { RemoteSandboxManager.sharedToken.value = token }
+        // The host key initial_setup.sh verified: from now on the app accepts only that key for the box.
+        if !contents.knownHosts.isEmpty { try? AppSSHIdentity.shared.pin(contents.knownHosts) }
 
         // Groups: matched by id, then by name; members mapped to this app's bots.
         for record in contents.groups {
@@ -776,7 +778,7 @@ struct ContentView: View {
         }
 
         // The host and the smolagents forward: reconnect the tunnel now.
-        if hostChanged || contents.app["smolagents.config.v1"] != nil {
+        if hostChanged || !contents.knownHosts.isEmpty || contents.app["smolagents.config.v1"] != nil {
             let host = HostSettingsStore.load()
             AppDelegate.shared?.tunnel.reconfigure(.init(
                 host: host.host, user: host.user, managerSocketPath: host.managerSocketPath,

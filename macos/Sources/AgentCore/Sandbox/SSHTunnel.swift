@@ -209,7 +209,10 @@ public final class SSHTunnel: @unchecked Sendable {
             scheduleRestart()
             return
         }
-        task.arguments = AppSSHIdentity.shared.clientOptions() + arguments
+        // Strict once the host's key is known (pinned by initial_setup.sh, or learned on first contact).
+        let checking = "StrictHostKeyChecking=" + AppSSHIdentity.shared.hostKeyChecking(for: config.host)
+        task.arguments = AppSSHIdentity.shared.clientOptions()
+            + arguments.map { $0 == "StrictHostKeyChecking=accept-new" ? checking : $0 }
 
         let errPipe = Pipe()
         task.standardError = errPipe

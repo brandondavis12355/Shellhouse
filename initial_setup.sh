@@ -25,7 +25,17 @@
 #   --user NAME           SSH user on the box (default: your Mac user name)
 #   --with-smolagents     also allow the optional smolagents engine's model-proxy forward (docs/SMOLAGENTS.md)
 #   --no-sudo-in-sandboxes  don't give the bots sudo inside their own VMs (they then can't apt-get install)
-#   --yes                 accept the defaults instead of asking
+#   --host-fingerprint SHA256:…  the box's host key fingerprint, to verify it without asking
+#                         (on the box: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)
+#   --rotate-token        replace the sandbox manager's token with a new one (box and app together), nothing else
+#   --no-ui               ask in Terminal instead of macOS dialogs
+#   --yes                 accept the defaults instead of asking (needs --host-fingerprint for a new box)
+#
+# Security: the box's host key is verified (you compare its fingerprint with the box, once) and pinned, so a
+# different machine answering at that address is refused, by these scripts and by the app. The app's own SSH key
+# is authorized with `restrict`: it can only forward the sandbox ports and run its two status checks, not open a
+# shell. ~/shellhouse and the manager's socket are readable only by you. You can turn off password sign-in once key
+# sign-in works.
 #
 # Requires: macOS with ssh and rsync (both built in); a Debian/Ubuntu or Fedora host you can SSH into with
 # sudo rights. The SSH port must be 22 (the app's tunnel uses it).
@@ -37,7 +47,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 . "$REPO/scripts/lib/common.sh"
 
-HOST_ARG=""; USER_ARG=""; HOST_FLAGS=(); ASSUME_YES=0
+HOST_ARG=""; USER_ARG=""; HOST_FLAGS=(); ASSUME_YES=0; ROTATE=0; HOST_FINGERPRINT=""; SHELLHOUSE_UI=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST_ARG="${2:?--host needs a value}"; shift 2 ;;
@@ -45,17 +55,68 @@ while [ $# -gt 0 ]; do
     --with-smolagents) HOST_FLAGS+=(--with-smolagents); shift ;;
     --no-sudo-in-sandboxes) HOST_FLAGS+=(--no-sudo-in-sandboxes); shift ;;
     --yes) ASSUME_YES=1; HOST_FLAGS+=(--yes); shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --host-fingerprint) HOST_FINGERPRINT="${2:?--host-fingerprint needs a value}"; shift 2 ;;
+    --rotate-token) ROTATE=1; shift ;;
+    --no-ui) SHELLHOUSE_UI=0; shift ;;
+    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
     *) die "Unknown option: $1 (see --help)" ;;
   esac
 done
-export ASSUME_YES
+export ASSUME_YES HOST_FINGERPRINT SHELLHOUSE_UI
+
+# The app's settings for the box: host, user, the manager token (read from the box into this file, never printed)
+# and the pinned host key. $1 = 1 to include the host and user (setup), 0 for just the token (rotation).
+write_pending_settings() {
+  local with_host="$1" token keys=""
+  token="$(ssh_run "sed -n 's/^MANAGER_TOKEN=//p' ~/$SHELLHOUSE_REMOTE_DIR/.env | head -1")"
+  [[ "$token" =~ ^[A-Za-z0-9]{32,}$ ]] || die "Couldn't read the manager token from the host's ~/$SHELLHOUSE_REMOTE_DIR/.env."
+  while IFS= read -r line; do
+    [ -n "$line" ] && keys="$keys<string>$(xml_escape "$line")</string>"
+  done <<< "${SHELLHOUSE_PINNED_KEYS:-}"
+  mkdir -p "$SHELLHOUSE_STATE_DIR" && chmod 700 "$SHELLHOUSE_STATE_DIR"
+  ( umask 077
+    {
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+        '<plist version="1.0"><dict>' \
+        '<key>format</key><string>shellhouse-settings</string><key>version</key><integer>1</integer>'
+      if [ "$with_host" = "1" ]; then
+        printf '<key>app</key><dict><key>linuxHostSettings.v1</key><dict><key>host</key><string>%s</string><key>user</key><string>%s</string><key>recentHosts</key><array><string>%s</string></array></dict></dict>\n' \
+          "$(xml_escape "$SHELLHOUSE_HOST")" "$(xml_escape "$SHELLHOUSE_USER")" "$(xml_escape "$SHELLHOUSE_HOST")"
+      fi
+      [ -n "$keys" ] && printf '<key>sshKnownHosts</key><array>%s</array>\n' "$keys"
+      printf '<key>secrets</key><dict><key>SANDBOX_MANAGER_TOKEN</key><string>%s</string></dict>\n' "$token"
+      printf '%s\n' '</dict></plist>'
+    } > "$SHELLHOUSE_PENDING_SETTINGS" )
+  unset token
+  chmod 600 "$SHELLHOUSE_PENDING_SETTINGS"
+}
 
 [ "$(uname -s)" = "Darwin" ] || die "Run this on your Mac; it sets up the Linux box over SSH."
 command -v rsync >/dev/null || die "rsync is missing."
 
 printf '%sShellhouse — Linux host setup%s\n' "$C_BOLD" "$C_RESET"
 load_state
+
+# --rotate-token: a new manager token for the box already in use, on both sides. Nothing else changes.
+if [ "$ROTATE" = "1" ]; then
+  SHELLHOUSE_HOST="${HOST_ARG:-$SHELLHOUSE_HOST}"; SHELLHOUSE_USER="${USER_ARG:-$SHELLHOUSE_USER}"
+  [ -n "$SHELLHOUSE_HOST" ] && [ -n "$SHELLHOUSE_USER" ] || die "No box set up yet. Run ./initial_setup.sh first (or pass --host and --user)."
+  step "Rotating the sandbox manager token on $SHELLHOUSE_HOST"
+  OFFER_KEY_COPY=0 ssh_connect
+  trap ssh_close EXIT
+  ssh_run "cat > /tmp/shellhouse-rotate-token.sh && chmod 700 /tmp/shellhouse-rotate-token.sh" < "$REPO/scripts/host-rotate-token.sh"
+  ssh_run "bash /tmp/shellhouse-rotate-token.sh; status=\$?; rm -f /tmp/shellhouse-rotate-token.sh; exit \$status" || die "Rotating the token on the box failed (see above)."
+  write_pending_settings 0
+  if app_installed; then
+    launch_app || true
+    import_pending_settings
+    notify "The sandbox manager token on $SHELLHOUSE_HOST is new, and the app is using it. The old token no longer works."
+  else
+    info "The new token is ready for the app; ./build.sh hands it over after installing."
+  fi
+  exit 0
+fi
 
 step "Which Linux box?"
 SAVED_HOST="$SHELLHOUSE_HOST"; SAVED_USER="$SHELLHOUSE_USER"
@@ -91,7 +152,9 @@ OLD_TARGET=""; CARRY_ENV=0; CARRY_VOLUMES=0
 old_run() { ssh "${SSH_OPTS[@]}" "$OLD_TARGET" "$@"; }
 if [ "$CHANGEOVER" = "1" ]; then
   step "Checking the old box"
-  if ssh "${SSH_OPTS[@]}" "$SHELLHOUSE_PREV_USER@$SHELLHOUSE_PREV_HOST" true 2>/dev/null; then
+  # Its host key is checked like the new one's before anything is read from it.
+  ( verify_host_key "$SHELLHOUSE_PREV_HOST" ) && OLD_KEY_OK=1 || OLD_KEY_OK=0
+  if [ "$OLD_KEY_OK" = "1" ] && ssh "${SSH_OPTS[@]}" "$SHELLHOUSE_PREV_USER@$SHELLHOUSE_PREV_HOST" true 2>/dev/null; then
     OLD_TARGET="$SHELLHOUSE_PREV_USER@$SHELLHOUSE_PREV_HOST"
     ok "Reached $OLD_TARGET"
     old_run "test -f ~/$SHELLHOUSE_REMOTE_DIR/.env" 2>/dev/null \
@@ -120,7 +183,28 @@ if [ "$CARRY_ENV" = "1" ]; then
 fi
 
 step "Setting up the host"
-ssh_tty "bash ~/$SHELLHOUSE_REMOTE_DIR/scripts/host-setup.sh ${HOST_FLAGS[*]:-}" || die "Host setup failed (see above). Fix it and run ./initial_setup.sh again; it picks up where it left off."
+# sudo: no password needed, or asked once (a dialog with the UI) and checked, then sent to the box over this SSH
+# connection's stdin. It's never on a command line or in a file.
+SUDO_PW=""
+if ! ssh_run "sudo -n true" 2>/dev/null; then
+  for attempt in 1 2 3; do
+    SUDO_PW="$(ask_secret "Your password for $SHELLHOUSE_USER on $SHELLHOUSE_HOST, for sudo (used only during this setup)")"
+    printf '%s\n' "$SUDO_PW" | ssh_run "sudo -S -p '' -v" 2>/dev/null && break
+    SUDO_PW=""
+    [ "$attempt" = "3" ] && die "sudo didn't accept that password three times."
+    warn "That password wasn't accepted; try again."
+  done
+fi
+# Once your own key signs you in without a password, password sign-in can be turned off for this user.
+if ssh -o BatchMode=yes -o ControlPath=none -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SHELLHOUSE_KNOWN_HOSTS" \
+     "$SSH_TARGET" true 2>/dev/null \
+   && confirm "Your SSH key signs you in to $SHELLHOUSE_HOST. Turn off password sign-in for $SHELLHOUSE_USER there? (Recommended: then only keys can sign in. uninstall.sh turns it back on.)" Y "Turn it off" "Keep passwords"; then
+  HOST_FLAGS+=(--no-password-login)
+fi
+HOST_FLAGS+=(--sudo-password-stdin)
+printf '%s\n' "$SUDO_PW" | ssh_run "bash ~/$SHELLHOUSE_REMOTE_DIR/scripts/host-setup.sh ${HOST_FLAGS[*]}" \
+  || { SUDO_PW=""; die "Host setup failed (see above). Fix it and run ./initial_setup.sh again; it picks up where it left off."; }
+SUDO_PW=""
 
 if [ "$CARRY_VOLUMES" = "1" ]; then
   step "Copying the bots' workspaces from $SHELLHOUSE_PREV_HOST"
@@ -148,36 +232,7 @@ if [ "$CARRY_VOLUMES" = "1" ]; then
 fi
 
 step "Preparing the app's settings"
-# The token is read straight into this file; it is never printed or put on a command line.
-mkdir -p "$SHELLHOUSE_STATE_DIR" && chmod 700 "$SHELLHOUSE_STATE_DIR"
-TOKEN="$(ssh_run "sed -n 's/^MANAGER_TOKEN=//p' ~/$SHELLHOUSE_REMOTE_DIR/.env | head -1")"
-[[ "$TOKEN" =~ ^[A-Za-z0-9]{32,}$ ]] || die "Couldn't read the manager token from the host's ~/$SHELLHOUSE_REMOTE_DIR/.env."
-umask 077
-cat > "$SHELLHOUSE_PENDING_SETTINGS" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>format</key><string>shellhouse-settings</string>
-	<key>version</key><integer>1</integer>
-	<key>app</key>
-	<dict>
-		<key>linuxHostSettings.v1</key>
-		<dict>
-			<key>host</key><string>$(xml_escape "$SHELLHOUSE_HOST")</string>
-			<key>user</key><string>$(xml_escape "$SHELLHOUSE_USER")</string>
-			<key>recentHosts</key><array><string>$(xml_escape "$SHELLHOUSE_HOST")</string></array>
-		</dict>
-	</dict>
-	<key>secrets</key>
-	<dict>
-		<key>SANDBOX_MANAGER_TOKEN</key><string>$TOKEN</string>
-	</dict>
-</dict>
-</plist>
-EOF
-unset TOKEN
-chmod 600 "$SHELLHOUSE_PENDING_SETTINGS"
+write_pending_settings 1
 ok "Saved for the app (readable only by you; deleted once the app takes it)"
 SHELLHOUSE_PREV_HOST=""; SHELLHOUSE_PREV_USER=""; save_state
 
@@ -185,14 +240,14 @@ if app_installed; then
   hand_off_to_app
   step "Done"
   if [ "$CHANGEOVER" = "1" ]; then
-    info "Shellhouse now uses $SHELLHOUSE_HOST, with all of its settings, bots and groups as they were."
-    info "$SHELLHOUSE_PREV_HOST is untouched. Once everything works, you can remove Shellhouse from it:"
-    info "  ./uninstall.sh --host $SHELLHOUSE_PREV_HOST --user $SHELLHOUSE_PREV_USER"
+    notify "Shellhouse now uses $SHELLHOUSE_HOST, with all of its settings, bots and groups as they were.
+
+$SHELLHOUSE_PREV_HOST is untouched. Once everything works, remove Shellhouse from it with:
+./uninstall.sh --host $SHELLHOUSE_PREV_HOST --user $SHELLHOUSE_PREV_USER"
   else
-    info "Shellhouse is connected to $SHELLHOUSE_HOST. Add a bot from the sidebar's + menu."
+    notify "Shellhouse is connected to $SHELLHOUSE_HOST. Add a bot from the sidebar's + menu."
   fi
 else
   step "Host done. Next: build and install the app"
-  info "Run:  ./build.sh"
-  info "It installs Shellhouse in /Applications and connects it to $SHELLHOUSE_HOST for you."
+  notify "$SHELLHOUSE_HOST is ready. Next, run ./build.sh: it installs Shellhouse in /Applications and connects it to the box."
 fi

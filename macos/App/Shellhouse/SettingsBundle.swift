@@ -36,6 +36,8 @@ enum SettingsBundle {
         var bots: [BotConfig] = []
         var groups: [GroupChat] = []
         var secrets: [String: String] = [:]
+        /// Host keys initial_setup.sh verified, to pin (not secret).
+        var knownHosts: [String] = []
         /// What in the file doesn't fit this version, and what happens to it instead. Shown before importing.
         var issues: [Issue] = []
 
@@ -45,6 +47,7 @@ enum SettingsBundle {
             if !bots.isEmpty { parts.append("\(bots.count) bot\(bots.count == 1 ? "" : "s")") }
             if !groups.isEmpty { parts.append("\(groups.count) group\(groups.count == 1 ? "" : "s")") }
             if !secrets.isEmpty { parts.append("\(secrets.count) secret\(secrets.count == 1 ? "" : "s")") }
+            if !knownHosts.isEmpty { parts.append("the host's verified SSH key") }
             return parts.isEmpty ? "nothing" : parts.joined(separator: ", ")
         }
 
@@ -178,6 +181,13 @@ enum SettingsBundle {
             contents.groups.append(group)
         }
 
+        for item in (root["sshKnownHosts"] as? [Any]) ?? [] {
+            guard let line = item as? String, AppSSHIdentity.isValidKnownHostLine(line) else {
+                contents.issues.append(.skipped("An SSH host key in the file isn't in the expected form: skipped."))
+                continue
+            }
+            contents.knownHosts.append(line)
+        }
         for (name, value) in (root["secrets"] as? [String: Any]) ?? [:] {
             guard let text = value as? String, !text.isEmpty, SecretStore.isValidName(name) else {
                 contents.issues.append(.skipped("Secret “\(name)” isn't usable here: skipped."))

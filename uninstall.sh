@@ -77,6 +77,7 @@ if [ "$ALSO_MAC" = "1" ]; then
   ok "Removed ~/.config/shellhouse"
 else
   rm -f "$SHELLHOUSE_STATE_FILE"
+  ssh-keygen -R "$SHELLHOUSE_HOST" -f "$SHELLHOUSE_KNOWN_HOSTS" >/dev/null 2>&1 && rm -f "$SHELLHOUSE_KNOWN_HOSTS.old"
   info "The app is still installed on this Mac. Run ./uninstall.sh --mac to remove it too."
 fi
 

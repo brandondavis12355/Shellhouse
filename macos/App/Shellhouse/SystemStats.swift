@@ -147,7 +147,7 @@ enum RemoteMachineStats {
         let output = await runProcess("/usr/bin/ssh", AppSSHIdentity.shared.clientOptions() + [
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "StrictHostKeyChecking=" + AppSSHIdentity.shared.hostKeyChecking(for: RemoteHost.host),
             "\(RemoteHost.user)@\(RemoteHost.host)",
             script,
         ])

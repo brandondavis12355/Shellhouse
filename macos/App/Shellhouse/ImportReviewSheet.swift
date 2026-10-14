@@ -113,6 +113,9 @@ struct ImportReviewSheet: View {
         if appCount > 0 { rows.append(("gearshape.fill", Color(hex: "#8E8E93"), "App settings", "\(appCount) setting\(appCount == 1 ? "" : "s")")) }
         if !contents.bots.isEmpty { rows.append(("person.2.fill", Color(hex: "#30D158"), "Bots", Self.names(contents.bots.map(\.name)))) }
         if !contents.groups.isEmpty { rows.append(("bubble.left.and.bubble.right.fill", Color(hex: "#BF5AF2"), "Groups", Self.names(contents.groups.map(\.name)))) }
+        if !contents.knownHosts.isEmpty {
+            rows.append(("lock.shield.fill", Color(hex: "#30D158"), "SSH host key", "Verified; only this key is accepted"))
+        }
         if !contents.secrets.isEmpty {
             rows.append(("key.fill", Color(hex: "#FFD60A"), "Secrets", "\(contents.secrets.count) saved to the Keychain"))
         }

@@ -80,7 +80,7 @@ fi
 
 step "Removing sshd changes"
 reload=0
-for dropin in /etc/ssh/sshd_config.d/49-shellhouse.conf /etc/ssh/sshd_config.d/50-shellhouse-model-proxy.conf $(recorded SSHD_DROPIN); do
+for dropin in /etc/ssh/sshd_config.d/48-shellhouse-auth.conf /etc/ssh/sshd_config.d/49-shellhouse.conf /etc/ssh/sshd_config.d/50-shellhouse-model-proxy.conf $(recorded SSHD_DROPIN); do
   if [ -f "$dropin" ]; then sudo rm -f "$dropin"; ok "Removed $dropin"; reload=1; fi
 done
 if [ "$reload" = "1" ]; then

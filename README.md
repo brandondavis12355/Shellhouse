@@ -111,9 +111,24 @@ An interrupted changeover resumes when you run the script again with the same ne
 | `--host ADDR` / `--user NAME` | Skip the questions |
 | `--with-smolagents` | Also allow the optional smolagents engine's model-proxy forward ([docs/SMOLAGENTS.md](docs/SMOLAGENTS.md)) |
 | `--no-sudo-in-sandboxes` | Don't give bots sudo inside their own VMs. By default they have it, so they can `apt-get install` what a task needs |
-| `--yes` | Accept every default |
+| `--host-fingerprint SHA256:…` | Verify the box's host key without asking |
+| `--rotate-token` | Only replace the manager token, on the box and in the app |
+| `--no-ui` | Ask in Terminal instead of dialogs |
+| `--yes` | Accept every default (a new box then needs `--host-fingerprint`) |
 
 The box's SSH port must be 22, since the app's tunnel uses it.
+
+**Dialogs:** it asks everything in macOS dialogs: the address, the user, your SSH password, the sudo password (asked once, checked, and sent to the box over the SSH connection, never on a command line), and confirmations. Progress shows in Terminal. Add `--no-ui` to answer in Terminal instead.
+
+**How the connection is protected**
+
+| What | How |
+|---|---|
+| The box is really your box | On the first connection, you compare the box's SSH host key fingerprint with what the box itself shows (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on its own screen), or pass `--host-fingerprint SHA256:…`. The key is then pinned for these scripts and handed to the app. From then on, a different machine answering at that address is refused. If your Mac already trusts the box, the key must match that one. |
+| The app's key can't open a shell | The app's own SSH key is authorized with `restrict` plus port forwarding. It gets no shell, no pty, and no agent or X11 forwarding, and the only commands it may run are its connection test and resource stats ([`scripts/app-ssh-command.sh`](scripts/app-ssh-command.sh)). A stolen copy of it can't open a shell on the box. It can still forward connections from the box, which the tunnel needs: OpenSSH applies a port allowlist (`permitopen`) to socket forwards too, so the manager's socket can't be allowed alone. |
+| Only you can reach the manager | `~/shellhouse`, its `.env` (the manager token) and the manager's socket are readable only by your user on the box. |
+| No password guessing | Once your own SSH key signs you in, it offers to turn off password sign-in for your user on the box. `uninstall.sh` turns it back on. |
+| A fresh token when you want one | `./initial_setup.sh --rotate-token` replaces the manager token on the box, restarts only the manager (bot VMs keep running) and hands the new token to the app. The old token stops working at once. |
 
 ### What `build.sh` does
 

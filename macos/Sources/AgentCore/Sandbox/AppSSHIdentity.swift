@@ -59,6 +59,42 @@ public struct AppSSHIdentity: Sendable {
         return Self.isValidPublicKey(line) ? line : nil
     }
 
+    // MARK: Host keys
+
+    /// A plain known_hosts line: `host[,host…] key-type base64`.
+    public static func isValidKnownHostLine(_ line: String) -> Bool {
+        line.range(of: #"^[A-Za-z0-9.:\[\]_-]+(,[A-Za-z0-9.:\[\]_-]+)* (ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,2}$"#,
+                   options: .regularExpression) != nil
+    }
+
+    private func knownHostLines() -> [String] {
+        ((try? String(contentsOf: knownHostsURL, encoding: .utf8)) ?? "")
+            .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    private static func hosts(of line: String) -> [String] {
+        line.split(separator: " ").first.map { $0.split(separator: ",").map(String.init) } ?? []
+    }
+
+    /// Pins host keys that initial_setup.sh verified: they replace whatever the app had for those hosts, and from
+    /// then on only they are accepted (`hostKeyChecking(for:)`). Returns how many were pinned.
+    @discardableResult
+    public func pin(_ lines: [String]) throws -> Int {
+        let valid = lines.map { $0.trimmingCharacters(in: .whitespaces) }.filter(Self.isValidKnownHostLine)
+        guard !valid.isEmpty else { return 0 }
+        let pinnedHosts = Set(valid.flatMap(Self.hosts))
+        let kept = knownHostLines().filter { line in Set(Self.hosts(of: line)).isDisjoint(with: pinnedHosts) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try ((kept + valid).joined(separator: "\n") + "\n").write(to: knownHostsURL, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: knownHostsURL.path)
+        return valid.count
+    }
+
+    /// `yes` (only the known key) once the app has a key for `host`; `accept-new` (learn it on first contact) before.
+    public func hostKeyChecking(for host: String) -> String {
+        knownHostLines().contains { Self.hosts(of: $0).contains(host) } ? "yes" : "accept-new"
+    }
+
     static func isValidPublicKey(_ line: String) -> Bool {
         line.range(of: #"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9._@-]+)?$"#, options: .regularExpression) != nil
     }

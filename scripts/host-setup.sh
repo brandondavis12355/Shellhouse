@@ -11,11 +11,17 @@ set -euo pipefail
 WITH_SMOLAGENTS=0
 ALLOW_SUDO=1
 ASSUME_YES=0
+PASSWORD_STDIN=0
+NO_PASSWORD_LOGIN=0
 for arg in "$@"; do
   case "$arg" in
     --with-smolagents) WITH_SMOLAGENTS=1 ;;
     --no-sudo-in-sandboxes) ALLOW_SUDO=0 ;;
     --yes) ASSUME_YES=1 ;;
+    # initial_setup.sh asked for the sudo password in a dialog and sends it as the first line of stdin.
+    --sudo-password-stdin) PASSWORD_STDIN=1 ;;
+    # Key sign-in was checked to work: turn off password sign-in for this user.
+    --no-password-login) NO_PASSWORD_LOGIN=1 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -46,12 +52,26 @@ else die "Only Debian/Ubuntu (apt) and Fedora/RHEL (dnf) hosts are supported."
 fi
 
 step "Checking sudo"
-note "Some steps need administrator rights; enter your password if asked."
-sudo -v || die "sudo is required for the one-time install."
+if [ "$PASSWORD_STDIN" = "1" ]; then
+  # Kept only in this process's environment, for an askpass helper every `sudo` here (and in scripts this one
+  # runs) uses via a wrapper on PATH. Removed when the script ends.
+  IFS= read -r SHELLHOUSE_SUDO_PW || true
+  export SHELLHOUSE_SUDO_PW
+  SUDO_HELPERS="$(mktemp -d)"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$SHELLHOUSE_SUDO_PW"\n' > "$SUDO_HELPERS/askpass"
+  printf '#!/bin/sh\nexec /usr/bin/sudo -A "$@"\n' > "$SUDO_HELPERS/sudo"
+  chmod 700 "$SUDO_HELPERS/askpass" "$SUDO_HELPERS/sudo"
+  export SUDO_ASKPASS="$SUDO_HELPERS/askpass" PATH="$SUDO_HELPERS:$PATH"
+  trap 'rm -rf "$SUDO_HELPERS"; unset SHELLHOUSE_SUDO_PW' EXIT
+  sudo -v 2>/dev/null || die "That sudo password wasn't accepted."
+else
+  note "Some steps need administrator rights; enter your password if asked."
+  sudo -v || die "sudo is required for the one-time install."
+fi
 # Keep the sudo timestamp fresh while the long build runs.
 ( while true; do sudo -n true 2>/dev/null; sleep 50; done ) &
 SUDO_KEEPALIVE=$!
-trap 'kill $SUDO_KEEPALIVE 2>/dev/null || true' EXIT
+trap 'kill $SUDO_KEEPALIVE 2>/dev/null || true; [ -n "${SUDO_HELPERS:-}" ] && rm -rf "$SUDO_HELPERS"; unset SHELLHOUSE_SUDO_PW' EXIT
 
 # --- Packages -------------------------------------------------------------------------------------------
 install_pkgs() {
@@ -161,6 +181,10 @@ if [ -f .env.carryover ]; then
 fi
 mkdir -p sandbox-manager-run
 chmod 600 .env
+# Only you: the manager's socket (anyone who can reach it runs commands in the bots' VMs), the token, and the
+# scripts the app's SSH key is limited to.
+chmod 700 "$REPO" sandbox-manager-run
+chmod 755 scripts/app-ssh-command.sh 2>/dev/null || true
 ok "Wrote .env (manager token generated; it never leaves this host except to your Mac's Keychain)"
 
 step "Building the sandbox image (the first build takes a while)"
@@ -180,6 +204,19 @@ if [ "$WITH_SMOLAGENTS" = "1" ]; then
   step "Allowing the smolagents model proxy forward"
   bash scripts/enable-model-proxy-forward.sh --yes
   record "SSHD_DROPIN=/etc/ssh/sshd_config.d/50-shellhouse-model-proxy.conf"
+fi
+
+if [ "$NO_PASSWORD_LOGIN" = "1" ]; then
+  step "Turning off password sign-in for $ME"
+  AUTH_DROPIN="/etc/ssh/sshd_config.d/48-shellhouse-auth.conf"
+  printf 'Match User %s\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n' "$ME" | sudo tee "$AUTH_DROPIN" >/dev/null
+  if sudo sshd -t; then
+    sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd
+    record "SSHD_DROPIN=$AUTH_DROPIN"
+    ok "Only SSH keys can sign in as $ME now"
+  else
+    sudo rm -f "$AUTH_DROPIN"; note "sshd rejected that change; password sign-in is unchanged."
+  fi
 fi
 
 record "INSTALLED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
