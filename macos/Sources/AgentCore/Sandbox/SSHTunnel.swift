@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Keeps the SSH tunnel to the Linux sandbox host alive for as long as this
 /// process runs, and restarts it if it drops (network blip, the host
@@ -170,11 +171,37 @@ public final class SSHTunnel: @unchecked Sendable {
         guard !alreadyRunning else { return }
 
         if isLocalPortOpen(port: config.localManagerPort) && isLocalPortOpen(port: config.novncLocalPort) {
-            onStderr("A tunnel is already listening on \(config.localManagerPort)/\(config.novncLocalPort) "
-                + "(likely from a previous run) — reusing it instead of starting another.")
-            return
+            // Our own tunnel from a run that was killed (Xcode's Stop): replace it, so this run's options apply
+            // (host-key pinning, a changed host). Anything else listening there is left alone and reused.
+            if let stale = Self.recordedTunnelPID(), kill(stale, 0) == 0, kill(stale, SIGTERM) == 0 {
+                onStderr("Replacing this app's tunnel from a previous run (pid \(stale)) so the current settings apply.")
+                for _ in 0..<30 where isLocalPortOpen(port: config.localManagerPort) {
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+            } else {
+                onStderr("A tunnel is already listening on \(config.localManagerPort)/\(config.novncLocalPort) "
+                    + "(likely from a previous run) — reusing it instead of starting another.")
+                return
+            }
         }
         spawn()
+    }
+
+    /// Where the running tunnel's process id is kept, so the next launch can tell its own leftover tunnel apart.
+    private static var pidFileURL: URL { AppSSHIdentity.defaultDirectory.appendingPathComponent("tunnel.pid") }
+
+    static func recordTunnelPID(_ pid: Int32) {
+        try? FileManager.default.createDirectory(at: pidFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? String(pid).write(to: pidFileURL, atomically: true, encoding: .utf8)
+    }
+
+    /// The recorded pid, if that process is still an `ssh` (so a reused pid number is never signalled).
+    static func recordedTunnelPID() -> Int32? {
+        guard let text = try? String(contentsOf: pidFileURL, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1 else { return nil }
+        var buffer = [CChar](repeating: 0, count: 1024)
+        guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0, String(cString: buffer) == "ssh" else { return nil }
+        return pid
     }
 
     public func stop() {
@@ -232,6 +259,7 @@ public final class SSHTunnel: @unchecked Sendable {
 
         do {
             try task.run()
+            Self.recordTunnelPID(task.processIdentifier)
             lock.lock()
             process = task
             lastStart = Date()

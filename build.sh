@@ -8,7 +8,8 @@
 #   ./build.sh --no-launch     # install but don't start it
 #
 # Steps:
-#   1. Checks Xcode (installed, license accepted, first-launch components) and installs XcodeGen with Homebrew.
+#   1. Checks Xcode (installed, license accepted, first-launch components), installs Homebrew if it's missing
+#      (its official installer, after you confirm), and installs XcodeGen with it.
 #   2. Finds your Apple Development signing team (or asks) and writes macos/Signing.local.xcconfig (git-ignored).
 #   3. Generates the Xcode project, builds, and copies "Shellhouse.app" to /Applications (quitting a running copy).
 #   4. Installs Ollama with Homebrew if it's missing and pulls the default models (a chat model and a small
@@ -60,9 +61,28 @@ if ! xcodebuild -checkFirstLaunchStatus >/dev/null 2>&1; then
 fi
 ok "$(xcodebuild -version | head -1)"
 
+# Homebrew: already on PATH, installed but not on PATH yet (a new shell), or installed now with its official
+# installer (https://brew.sh), which asks for your Mac password itself.
+ensure_brew() {
+  command -v brew >/dev/null && return 0
+  for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    if [ -x "$candidate" ]; then eval "$("$candidate" shellenv)"; return 0; fi
+  done
+  confirm "Homebrew isn't installed. Shellhouse's build needs it (for XcodeGen and Ollama). Install it now with Homebrew's official installer from brew.sh?" Y "Install Homebrew" "Not now" \
+    || die "Homebrew is needed. Install it from https://brew.sh, then run ./build.sh again."
+  info "Running Homebrew's installer (it asks for your Mac password and may take a few minutes)…"
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+    || die "Homebrew's installer didn't finish. See its output above, then run ./build.sh again."
+  for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    if [ -x "$candidate" ]; then eval "$("$candidate" shellenv)"; break; fi
+  done
+  command -v brew >/dev/null || die "Homebrew installed, but brew isn't found. Open a new Terminal window and run ./build.sh again."
+  ok "Installed Homebrew"
+}
+
 step "Checking XcodeGen"
 if ! command -v xcodegen >/dev/null; then
-  command -v brew >/dev/null || die "XcodeGen is needed and Homebrew isn't installed. Install Homebrew (https://brew.sh), then run ./build.sh again."
+  ensure_brew
   info "Installing XcodeGen with Homebrew…"
   brew install xcodegen >/dev/null
 fi
@@ -138,7 +158,8 @@ ok "$SHELLHOUSE_APP"
 if [ "$WITH_MODELS" = "1" ]; then
   step "Local models (Ollama)"
   if ! command -v ollama >/dev/null && [ ! -d /Applications/Ollama.app ]; then
-    if command -v brew >/dev/null && confirm "Ollama isn't installed. Install it with Homebrew?" Y; then
+    if confirm "Ollama isn't installed. Install it with Homebrew?" Y; then
+      ensure_brew
       brew install ollama >/dev/null && ok "Installed Ollama"
     else
       warn "Skipping models. Install Ollama later (https://ollama.com/download); the app's Settings › Ollama can pull models."

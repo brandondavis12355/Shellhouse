@@ -132,7 +132,7 @@ The box's SSH port must be 22, since the app's tunnel uses it.
 
 ### What `build.sh` does
 
-1. Checks Xcode (license, first-launch components) and installs [XcodeGen](https://github.com/yonaskolb/XcodeGen) with Homebrew if needed.
+1. Checks Xcode (license, first-launch components). If [Homebrew](https://brew.sh) is missing, it offers to install it with Homebrew's official installer (which asks for your Mac password). Then it installs [XcodeGen](https://github.com/yonaskolb/XcodeGen) with Homebrew if needed.
 2. Finds your Apple signing team, or asks for it, and saves it to `macos/Signing.local.xcconfig` (git-ignored).
 3. Builds a Release copy and installs it as `/Applications/Shellhouse.app`, quitting a running copy first.
 4. Installs [Ollama](https://ollama.com) with Homebrew if it's missing, and pulls the default models: `qwen2.5:7b-instruct` for chat and `nomic-embed-text` for memory search. Skip this with `--no-models`.

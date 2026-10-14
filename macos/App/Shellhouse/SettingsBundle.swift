@@ -258,8 +258,9 @@ enum SettingsBundle {
             issues.append(.skipped("“\(key)” doesn't match this version's form: skipped, so yours stays as it is."))
             return nil
         }
+        // The host settings merge field by field anyway (a new host joins the recent ones): nothing to report there.
         let filled = Set(current.keys).subtracting(imported.keys).sorted()
-        if !filled.isEmpty, !current.isEmpty { issues.append(.filled("“\(key)”: \(list(filled)) not in the file, so yours \(filled.count == 1 ? "is" : "are") kept.")) }
+        if !filled.isEmpty, !current.isEmpty, key != "linuxHostSettings.v1" { issues.append(.filled("“\(key)”: \(list(filled)) not in the file, so yours \(filled.count == 1 ? "is" : "are") kept.")) }
         return merged
     }
 

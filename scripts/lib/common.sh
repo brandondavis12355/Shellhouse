@@ -236,7 +236,15 @@ ssh_connect() {
   fi
 }
 
-app_installed() { [ -d "$SHELLHOUSE_APP" ]; }
+# The app in /Applications, or else the copy that's running (one built and run from Xcode, say).
+app_installed() {
+  [ -d "$SHELLHOUSE_APP" ] && return 0
+  local exe
+  exe="$(ps -axo comm= 2>/dev/null | grep -m1 '/Shellhouse\.app/Contents/MacOS/Shellhouse$' || true)"
+  [ -n "$exe" ] || return 1
+  SHELLHOUSE_APP="${exe%/Contents/MacOS/Shellhouse}"
+  [ -d "$SHELLHOUSE_APP" ]
+}
 app_running()   { pgrep -x "Shellhouse" >/dev/null 2>&1; }
 
 launch_app() {
@@ -282,7 +290,8 @@ authorize_app_key() {
 import_pending_settings() {
   [ -f "$SHELLHOUSE_PENDING_SETTINGS" ] || return 0
   open -a "$SHELLHOUSE_APP" "$SHELLHOUSE_PENDING_SETTINGS"
-  for _ in $(seq 1 60); do
+  # Usually instant; if the app shows its review sheet, this waits for the click.
+  for _ in $(seq 1 240); do
     if grep -q "shellhouse-settings-receipt" "$SHELLHOUSE_PENDING_SETTINGS" 2>/dev/null; then
       rm -f "$SHELLHOUSE_PENDING_SETTINGS"
       ok "The app has the host address and the sandbox manager token"

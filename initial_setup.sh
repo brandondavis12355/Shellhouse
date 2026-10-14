@@ -167,8 +167,11 @@ if [ "$CHANGEOVER" = "1" ]; then
 fi
 
 step "Copying the server side to ~/$SHELLHOUSE_REMOTE_DIR on the host"
-# Only what the host runs. The host's own .env, seed folders and manager socket are never overwritten.
+# Only what the host runs. The host's own .env, seed folders and manager socket are never overwritten, and
+# nothing git-ignored is deleted there (relay certificates, databases, backups: the box's own, not the repo's).
 rsync -az --delete \
+  --filter 'dir-merge,- .gitignore' \
+  --exclude 'group-relay/certs/' --exclude '*.pem' --exclude '*.db' --exclude '*.sqlite' --exclude '*.bak*' --exclude '._*' \
   --exclude '.git/' --exclude 'macos/' --exclude 'avatars/' --exclude 'evals/' --exclude 'docs/' \
   --exclude '.env' --exclude 'box/' --exclude 'workspace/' --exclude 'sandbox-manager-run/' \
   --exclude 'node_modules/' --exclude '__pycache__/' --exclude '.pytest_cache/' --exclude '.venv/' --exclude '.DS_Store' \
