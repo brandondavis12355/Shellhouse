@@ -282,8 +282,9 @@ public struct ToolRegistry: Sendable {
     private static var rememberSchema: ToolSchema {
         ToolSchema(
             name: "remember",
-            description: "Save one short, durable instruction or preference about how to work with this bot — "
-                + "a correction the user gave, a standing preference, a fact worth not re-learning. It's shown "
+            description: "Save one short, durable note: a correction or standing preference from the user, or a lesson "
+                + "you learned that your skills don't cover (a fix that worked, a quirk of this VM, repo or tool, a needed "
+                + "command), written as a rule for next time. It's shown "
                 + "to the user in this bot's settings and resent at the start of every future conversation "
                 + "with it. Don't use this for task-specific facts that only matter to what you're doing right "
                 + "now — those belong in your own reasoning, not here. Capped at the 60 most recent — check "
@@ -615,10 +616,19 @@ public struct ToolRegistry: Sendable {
                                        "after": ["type": "array", "items": ["type": "integer"]],
                                    ] as [String: Any], "required": ["step", "after"]] as [String: Any]] as [String: Any]],
                    required: ["title", "steps"]),
-            schema("add_goal_step", "Goal owner only: append a step to the checklist.",
+            schema("add_goal_step", "Append a step to the checklist. Start its text with the member who should do it (\"Bugbot: …\"). Any member can add a step; the owner can edit or remove it.",
                    ["text": str("The new step."),
                     "after": ["type": "array", "items": ["type": "integer"], "description": "Optional: step numbers this one must wait for."]],
                    required: ["text"]),
+            schema("edit_goal_step",
+                   "Goal owner only: change the plan. Reword a step, reassign it, change what it waits on, reopen a finished one, or remove one. Members: ask the owner instead.",
+                   ["step_id": str("Step id from get_goal / the goal block."),
+                    "text": str("Optional: the new wording."),
+                    "assignee": str("Optional: who should do it; empty string to unassign."),
+                    "after": ["type": "array", "items": ["type": "integer"], "description": "Optional: replace what it waits on (step numbers; [] for nothing)."],
+                    "reopen": ["type": "boolean", "description": "Optional: put a done or blocked step back to open."],
+                    "remove": ["type": "boolean", "description": "Optional: delete the step."]],
+                   required: ["step_id"]),
             schema("update_goal_step",
                    "Update a checklist step. Set 'inProgress' when you take it on, 'blocked' (with the reason as evidence) if you can't proceed, or 'done' — done REQUIRES evidence: what you ran or checked in THIS turn and what it showed. If you are NOT the goal owner, 'done' only SUBMITS the step for validation (shown as [?]); the goal owner re-checks it with their own tools and is the only one who can mark it truly done. Only the owner's validated completions count as progress.",
                    ["step_id": str("Step id from get_goal / the goal block."),

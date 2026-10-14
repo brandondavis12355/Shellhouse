@@ -215,6 +215,68 @@ public struct GroupGoal: Codable, Sendable, Equatable {
 
     public mutating func removeStep(id: String) {
         steps.removeAll { $0.id == id }
+        for index in steps.indices { steps[index].dependsOn = steps[index].dependsOn?.filter { $0 != id }.nilIfEmpty }
+    }
+
+    // MARK: Editing the plan (the user from the goal card; the owner with edit_goal_step)
+
+    @discardableResult
+    public mutating func editStep(id: String, text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let index = steps.firstIndex(where: { $0.id == id }) else { return false }
+        steps[index].text = trimmed
+        return true
+    }
+
+    /// `nil` or empty unassigns.
+    @discardableResult
+    public mutating func assignStep(id: String, to name: String?) -> Bool {
+        guard let index = steps.firstIndex(where: { $0.id == id }) else { return false }
+        let trimmed = name?.trimmingCharacters(in: .whitespaces)
+        steps[index].assigneeName = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        return true
+    }
+
+    /// The user's word is the check: marked done and verified, with the user named as the evidence.
+    @discardableResult
+    public mutating func markDoneByUser(id: String) -> Bool {
+        guard isLive, let index = steps.firstIndex(where: { $0.id == id }) else { return false }
+        steps[index].status = .done
+        steps[index].verified = true
+        steps[index].evidence = "Marked done by the user."
+        noteUserActivity()
+        return true
+    }
+
+    /// Back to open: evidence and check-ins cleared, as if never started.
+    @discardableResult
+    public mutating func reopenStep(id: String) -> Bool {
+        guard let index = steps.firstIndex(where: { $0.id == id }) else { return false }
+        steps[index].status = .open
+        steps[index].verified = false
+        steps[index].evidence = nil
+        steps[index].memberEvidence = nil
+        return true
+    }
+
+    /// Moves a step up (negative) or down. Dependencies that would now point at a later step are dropped.
+    @discardableResult
+    public mutating func moveStep(id: String, by offset: Int) -> Bool {
+        guard let from = steps.firstIndex(where: { $0.id == id }) else { return false }
+        let to = min(max(from + offset, 0), steps.count - 1)
+        guard to != from else { return false }
+        steps.insert(steps.remove(at: from), at: to)
+        for index in steps.indices {
+            let earlier = Set(steps[..<index].map(\.id))
+            steps[index].dependsOn = steps[index].dependsOn?.filter { earlier.contains($0) }.nilIfEmpty
+        }
+        return true
+    }
+
+    /// Replaces what a step waits on, by 1-based step numbers (earlier steps only).
+    public mutating func setDependencies(ofStep id: String, numbers: [Int]) {
+        guard let index = steps.firstIndex(where: { $0.id == id }) else { return }
+        steps[index].dependsOn = Self.ids(forNumbers: numbers, before: index, in: steps)
     }
 
     /// Owner-editable metadata.
@@ -477,4 +539,10 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         }
         return lines.joined(separator: "\n")
     }
+}
+
+
+extension Array {
+    /// `nil` for an empty array, for optional lists that older saved data leaves out.
+    var nilIfEmpty: [Element]? { isEmpty ? nil : self }
 }

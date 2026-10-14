@@ -175,6 +175,9 @@ final class Bot: Identifiable, @unchecked Sendable {
     private var runtimeSettingsKey: String?
     /// Results this bot's runs have already seen (15 minutes): a re-woken run that only re-checks is caught fast.
     let seenResults = SeenResults()
+    /// The 1:1 chat's current run, reviewed for a lesson when it ends (see `reviewRunForLesson`).
+    private var ownChatLessonTrail = LessonTrail()
+    private var lastLessonReview = Date.distantPast
     /// Everything baked into an `AgentRuntime` at creation that the user can
     /// change in Settings: provider, model, vision, endpoint, budgets, and
     /// whether a new API key is pending.
@@ -1773,6 +1776,37 @@ final class Bot: Identifiable, @unchecked Sendable {
         DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "group: \(groupName)", text: text)
     }
 
+    private func finishOwnChatLessonTrail() {
+        let trail = ownChatLessonTrail
+        ownChatLessonTrail = LessonTrail()
+        guard trail.worthReviewing else { return }
+        let task = displayMessages.last(where: { $0.role == .user })?.text ?? ""
+        Task { @MainActor [weak self] in
+            let tainted = await self?.runtime?.isTainted ?? true
+            await self?.reviewRunForLesson(trail, task: task, tainted: tainted)
+        }
+    }
+
+    /// Learning from experience: after a run that worked around a failure (or a long one), the fast model is
+    /// asked whether it taught something reusable that this bot's skills and notes don't cover. If so, one line
+    /// is remembered (source "learned", shown in the bot's Memory settings, where it can be edited or deleted).
+    /// Never from a run with untrusted content in it: that text could plant a standing instruction.
+    func reviewRunForLesson(_ trail: LessonTrail, task: String, tainted: Bool) async {
+        guard trail.worthReviewing, !tainted, Date().timeIntervalSince(lastLessonReview) > 180 else { return }
+        lastLessonReview = Date()
+        let skills = availableSkills.filter { selectedSkillIDs.contains($0.id) }.map { (name: $0.id, description: $0.description) }
+        let notes = memoryBook.core(limit: 25).map(\.text)
+        let (backend, fastModel) = await makeFastBackend()
+        let messages = LessonLearner.messages(task: task, trail: trail.text, skills: skills, notes: notes)
+        guard let reply = try? await backend.chat(messages: messages, tools: [], model: fastModel, temperature: 0.2),
+              let lesson = LessonLearner.lesson(from: reply.message.content) else { return }
+        let saved = addMemory(lesson, source: "learned", importance: 3)
+        if DebugSettings.shared.isEnabled {
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: "memory",
+                                text: saved ? "learned: \(lesson)" : "couldn't save the lesson: \(lesson)")
+        }
+    }
+
     private func makeFastBackend() async -> (backend: any ModelBackend, model: String) {
         guard modelProvider == .ollama else { return (await makeModelBackend(), selectedModel) }
         let model = ModelTiers.cheapModel(main: selectedModel)
@@ -1845,6 +1879,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             if !remembered.isEmpty { system += "Things you remember:\n- " + remembered.joined(separator: "\n- ") + "\n\n" }
             system += "Reply in character as a chat message: \(style). Messages are labeled by sender. "
             system += "Never prefix your reply with your own name. Do not repeat what others already said."
+            system += "\n\n" + BuiltInSystemPrompt.writingStyle
             let messages = [
                 ChatMessage(role: .system, content: system),
                 ChatMessage(role: .user, content: "Group chat so far:\n\(transcript)\n\n" + (extraContext.isEmpty ? "" : extraContext + "\n\n") + instruction),
@@ -2270,6 +2305,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             // wrong in one direction or the other.
             var replyPicker = IsolatedReplyPicker()
             let toolCallCounter = ToolCallCounter()
+            let lessonTrail = LessonTrail()
             let phaseTracker = PhaseTracker()
             let botIDForPhase = id
             // Set when `finish_task` is called with `outcome: "silent"` — the
@@ -2404,7 +2440,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                         phaseTracker.set(responding: false, botID: botIDForPhase)
                     case .toolCompleted(let toolName, let resultJSON):
                         toolCallCounter.noteOutput(toolName, resultJSON)
+                        lessonTrail.completed(toolName, resultJSON: resultJSON)
                     case .toolStarted(let toolName, let argumentsJSON):
+                        lessonTrail.started(toolName, argumentsJSON: argumentsJSON)
                         toolCallCounter.note(toolName)
                         toolCallCounter.noteOutput(toolName, argumentsJSON)
                         phaseTracker.set(responding: false, botID: botIDForPhase)
@@ -2477,6 +2515,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 return IsolatedResult(text: isSilent ? "[[silent]]" : resultText, failed: picked == nil && !isSilent, tainted: runTainted)
             }
             var result = await currentResult()
+            let reviewTainted = result.tainted || untrustedInput
+            Task { @MainActor [weak self] in await self?.reviewRunForLesson(lessonTrail, task: runGoal, tainted: reviewTainted) }
             var rounds = 0
             while rounds < Self.maxFollowUps, !Task.isCancelled, let correction = await followUp?(result) {
                 rounds += 1
@@ -3199,6 +3239,10 @@ final class Bot: Identifiable, @unchecked Sendable {
         flushPendingDelta()
         switch event {
         case .status(let runtimeStatus):
+            switch runtimeStatus {
+            case .completed, .failed, .aborted: finishOwnChatLessonTrail()
+            default: break
+            }
             // A model call that comes back with no tool call at all just
             // means "keep going" (see `AgentRuntime.loop`'s "You did not
             // call a tool" nudge) — left alone, that used to open a brand
@@ -3269,6 +3313,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             persistTranscript()
             hasUnread = true
         case .toolStarted(let name, let argumentsJSON):
+            ownChatLessonTrail.started(name, argumentsJSON: argumentsJSON)
             status = "Running \(name)\(Self.toolDetail(argumentsJSON))…"
             // A real action just happened — whatever text comes next is a
             // genuinely new thought reacting to it, not another attempt
@@ -3276,6 +3321,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             // reusing (and overwriting) the one before the tool call.
             streamingIndex = nil
         case .toolCompleted(let name, let resultJSON):
+            ownChatLessonTrail.completed(name, resultJSON: resultJSON)
             status = "Finished \(name)"
             lastOwnChatToolOutput = String((lastOwnChatToolOutput + "\n" + name + ": " + resultJSON).suffix(8_000))
         case .approvalNeeded, .guardrailDecision:
@@ -3419,7 +3465,7 @@ final class ToolCallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
     private static let bookkeeping: Set<String> = [
-        "finish_task", "update_user", "get_goal", "propose_goal", "add_goal_step",
+        "finish_task", "update_user", "get_goal", "propose_goal", "add_goal_step", "edit_goal_step",
         "update_goal_step", "propose_goal_complete", "use_skill", "get_profile", "list_routines",
     ]
     private var pool = ""

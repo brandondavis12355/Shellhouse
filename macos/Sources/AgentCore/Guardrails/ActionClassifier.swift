@@ -354,7 +354,7 @@ public enum ActionClassifier {
             // Exempt from taint by the user's choice: a note into the user's own chat, which they read.
             return Classification(findings: [Finding(.state, "tool.update_user", "posts a note to the user's own chat", clean: .allow, tainted: .allow)])
 
-        case "propose_goal", "add_goal_step", "update_goal_step", "propose_goal_complete":
+        case "propose_goal", "add_goal_step", "edit_goal_step", "update_goal_step", "propose_goal_complete":
             // Exempt from taint by the user's choice: the goal checklist lives inside this app, where everyone
             // sees it, and each step's real work is still checked when it runs.
             return Classification(findings: [Finding(.state, "tool.\(tool)", "updates the group goal", clean: .allow, tainted: .allow)])

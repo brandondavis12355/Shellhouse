@@ -12,6 +12,9 @@ struct GroupGoalCard: View {
     @State private var expanded = true
     @State private var newStepText = ""
     @State private var feedback = ""
+    /// The step (or "title") being edited in place, and its draft text.
+    @State private var editingID: String?
+    @State private var editText = ""
 
     var body: some View {
         if let goal = group.goal {
@@ -45,7 +48,16 @@ struct GroupGoalCard: View {
         HStack(spacing: 8) {
             Image(systemName: icon(goal.status)).foregroundStyle(statusColor(goal.status))
             VStack(alignment: .leading, spacing: 1) {
-                Text(goal.title).font(.subheadline).bold().lineLimit(2)
+                if editingID == "title" {
+                    TextField("Goal", text: $editText)
+                        .themedField().font(.subheadline)
+                        .onSubmit { group.renameGoal(editText); editingID = nil }
+                        .onExitCommand { editingID = nil }
+                } else {
+                    Text(goal.title).font(.subheadline).bold().lineLimit(2)
+                        .onTapGesture(count: 2) { if goal.isLive { editText = goal.title; editingID = "title" } }
+                        .help(goal.isLive ? "Double-click to rename" : "")
+                }
                 Text("\(statusLabel(goal.status)) · owner \(ownerName) · \(goal.doneCount)/\(goal.steps.count) steps · \(goal.messagesSinceProgress)/\(goal.stallLimit) since last progress")
                     .font(.caption2).foregroundStyle(.secondary)
             }
@@ -67,9 +79,17 @@ struct GroupGoalCard: View {
                         .contentTransition(.symbolEffect(.replace))
                         .frame(width: 16)
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("\(index + 1). \(GroupGoal.displayText(step.text))")
-                            .font(.caption)
-                            .strikethrough(step.status == .done)
+                        if editingID == step.id {
+                            TextField("Step", text: $editText)
+                                .themedField().font(.caption)
+                                .onSubmit { group.editGoalStep(step.id, text: editText); editingID = nil }
+                                .onExitCommand { editingID = nil }
+                        } else {
+                            Text("\(index + 1). \(GroupGoal.displayText(step.text))")
+                                .font(.caption)
+                                .strikethrough(step.status == .done)
+                                .onTapGesture(count: 2) { if goal.isLive { editText = step.text; editingID = step.id } }
+                        }
                         if let required = step.requiredMembers, !required.isEmpty {
                             let remaining = step.membersRemaining
                             Text(remaining.isEmpty
@@ -91,13 +111,15 @@ struct GroupGoalCard: View {
                             Text("done, but unverified (no tool run)").font(.caption2).foregroundStyle(.orange)
                         }
                     }
-                    .help(step.evidence ?? "")
+                    .help(step.evidence ?? (goal.isLive ? "Double-click to edit; right-click for more" : ""))
                     Spacer()
                     if goal.isLive {
                         Button { group.removeGoalStep(step.id) } label: { Image(systemName: "xmark.circle") }
                             .buttonStyle(.plain).foregroundStyle(.secondary)
                     }
                 }
+                .contentShape(Rectangle())
+                .contextMenu { if goal.isLive { stepMenu(step, index: index, count: goal.steps.count) } }
             }
             if goal.isLive {
                 HStack {
@@ -108,6 +130,29 @@ struct GroupGoalCard: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func stepMenu(_ step: GroupGoal.Step, index: Int, count: Int) -> some View {
+        Button("Edit") { editText = step.text; editingID = step.id }
+        Menu("Assign to") {
+            ForEach(group.members.map(\.name), id: \.self) { name in
+                Button(name) { group.assignGoalStep(step.id, to: name) }
+            }
+            Divider()
+            Button("Nobody") { group.assignGoalStep(step.id, to: nil) }
+        }
+        if step.status == .done {
+            Button("Reopen") { group.reopenGoalStep(step.id) }
+        } else {
+            Button("Mark done") { group.markGoalStepDone(step.id) }
+            if step.status != .open { Button("Reopen") { group.reopenGoalStep(step.id) } }
+        }
+        Divider()
+        Button("Move up") { group.moveGoalStep(step.id, by: -1) }.disabled(index == 0)
+        Button("Move down") { group.moveGoalStep(step.id, by: 1) }.disabled(index == count - 1)
+        Divider()
+        Button("Remove", role: .destructive) { group.removeGoalStep(step.id) }
     }
 
     @ViewBuilder

@@ -496,6 +496,17 @@ final class GroupChatSession: Identifiable {
                 if decision == .none || decision == .optional { decision = .mentionedByBot }
                 debugLog(bot, "resuming goal work after the status report")
             }
+            // New work from the user while a goal is running: only the owner can add it to the plan, so the owner
+            // checks every new user message and, if it asks for something, adds the steps before anything else.
+            var goalAdditionTurn = false
+            if let live = goal, live.isLive, live.ownerBotID == botID,
+               let request = displayMessages[min(seen, displayMessages.count)...].last(where: {
+                   $0.speakerBotID == nil && $0.isSystem != true && $0.externalUserID == nil
+               }), !AddressingAnalyzer.isStatusRequest(request.text), await bot.looksLikeActionableRequest(request.text) {
+                goalAdditionTurn = true
+                decision = .mustReply
+                debugLog(bot, "new request during the goal — adding it to the plan")
+            }
             let snapshot = displayMessages.count
             seenCount[botID] = snapshot
 
@@ -581,6 +592,9 @@ final class GroupChatSession: Identifiable {
             if !isIntakeTurn, let live = goal, live.isLive {
                 extraSuffix = goalPrompt(for: live, botID: botID)
                 if ownerReviewTurn || (resumeTurn && live.ownerBotID == botID), let work = live.ownerReviewWork() { extraSuffix += "\n\n" + work }
+                if goalAdditionTurn {
+                    extraSuffix += "\n\n" + Self.goalAdditionInstruction
+                }
                 if resumeTurn {
                     extraSuffix += "\n\nYou just gave the user a status report. Now get back to work on the goal with tools: "
                         + (live.ownerBotID == botID
@@ -817,6 +831,15 @@ final class GroupChatSession: Identifiable {
         return members.map(\.name).first { text.lowercased().hasPrefix($0.lowercased() + ":") }
     }
 
+    static let goalAdditionInstruction = """
+        NEW REQUEST: the user's latest message asks for more work while this goal is running. Your FIRST tool call \
+        must be add_goal_step, once per piece of work: start each step's text with the member who should do it \
+        ("Bugbot: …"), word it by the outcome, and set `after` when it needs another step done first. If the request \
+        changes or replaces existing steps instead, adjust those. Then reply in one line saying what you added and who \
+        is on it, @mentioning them. If the message only looks like a request but is really a question or comment, \
+        answer it instead and add nothing.
+        """
+
     private func goalBlockText(_ goal: GroupGoal) -> String {
         let ownerName = members.first(where: { $0.id == goal.ownerBotID })?.name ?? "unknown"
         return goal.promptBlock(ownerName: ownerName)
@@ -840,12 +863,14 @@ final class GroupChatSession: Identifiable {
                 + "next message: one line with the decision and who does what. Don't re-verify what a member already showed you "
                 + "with evidence unless the choice depends on it, and don't re-record a step's status that hasn't changed. "
                 + "To check a member's push: `git fetch origin`, then look at `origin/<branch>` (your local branches go stale). "
-                + "add_goal_step adjusts the plan. The goal closes by itself once every step is validated done; if some steps "
+                + "add_goal_step and edit_goal_step (reword, reassign, reorder what waits on what, reopen, remove) reshape the plan; "
+                + "your user can also change it from the goal card, and those changes appear as messages. The goal closes by itself once every step is validated done; if some steps "
                 + "end blocked, call propose_goal_complete with a summary and the user confirms. "
                 + "Use update_user at milestones."
         } else {
             text += " You can claim steps and submit them as done with evidence, but only the owner (\(ownerName)) validates them and "
                 + "marks them done — @mention \(ownerName) after submitting. Only the owner proposes completion. "
+                + "If work is missing from the plan, add it with add_goal_step; to change an existing step, ask \(ownerName). "
                 + "If no open step is assigned to you and nobody asked you something, stay silent: do not start side "
                 + "investigations or re-check what others already covered. If a command gives an empty or unchanged "
                 + "result, change approach or report that you are blocked instead of repeating it."
@@ -981,12 +1006,42 @@ final class GroupChatSession: Identifiable {
 
         case "add_goal_step":
             guard var g = goal, g.isLive else { return ["error": "No live goal."] }
-            guard g.ownerBotID == botID else { return ["error": "Only the goal owner can change the plan."] }
             guard let text = arguments["text"]?.asString,
                   g.addStep(text, requiredMembers: GroupGoal.membersRequired(byStepText: text, memberNames: members.map(\.name)),
                             dependsOnNumbers: GroupGoal.numbers(from: arguments["after"])) != nil
             else { return ["error": "add_goal_step needs non-empty 'text'."] }
             goal = g; persistGoal()
+            postSystem("➕ \(bot.name) added step \(g.steps.count): \(GroupGoal.displayText(text))")
+            if g.ownerBotID != botID { requestOwnerReview() }
+            return ["ok": true, "goal": goalBlockText(g)]
+
+        case "edit_goal_step":
+            guard var g = goal, g.isLive else { return ["error": "No live goal."] }
+            let ownerName = members.first(where: { $0.id == g.ownerBotID })?.name ?? "the goal owner"
+            guard g.ownerBotID == botID else {
+                return ["error": "Only \(ownerName) (the goal owner) edits the plan. Tell \(ownerName) what should change and why (@mention)."]
+            }
+            guard let stepID = arguments["step_id"]?.asString, let index = g.steps.firstIndex(where: { $0.id == stepID }) else {
+                return ["error": "No step with that id. Call get_goal for the current ids."]
+            }
+            var changes: [String] = []
+            if arguments["remove"]?.value as? Bool == true {
+                g.removeStep(id: stepID); changes.append("removed it")
+            } else {
+                if let text = arguments["text"]?.asString, g.editStep(id: stepID, text: text) { changes.append("reworded it") }
+                if let assignee = arguments["assignee"]?.asString {
+                    g.assignStep(id: stepID, to: assignee)
+                    changes.append(assignee.isEmpty ? "unassigned it" : "assigned it to \(assignee)")
+                }
+                if arguments["after"] != nil {
+                    g.setDependencies(ofStep: stepID, numbers: GroupGoal.numbers(from: arguments["after"]))
+                    changes.append("changed what it waits on")
+                }
+                if arguments["reopen"]?.value as? Bool == true { g.reopenStep(id: stepID); changes.append("reopened it") }
+            }
+            guard !changes.isEmpty else { return ["error": "Nothing to change: pass text, assignee, after, reopen or remove."] }
+            goal = g; persistGoal()
+            postSystem("✏️ \(bot.name) changed step \(index + 1): \(changes.joined(separator: ", ")).")
             return ["ok": true, "goal": goalBlockText(g)]
 
         case "update_goal_step":
@@ -1142,10 +1197,57 @@ final class GroupChatSession: Identifiable {
         goal = nil; persistGoal()
     }
 
-    func addGoalStep(_ text: String) { goal?.addStep(text); persistGoal() }
+    func addGoalStep(_ text: String) {
+        guard goal?.addStep(text, requiredMembers: GroupGoal.membersRequired(byStepText: text, memberNames: members.map(\.name))) != nil else { return }
+        goal?.noteUserActivity(); persistGoal()
+        postSystem("➕ You added step \(goal?.steps.count ?? 0): \(GroupGoal.displayText(text))")
+        requestOwnerReview()
+    }
+
+    // The user reshaping the plan from the goal card. Each change is posted so the members see it.
+    func editGoalStep(_ stepID: String, text: String) {
+        guard let n = goalStepNumber(stepID), goal?.editStep(id: stepID, text: text) == true else { return }
+        goal?.noteUserActivity(); persistGoal()
+        postSystem("✏️ You reworded step \(n): \(GroupGoal.displayText(text))")
+    }
+    func assignGoalStep(_ stepID: String, to name: String?) {
+        guard let n = goalStepNumber(stepID), goal?.assignStep(id: stepID, to: name) == true else { return }
+        goal?.noteUserActivity(); persistGoal()
+        postSystem(name.map { "👤 You assigned step \(n) to \($0)." } ?? "👤 You unassigned step \(n).")
+        if let name, let member = members.first(where: { $0.name == name }) { wake(member) }
+    }
+    func markGoalStepDone(_ stepID: String) {
+        guard let n = goalStepNumber(stepID), goal?.markDoneByUser(id: stepID) == true else { return }
+        persistGoal()
+        postSystem("✅ You marked step \(n) done.")
+        if let owner = members.first(where: { $0.id == goal?.ownerBotID }), let g = goal, g.steps.allSatisfy({ $0.status == .done }) {
+            _ = closeGoalIfComplete(by: owner)
+        }
+    }
+    func reopenGoalStep(_ stepID: String) {
+        guard let n = goalStepNumber(stepID), goal?.reopenStep(id: stepID) == true else { return }
+        goal?.noteUserActivity(); persistGoal()
+        postSystem("↩︎ You reopened step \(n).")
+        requestOwnerReview()
+    }
+    func moveGoalStep(_ stepID: String, by offset: Int) {
+        guard goal?.moveStep(id: stepID, by: offset) == true else { return }
+        persistGoal()
+    }
+    func renameGoal(_ title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != goal?.title else { return }
+        goal?.setTitle(trimmed); persistGoal()
+        postSystem("✏️ You renamed the goal: “\(trimmed)”.")
+    }
+    private func goalStepNumber(_ stepID: String) -> Int? {
+        goal?.steps.firstIndex(where: { $0.id == stepID }).map { $0 + 1 }
+    }
     func removeGoalStep(_ stepID: String) {
         if let g = goal { for member in members { member.clearGoalTasks(key: goalTaskKey(g, stepID)) } }
-        goal?.removeStep(id: stepID); persistGoal()
+        let n = goalStepNumber(stepID)
+        goal?.removeStep(id: stepID); goal?.noteUserActivity(); persistGoal()
+        if let n { postSystem("🗑 You removed step \(n).") }
     }
 
     /// Auto-closes a completion proposal the user never answered.
