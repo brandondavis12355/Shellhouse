@@ -695,7 +695,7 @@ final class GroupChatSession: Identifiable {
                 }
                 reply = await bot.quickReplyInGroup(groupName: name, otherMembers: others, transcript: formatRecentTranscript(limit: 8, clipTo: 400), instruction: instruction)
                 usedQuickPath = reply != nil
-                if usedQuickPath { debugLog(bot, "quick reply (\(ModelTiers.cheapModel(main: bot.selectedModel)))") }
+                if usedQuickPath { debugLog(bot, "quick reply (\(ModelTiers.fastModelLabel(main: bot.selectedModel)))") }
                 if !usedQuickPath { debugLog(bot, "quick reply failed — falling back to a full turn") }
             }
             if reply == nil {

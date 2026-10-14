@@ -79,7 +79,7 @@ public actor OpenAICompatibleBackend: ModelBackend {
 
         let body = ChatRequest(
             model: model ?? defaultModel,
-            messages: messages.map(Message.init),
+            messages: Self.wireMessages(messages),
             tools: tools.isEmpty ? nil : tools.map(Tool.init),
             temperature: temperature
         )
@@ -89,6 +89,7 @@ public actor OpenAICompatibleBackend: ModelBackend {
 
     public func availableModels() async throws -> [String] {
         var request = URLRequest(url: baseURL.appendingPathComponent("models"))
+        let isGemini = baseURL.host?.hasSuffix("generativelanguage.googleapis.com") == true
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
@@ -99,8 +100,13 @@ public actor OpenAICompatibleBackend: ModelBackend {
             struct Model: Decodable { let id: String }
             let data: [Model]
         }
-        return try JSONDecoder().decode(ModelsResponse.self, from: data).data.map(\.id)
+        let ids = try JSONDecoder().decode(ModelsResponse.self, from: data).data.map(\.id)
+        // Gemini lists "models/gemini-…"; requests take the bare name.
+        return isGemini ? ids.map { $0.hasPrefix("models/") ? String($0.dropFirst(7)) : $0 } : ids
     }
+
+    /// Google's OpenAI-compatible Gemini endpoint (https://ai.google.dev/gemini-api/docs/openai).
+    public static let geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
     private static func decodeReply(from data: Data) throws -> ModelReply {
         let decoded = try JSONDecoder().decode(ChatResponse.self, from: data)
@@ -110,7 +116,7 @@ public actor OpenAICompatibleBackend: ModelBackend {
         let toolCalls: [ToolCall]? = choice.message.tool_calls?.map { call in
             let argsData = call.function.arguments.data(using: .utf8) ?? Data()
             let args = (try? JSONDecoder().decode([String: AnyCodable].self, from: argsData)) ?? [:]
-            return ToolCall(name: call.function.name, arguments: args)
+            return ToolCall(name: call.function.name, arguments: args, id: call.id)
         }
         let usage = decoded.usage.map { TokenUsage(promptTokens: $0.prompt_tokens, completionTokens: $0.completion_tokens) }
         return ModelReply(
@@ -132,9 +138,78 @@ public actor OpenAICompatibleBackend: ModelBackend {
     /// (`text`/`image_url` parts) instead of a flat string whenever this
     /// message carries images; a plain text message still encodes as a
     /// plain string, which every OpenAI-compatible server accepts too.
-    private struct Message: Encodable {
+    /// The conversation as OpenAI-style messages, with every tool call and its result paired by id, which strict
+    /// servers (Gemini's OpenAI endpoint among them) require: an assistant turn carries its `tool_calls`, and each
+    /// tool result names the call it answers in order. A call without an id gets one; a result whose call was
+    /// summarized away becomes a plain note; a call that never got a result gets a placeholder one.
+    static func wireMessages(_ messages: [ChatMessage]) -> [Message] {
+        var out: [Message] = []
+        var pending: [(id: String, name: String)] = []
+        var counter = 0
+        func flushPending() {
+            for call in pending { out.append(Message(toolResult: "(no result was recorded for this call)", callID: call.id, name: call.name)) }
+            pending = []
+        }
+        for message in messages {
+            switch message.role {
+            case .tool:
+                if pending.isEmpty {
+                    out.append(Message(role: "user", text: "[result of \(message.toolName ?? "a tool") from earlier]: \(message.content)"))
+                } else {
+                    let call = pending.removeFirst()
+                    out.append(Message(toolResult: message.content, callID: call.id, name: message.toolName ?? call.name))
+                }
+            default:
+                flushPending()
+                let calls = (message.toolCalls ?? []).map { call -> (String, ToolCall) in
+                    counter += 1
+                    return (call.id ?? "call_\(counter)", call)
+                }
+                if message.role == .assistant, !calls.isEmpty {
+                    out.append(Message(assistant: message.content, calls: calls))
+                    pending = calls.map { ($0.0, $0.1.name) }
+                } else {
+                    out.append(Message(message))
+                }
+            }
+        }
+        flushPending()
+        return out
+    }
+
+    struct Message: Encodable {
         let role: String
-        let content: ContentValue
+        let content: ContentValue?
+        var tool_calls: [WireToolCall]? = nil
+        var tool_call_id: String? = nil
+
+        struct WireToolCall: Encodable {
+            let id: String
+            var type = "function"
+            let function: Function
+            struct Function: Encodable { let name: String; let arguments: String }
+        }
+
+        init(role: String, text: String) {
+            self.role = role
+            content = .text(text)
+        }
+
+        init(toolResult: String, callID: String, name: String) {
+            role = "tool"
+            content = .text(toolResult)
+            tool_call_id = callID
+        }
+
+        init(assistant text: String, calls: [(String, ToolCall)]) {
+            role = "assistant"
+            content = text.isEmpty ? nil : .text(text)
+            tool_calls = calls.map { id, call in
+                let args = (try? JSONSerialization.data(withJSONObject: call.arguments.mapValues(\.value), options: [.sortedKeys]))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                return WireToolCall(id: id, function: .init(name: call.name, arguments: args))
+            }
+        }
 
         enum ContentValue: Encodable {
             case text(String)
@@ -194,6 +269,7 @@ public actor OpenAICompatibleBackend: ModelBackend {
                         /// object) — re-decoded in `decodeReply`.
                         let arguments: String
                     }
+                    let id: String?
                     let function: Function
                 }
                 let content: String?

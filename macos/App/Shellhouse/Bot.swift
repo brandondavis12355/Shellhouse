@@ -1856,7 +1856,16 @@ final class Bot: Identifiable, @unchecked Sendable {
         }
     }
 
+    /// The fast tier on a remote endpoint (Settings › Fast model), when one is set up.
+    private func remoteFastBackend(timeout: TimeInterval) async -> (backend: any ModelBackend, model: String)? {
+        guard ModelTiers.fastUsesRemote, let url = ModelTiers.fastRemoteBaseURL else { return nil }
+        let key = (try? await SecretStore().resolveOne(name: ModelTiers.fastRemoteAPIKeySecretName)) ?? nil
+        let model = ModelTiers.fastRemoteModel
+        return (OpenAICompatibleBackend(baseURL: url, apiKey: key ?? "", defaultModel: model, timeout: timeout), model)
+    }
+
     private func makeFastBackend() async -> (backend: any ModelBackend, model: String) {
+        if let remote = await remoteFastBackend(timeout: 120) { return remote }
         guard modelProvider == .ollama else { return (await makeModelBackend(), selectedModel) }
         let model = ModelTiers.cheapModel(main: selectedModel)
         return (OllamaBackend(defaultModel: model, timeout: 120), model)
@@ -2973,6 +2982,9 @@ final class Bot: Identifiable, @unchecked Sendable {
         case .success(let parsed): request = parsed
         case .failure(let error): return ["error": error.message]
         }
+        if let reserved = request.fields.first(where: { SecretStore.isAppInternal($0.name) }) {
+            return ["error": "'\(reserved.name)' is one of the app's own credentials; pick a different name for this field."]
+        }
         guard pendingCredentialRequest == nil else {
             return ["error": "another credentials request is already waiting for your user; wait for it to be answered"]
         }
@@ -3670,6 +3682,7 @@ extension Bot {
 
     /// The fast tier with a short timeout: a slow review would stall the bot more than a prompt does.
     private func reviewerBackend() async -> (backend: any ModelBackend, model: String) {
+        if let remote = await remoteFastBackend(timeout: 30) { return remote }
         guard modelProvider == .ollama else { return (await makeModelBackend(), selectedModel) }
         let model = ModelTiers.cheapModel(main: selectedModel)
         return (OllamaBackend(defaultModel: model, timeout: 30), model)

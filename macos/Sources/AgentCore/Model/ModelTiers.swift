@@ -12,6 +12,35 @@ public enum ModelTiers {
         set { UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: fastModelKey) }
     }
 
+    // MARK: Remote fast model (an OpenAI-compatible endpoint instead of Ollama)
+
+    public static let fastProviderKey = "fastModel.provider"          // "ollama" (default) or "remote"
+    public static let fastRemoteBaseURLKey = "fastModel.remoteBaseURL"
+    public static let fastRemoteModelKey = "fastModel.remoteModel"
+    /// Keychain entry for the remote fast model's API key (never in UserDefaults).
+    public static let fastRemoteAPIKeySecretName = "FAST_MODEL_API_KEY"
+
+    public static var fastRemoteBaseURL: URL? {
+        let text = (UserDefaults.standard.string(forKey: fastRemoteBaseURLKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: text), let host = url.host else { return nil }
+        let local = ["localhost", "127.0.0.1", "::1"].contains(host)
+        return url.scheme == "https" || (url.scheme == "http" && local) ? url : nil
+    }
+
+    public static var fastRemoteModel: String {
+        (UserDefaults.standard.string(forKey: fastRemoteModelKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The fast tier runs on a remote endpoint: chosen, with a usable https URL and a model.
+    public static var fastUsesRemote: Bool {
+        UserDefaults.standard.string(forKey: fastProviderKey) == "remote" && fastRemoteBaseURL != nil && !fastRemoteModel.isEmpty
+    }
+
+    /// Which model a cheap call uses, for logs.
+    public static func fastModelLabel(main: String) -> String {
+        fastUsesRemote ? "remote \(fastRemoteModel)" : cheapModel(main: main)
+    }
+
     /// The model for a cheap call: the fast tier if set, else the bot's own.
     public static func cheapModel(main: String) -> String {
         let fast = fastModel

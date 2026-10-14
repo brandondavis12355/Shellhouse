@@ -564,6 +564,20 @@ struct BotSettingsTab: View {
                             .disabled(bot.isBusy)
                     } else {
                         VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                Text("Presets").font(.caption).foregroundStyle(.secondary)
+                                Button("Google Gemini") {
+                                    bot.remoteBaseURLText = OpenAICompatibleBackend.geminiBaseURL
+                                    if bot.selectedModel.isEmpty || !bot.selectedModel.lowercased().hasPrefix("gemini") { bot.selectedModel = "gemini-3.8-flash" }
+                                    bot.modelHasVision = true
+                                }
+                                .help("Gemini through Google's OpenAI-compatible endpoint. Paste a Gemini API key below; it goes to the Keychain.")
+                                Button("OpenAI") {
+                                    bot.remoteBaseURLText = "https://api.openai.com/v1"
+                                }
+                                Spacer()
+                            }
+                            .disabled(bot.isBusy)
                             TextField("Base URL (e.g. https://api.openai.com/v1)", text: $bot.remoteBaseURLText)
                                 .themedField()
                                 .disabled(bot.isBusy)

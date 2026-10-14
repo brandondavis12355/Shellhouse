@@ -193,6 +193,14 @@ public actor SecretStore {
         try resolveForExecution(names: [name])[name]
     }
 
+    /// Secrets the app itself uses, which no bot tool may ever receive: the sandbox-manager token (control of
+    /// every VM), the friends relay token, and model API keys (a bot's remote key, the fast model's key).
+    public static func isAppInternal(_ name: String) -> Bool {
+        let upper = name.uppercased()
+        return ["SANDBOX_MANAGER_TOKEN", "RELAY_REGISTRATION_TOKEN", "RELAY_IDENTITY_KEY_V1", "FAST_MODEL_API_KEY"].contains(upper)
+            || upper.hasPrefix("REMOTE_API_KEY_")
+    }
+
     public func resolveForExecution(names: [String]) throws -> [String: String] {
         var out: [String: String] = [:]
         for name in names where Self.isValidName(name) {

@@ -1103,6 +1103,9 @@ public struct ToolRegistry: Sendable {
                         return ["error": error.localizedDescription]
                     }
                 }
+                if let reserved = useSecrets.first(where: SecretStore.isAppInternal) {
+                    return ["error": "'\(reserved)' is one of the app's own credentials and can't be used by a tool."]
+                }
                 let resolved = useSecrets.isEmpty ? [:] : ((try? await secretStore.resolveForExecution(names: useSecrets)) ?? [:])
                 do {
                     let result = try await sandbox.exec(
@@ -1245,6 +1248,9 @@ public struct ToolRegistry: Sendable {
             "type_secret": { sandboxID, sandbox, args, secretStore in
                 guard let name = args["name"]?.asString, let window = args["window"]?.asString, !window.isEmpty else {
                     return ["error": "type_secret requires 'name' and 'window'"]
+                }
+                guard !SecretStore.isAppInternal(name) else {
+                    return ["error": "'\(name)' is one of the app's own credentials and can't be typed by a tool."]
                 }
                 guard let value = (try? await secretStore.resolveForExecution(names: [name]))?[name] else {
                     return ["error": "no saved secret named '\(name)'. Ask for it with request_credentials."]

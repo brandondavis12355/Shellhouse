@@ -45,10 +45,14 @@ public struct ChatMessage: Sendable, Codable {
 public struct ToolCall: Sendable, Codable {
     public let name: String
     public let arguments: [String: AnyCodable]
+    /// The provider's id for this call (OpenAI-compatible servers): its result must name it. Optional, since
+    /// Ollama doesn't use one and saved transcripts predate it.
+    public var id: String?
 
-    public init(name: String, arguments: [String: AnyCodable]) {
+    public init(name: String, arguments: [String: AnyCodable], id: String? = nil) {
         self.name = name
         self.arguments = arguments
+        self.id = id
     }
 }
 

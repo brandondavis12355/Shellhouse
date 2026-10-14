@@ -6,9 +6,15 @@ struct ModelTiersSettingsSection: View {
     @State private var fastModel = ModelTiers.fastModel
     @State private var embeddingModel = ModelTiers.embeddingModel
     @State private var installed: [String] = []
+    @AppStorage(ModelTiers.fastProviderKey) private var provider = "ollama"
+    @AppStorage(ModelTiers.fastRemoteBaseURLKey) private var remoteBaseURL = ""
+    @AppStorage(ModelTiers.fastRemoteModelKey) private var remoteModel = ""
+    @State private var apiKeyInput = ""
+    @State private var keySaved = false
+    @State private var keyError: String?
 
     var body: some View {
-        CollapsibleSection("Fast model", summary: fastModel.isEmpty ? "Same as each bot" : fastModel, storageKey: "fastModel") {
+        CollapsibleSection("Fast model", summary: summary, storageKey: "fastModel") {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("A small model for the quick decisions around each reply (does this need an answer, is it small talk) "
@@ -16,6 +22,15 @@ struct ModelTiersSettingsSection: View {
                         + "the real work. For parallel helpers, Ollama needs OLLAMA_NUM_PARALLEL of 2 or more and room for a second "
                         + "model (OLLAMA_MAX_LOADED_MODELS) — see docs/MODEL_TIERS.md.")
                         .font(.system(size: 13)).foregroundStyle(.secondary)
+                    Picker("Runs on", selection: $provider) {
+                        Text("Local (Ollama)").tag("ollama")
+                        Text("Remote (OpenAI-compatible)").tag("remote")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    if provider == "remote" {
+                        remoteFields
+                    } else {
                     HStack {
                         Picker("Fast model", selection: $fastModel) {
                             Text("None (use each bot's model)").tag("")
@@ -27,6 +42,7 @@ struct ModelTiersSettingsSection: View {
                         if let suggestion = ModelTiers.suggestedFastModel(from: installed), fastModel.isEmpty {
                             Button("Use \(suggestion)") { fastModel = suggestion }
                         }
+                    }
                     }
                     HStack {
                         Text("Memory embeddings").font(.system(size: 13)).foregroundStyle(.secondary)
@@ -46,11 +62,61 @@ struct ModelTiersSettingsSection: View {
             }
         }
         .task {
+            keySaved = ((try? await SecretStore().list()) ?? []).contains { $0.name == ModelTiers.fastRemoteAPIKeySecretName }
             installed = ((try? await OllamaBackend().availableModels()) ?? []).sorted()
             await ModelTiers.autoConfigure()
             fastModel = ModelTiers.fastModel
             embeddingModel = ModelTiers.embeddingModel
             if embeddingModel.isEmpty, let pick = await ModelTiers.resolveEmbeddingModel() { embeddingModel = pick }
+        }
+    }
+}
+
+extension ModelTiersSettingsSection {
+    private var summary: String {
+        if provider == "remote" { return ModelTiers.fastUsesRemote ? "remote · \(remoteModel)" : "remote · not set up" }
+        return fastModel.isEmpty ? "Same as each bot" : fastModel
+    }
+
+    @ViewBuilder
+    private var remoteFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Presets").font(.caption).foregroundStyle(.secondary)
+                Button("Google Gemini") {
+                    remoteBaseURL = OpenAICompatibleBackend.geminiBaseURL
+                    if remoteModel.isEmpty { remoteModel = "gemini-3.8-flash" }
+                }
+                Button("OpenAI") { remoteBaseURL = "https://api.openai.com/v1" }
+                Spacer()
+            }
+            TextField("Base URL (https://…)", text: $remoteBaseURL).themedField()
+            TextField("Model id (e.g. gemini-3.8-flash)", text: $remoteModel).themedField()
+            HStack {
+                SecureField(keySaved ? "API key saved — type a new one to replace it" : "API key", text: $apiKeyInput)
+                    .themedField()
+                    .onSubmit(saveKey)
+                Button("Save key", action: saveKey).disabled(apiKeyInput.isEmpty)
+            }
+            if let keyError { Text(keyError).font(.caption).foregroundStyle(.red) }
+            Text(ModelTiers.fastUsesRemote
+                 ? "Reply checks, the approval reviewer, quick replies, helpers and lesson reviews use this model for every bot. "
+                    + "Each bot's own model still does the real work. Those prompts include parts of the chat, so they go to this provider."
+                 : "Needs an https base URL and a model id. Until then, the fast tier stays local.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func saveKey() {
+        let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        Task {
+            do {
+                try await SecretStore().put(name: ModelTiers.fastRemoteAPIKeySecretName, value: key, notes: "Fast model API key")
+                apiKeyInput = ""; keySaved = true; keyError = nil
+            } catch {
+                keyError = "Couldn't save the key to the Keychain: \(error.localizedDescription)"
+            }
         }
     }
 }
