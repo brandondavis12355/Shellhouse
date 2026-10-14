@@ -121,7 +121,10 @@ public final class SSHTunnel: @unchecked Sendable {
         private var state = TunnelDiagnostics()
         func next(_ line: String) -> String? { lock.lock(); defer { lock.unlock() }; return state.lineToShow(line) }
     }
+    /// A first restart is quick (a blip shouldn't stall commands); repeated failures back off.
+    private let quickRestartDelay: UInt64 = 1_000_000_000
     private let restartDelay: UInt64 = 5_000_000_000  // 5s, in nanoseconds
+    private var lastStart: Date?
 
     private let lock = NSLock()
     private var process: Process?
@@ -228,6 +231,7 @@ public final class SSHTunnel: @unchecked Sendable {
             try task.run()
             lock.lock()
             process = task
+            lastStart = Date()
             lock.unlock()
         } catch {
             onStderr("Failed to launch ssh: \(error.localizedDescription)")
@@ -266,10 +270,15 @@ public final class SSHTunnel: @unchecked Sendable {
 
     private func handleExit() {
         lock.lock()
+        let status = process?.terminationStatus
         process = nil
         let shouldRestart = !stopped
+        // Up for a while before dropping: a blip, reconnect at once. Dying right after starting: back off.
+        let quick = lastStart.map { Date().timeIntervalSince($0) > 30 } ?? false
         lock.unlock()
-        if shouldRestart { scheduleRestart() }
+        guard shouldRestart else { return }
+        onStderr("tunnel dropped (ssh exit \(status.map(String.init) ?? "?")); reconnecting in \(quick ? 1 : 5) s")
+        scheduleRestart(quick: quick)
     }
 
     /// `NSLock.lock()/unlock()` are `NS_SWIFT_UNAVAILABLE_FROM_ASYNC` — calling
@@ -281,9 +290,10 @@ public final class SSHTunnel: @unchecked Sendable {
         return !stopped
     }
 
-    private func scheduleRestart() {
-        restartTask = Task { [weak self, restartDelay] in
-            try? await Task.sleep(nanoseconds: restartDelay)
+    private func scheduleRestart(quick: Bool = false) {
+        let delay = quick ? quickRestartDelay : restartDelay
+        restartTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
             guard let self, !Task.isCancelled else { return }
             if self.isStillWantedAfterRestartDelay() { self.spawn() }
         }

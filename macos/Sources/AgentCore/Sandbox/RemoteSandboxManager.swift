@@ -14,6 +14,11 @@ import Foundation
 public final class RemoteSandboxManager: SandboxProvider, Sendable {
     public let name = "remote-docker"
 
+    /// Where connection drops and recoveries are reported (the app sends them to the debug console).
+    nonisolated(unsafe) public static var connectionLog: (@Sendable (String) -> Void)?
+    /// How long a call waits for the tunnel to come back before giving up (the tunnel restarts in ~1 s).
+    static let reconnectDelays: [Double] = [0.5, 1, 2, 3, 5, 8]
+
     private let baseURL: URL
     private let token: String
     private let session: URLSession
@@ -40,15 +45,25 @@ public final class RemoteSandboxManager: SandboxProvider, Sendable {
 
         let data: Data
         let response: URLResponse
+        // Idempotent calls, and exec (which carries a request_id), are retried while the tunnel reconnects.
+        let retryable = Self.safeToRetry.contains(path) || body["request_id"] != nil
         do {
-            do {
-                (data, response) = try await session.data(for: request)
-            } catch let error as URLError where error.code == .networkConnectionLost && Self.safeToRetry.contains(path) {
-                // A reused keep-alive connection the server (or the tunnel) already closed. Reading or
-                // writing a file is safe to repeat; running a command is not, so exec is never retried.
-                (data, response) = try await session.data(for: request)
+            var attempt = 0
+            while true {
+                do {
+                    (data, response) = try await session.data(for: request)
+                    if attempt > 0 { Self.connectionLog?("sandbox-manager reachable again; \(path) went through on retry \(attempt)") }
+                    break
+                } catch let error as URLError where retryable && Self.isTransient(error) && attempt < Self.reconnectDelays.count {
+                    if attempt == 0 { Self.connectionLog?("lost the connection to sandbox-manager during \(path) (\(error.code.rawValue): \(error.localizedDescription)); retrying") }
+                    try await Task.sleep(nanoseconds: UInt64(Self.reconnectDelays[attempt] * 1_000_000_000))
+                    attempt += 1
+                }
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            if retryable { Self.connectionLog?("gave up on sandbox-manager for \(path): \(error.localizedDescription)") }
             // The tunnel being down looks like any other network failure to
             // URLSession, so say so rather than leaking a generic POSIX error.
             throw SandboxError.providerError(
@@ -68,6 +83,12 @@ public final class RemoteSandboxManager: SandboxProvider, Sendable {
         }
         guard !data.isEmpty else { return [:] }
         return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// Errors from a connection that dropped or wasn't there for a moment, as opposed to a bad request.
+    static func isTransient(_ error: URLError) -> Bool {
+        [.networkConnectionLost, .cannotConnectToHost, .notConnectedToInternet, .timedOut, .cannotFindHost, .dnsLookupFailed, .secureConnectionFailed]
+            .contains(error.code)
     }
 
     private static func handle(from json: [String: Any]) -> SandboxHandle {
@@ -104,7 +125,17 @@ public final class RemoteSandboxManager: SandboxProvider, Sendable {
     ) async throws -> ExecResult {
         var body: [String: Any] = ["sandbox_id": sandboxID, "command": command, "timeout": Int(timeout)]
         if let env { body["env"] = env }
-        let json = try await call("v1/exec", body: body, timeout: timeout + 30)
+        // The id makes a retry after a dropped connection safe: the manager runs the command at most once and
+        // hands the retry the stored (or still-running) result.
+        body["request_id"] = UUID().uuidString
+        let json: [String: Any]
+        do {
+            json = try await call("v1/exec", body: body, timeout: timeout + 30)
+        } catch SandboxError.providerError(let message) where message.contains("(422)") && message.contains("request_id") {
+            // An older manager that doesn't know request_id yet: run it the old way (no safe retry).
+            body["request_id"] = nil
+            json = try await call("v1/exec", body: body, timeout: timeout + 30)
+        }
         return ExecResult(
             exitCode: Int32(json["exit_code"] as? Int ?? 1),
             stdout: json["stdout"] as? String ?? "",

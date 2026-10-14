@@ -34,6 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // surfaced here rather than swallowed, since a silently-dead
             // tunnel looks identical to "sandbox-manager is just slow".
             print("[ssh tunnel] \(line)")
+            Task { @MainActor in
+                guard DebugSettings.shared.isEnabled else { return }
+                DebugLog.shared.log(bot: "Connection", colorHex: "#8E8E93", kind: .status, context: "ssh tunnel", text: line)
+            }
         }
     )
 
@@ -50,6 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
+        RemoteSandboxManager.connectionLog = { line in
+            print("[sandbox-manager] \(line)")
+            Task { @MainActor in
+                guard DebugSettings.shared.isEnabled else { return }
+                DebugLog.shared.log(bot: "Connection", colorHex: "#8E8E93", kind: .status, context: "sandbox-manager", text: line)
+            }
+        }
         tunnel.start()
         ollama.start()
         setUpStatusItem()

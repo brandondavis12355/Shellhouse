@@ -38,7 +38,10 @@ service. What this service guarantees is that `exec` can only ever land
 *inside a sandbox it created*, as an unprivileged user, with a timeout and
 bounded output.
 """
+import asyncio
+import hashlib
 import hmac
+from collections import OrderedDict
 import json
 import logging
 import os
@@ -149,6 +152,25 @@ class CreateRequest(BaseModel):
     persistent: bool = False
 
 
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+EXEC_RESULT_TTL = 600      # seconds a finished result stays available for a retry
+EXEC_RESULT_MAX = 200
+# request_id -> (finished_at, fingerprint, result). Never holds env (secret) values.
+_exec_results: "OrderedDict[str, tuple[float, str, dict]]" = OrderedDict()
+# request_id -> (fingerprint, task) for commands still running.
+_exec_running: dict[str, tuple[str, asyncio.Task]] = {}
+
+
+def _exec_fingerprint(req: "ExecRequest") -> str:
+    return hashlib.sha256(f"{req.sandbox_id}\0{req.command}".encode()).hexdigest()
+
+
+def _prune_exec_results(now: float) -> None:
+    while _exec_results and (len(_exec_results) > EXEC_RESULT_MAX
+                             or now - next(iter(_exec_results.values()))[0] > EXEC_RESULT_TTL):
+        _exec_results.popitem(last=False)
+
+
 class ExecRequest(BaseModel):
     model_config = {"extra": "forbid"}
     sandbox_id: str = Field(max_length=128)
@@ -157,6 +179,16 @@ class ExecRequest(BaseModel):
     # Secret values injected at execution time. Names are validated; VALUES
     # ARE NEVER LOGGED (see the exec handler's audit call).
     env: dict[str, str] = Field(default_factory=dict)
+    # Set by the app so a command can be retried after a dropped connection without running twice:
+    # a repeat of a finished id returns the stored result, a repeat of a running one waits for it.
+    request_id: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("request_id")
+    @classmethod
+    def valid_request_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not REQUEST_ID_PATTERN.match(v):
+            raise ValueError("request_id must be 8-64 letters, digits or dashes")
+        return v
 
     @field_validator("env")
     @classmethod
@@ -285,6 +317,8 @@ async def start(req: SandboxIdRequest, x_manager_token: str = Header(default="")
 async def execute(req: ExecRequest, x_manager_token: str = Header(default="")):
     require_auth(x_manager_token)
     resolve(req.sandbox_id)
+    if req.request_id:
+        return await _execute_once(req)
     result = await get_backend().exec(
         req.sandbox_id, req.command, timeout=req.timeout, env=req.env or None
     )
@@ -297,6 +331,43 @@ async def execute(req: ExecRequest, x_manager_token: str = Header(default="")):
           command=req.command[:2000], exit_code=result.exit_code,
           injected_env=sorted(req.env.keys()) if req.env else [])
     return result.to_dict()
+
+
+async def _execute_once(req: ExecRequest) -> dict:
+    """Runs a command at most once per request_id. The command runs in its own task, so a dropped
+    connection doesn't cancel it; the retry picks up the stored result or waits for the running one."""
+    key, fingerprint = req.request_id, _exec_fingerprint(req)
+    _prune_exec_results(time.time())
+    if key in _exec_results:
+        _, stored_fingerprint, result = _exec_results[key]
+        if stored_fingerprint != fingerprint:
+            raise HTTPException(status_code=409, detail="request_id was already used for a different command")
+        audit("exec", "replayed", sandbox_id=req.sandbox_id, request_id=key)
+        return result
+    running = _exec_running.get(key)
+    if running is not None:
+        if running[0] != fingerprint:
+            raise HTTPException(status_code=409, detail="request_id is in use by a different command")
+        audit("exec", "rejoined", sandbox_id=req.sandbox_id, request_id=key)
+        return await asyncio.shield(running[1])
+
+    async def run() -> dict:
+        try:
+            result = await get_backend().exec(
+                req.sandbox_id, req.command, timeout=req.timeout, env=req.env or None
+            )
+            audit("exec", "ok", sandbox_id=req.sandbox_id, request_id=key,
+                  command=req.command[:2000], exit_code=result.exit_code,
+                  injected_env=sorted(req.env.keys()) if req.env else [])
+            out = result.to_dict()
+            _exec_results[key] = (time.time(), fingerprint, out)
+            return out
+        finally:
+            _exec_running.pop(key, None)
+
+    task = asyncio.create_task(run())
+    _exec_running[key] = (fingerprint, task)
+    return await asyncio.shield(task)
 
 
 @app.post("/v1/read_file")
