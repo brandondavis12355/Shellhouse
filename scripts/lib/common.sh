@@ -44,7 +44,7 @@ valid_host() { [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || [[ "$1
 valid_user() { [[ "$1" =~ ^[a-z_][a-z0-9_.-]*$ ]]; }
 
 load_state() {
-  SHELLHOUSE_HOST=""; SHELLHOUSE_USER=""
+  SHELLHOUSE_HOST=""; SHELLHOUSE_USER=""; SHELLHOUSE_PREV_HOST=""; SHELLHOUSE_PREV_USER=""
   # shellcheck disable=SC1090
   [ -f "$SHELLHOUSE_STATE_FILE" ] && . "$SHELLHOUSE_STATE_FILE"
   return 0
@@ -52,7 +52,8 @@ load_state() {
 
 save_state() {
   mkdir -p "$SHELLHOUSE_STATE_DIR" && chmod 700 "$SHELLHOUSE_STATE_DIR"
-  printf 'SHELLHOUSE_HOST=%q\nSHELLHOUSE_USER=%q\n' "$SHELLHOUSE_HOST" "$SHELLHOUSE_USER" > "$SHELLHOUSE_STATE_FILE"
+  printf 'SHELLHOUSE_HOST=%q\nSHELLHOUSE_USER=%q\nSHELLHOUSE_PREV_HOST=%q\nSHELLHOUSE_PREV_USER=%q\n' \
+    "$SHELLHOUSE_HOST" "$SHELLHOUSE_USER" "${SHELLHOUSE_PREV_HOST:-}" "${SHELLHOUSE_PREV_USER:-}" > "$SHELLHOUSE_STATE_FILE"
   chmod 600 "$SHELLHOUSE_STATE_FILE"
 }
 

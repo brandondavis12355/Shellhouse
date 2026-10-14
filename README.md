@@ -95,6 +95,17 @@ It asks for the Linux box's IP address (or hostname) and your SSH user, then:
 
 Everything it changes on the box is recorded in `~/.shellhouse-install-state`, which is what `uninstall.sh` reverts. It's safe to run again: it picks up where it left off.
 
+**Updating, or moving to a new box.** Run it again with the **same** box to update it in place: its `.env` and manager token are kept, and the image is rebuilt. Run it with a **different** box to move to it (a changeover):
+
+- Everything in the app on your Mac stays as it is: settings, bots, groups, conversations and memories. Only the box it uses changes.
+- If the old box is reachable, it offers to bring two things over:
+  - its `.env` options (the new box keeps its own token);
+  - each bot's workspace files, its `/workspace`, copied box to box through your Mac. Packages installed inside a bot's VM aren't copied.
+- Every bot then re-attaches on the new box.
+- The old box is left untouched. Once everything works, remove Shellhouse from it with `./uninstall.sh --host OLD-ADDRESS`.
+
+An interrupted changeover resumes when you run the script again with the same new box.
+
 | Option | Effect |
 |---|---|
 | `--host ADDR` / `--user NAME` | Skip the questions |

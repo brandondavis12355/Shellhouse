@@ -266,7 +266,7 @@ struct ContentView: View {
                     saveBots()
                     defaultsWhenSettingsOpened = (defaultMaxIterations, defaultMaxTokens)
                 },
-                onHostChanged: { rebootStalledBots() },
+                onHostChanged: { rebootStalledBots(hostChanged: true) },
                 onManagerTokenChanged: { rebootStalledBots() },
                 onExportSettings: { includeSecrets in exportSettings(includeSecrets: includeSecrets) },
                 onImportSettings: { importSettingsFromPanel() }
@@ -596,6 +596,9 @@ struct ContentView: View {
     /// modifier chain, which the compiler can't type-check in time otherwise).
     private var liveSettingsObserver: some View {
         Color.clear
+            .sheet(item: $importReview) { review in
+                ImportReviewSheet(review: review, onImport: { await finishImport(review) }, onClose: { importReview = nil })
+            }
             // Settings files opened from Finder, `open`, or initial_setup.sh.
             .onChange(of: ExternalRequests.shared.pendingSettingsFiles) { _, files in
                 guard !files.isEmpty else { return }
@@ -668,26 +671,49 @@ struct ContentView: View {
             showExportError("Couldn't import \(url.lastPathComponent).", error)
             return
         }
-        if askFirst {
-            let alert = NSAlert()
-            alert.messageText = "Import settings from \(url.lastPathComponent)?"
-            alert.informativeText = "This file was downloaded. It would change \(contents.summary)"
-                + (contents.host.map { ", and connect the app to the Linux host \($0)" } ?? "")
-                + ". Only import settings from someone you trust."
-            alert.addButton(withTitle: "Import")
-            alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let issues = contents.issues + SettingsBundle.missingMembers(
+            contents, existingBotIDs: Set(bots.map(\.id)), existingNames: Set(bots.map { $0.name.lowercased() })
+        )
+        // A file the setup scripts handed over, with nothing that doesn't fit: apply it without asking.
+        if receipt, !askFirst, issues.isEmpty {
+            await applySettings(contents)
+            SettingsBundle.writeReceipt(to: url, summary: contents.summary)
+            importReview = ImportReview(url: url, contents: contents, issues: [], downloaded: false, receipt: true, alreadyImported: true)
+            return
         }
-        await applySettings(contents)
-        if receipt { SettingsBundle.writeReceipt(to: url, summary: contents.summary) }
-        let done = NSAlert()
-        done.messageText = "Settings imported"
-        done.informativeText = "Applied \(contents.summary). Everything takes effect now."
-        if !receipt || askFirst { done.runModal() }
+        // Otherwise show what changes and what doesn't fit this version before anything changes. (Settings is a
+        // sheet too, and only one shows at a time.)
+        let review = ImportReview(url: url, contents: contents, issues: issues, downloaded: askFirst, receipt: receipt)
+        if showingAppSettings {
+            showingAppSettings = false
+            try? await Task.sleep(nanoseconds: 450_000_000)
+        }
+        importReview = review
+    }
+
+    @MainActor
+    private func finishImport(_ review: ImportReview) async {
+        let scoped = review.url.startAccessingSecurityScopedResource()
+        defer { if scoped { review.url.stopAccessingSecurityScopedResource() } }
+        await applySettings(review.contents)
+        if review.receipt { SettingsBundle.writeReceipt(to: review.url, summary: review.contents.summary) }
     }
 
     @MainActor
     private func applySettings(_ contents: SettingsBundle.Contents) async {
+        // A new host joins the recent ones (as if typed in Settings) instead of replacing the list.
+        var contents = contents
+        let hostBefore = HostSettingsStore.load()
+        if let imported = contents.app["linuxHostSettings.v1"] as? [String: Any], let host = imported["host"] as? String, !host.isEmpty {
+            var settings = hostBefore
+            if let user = imported["user"] as? String, !user.isEmpty { settings.user = user }
+            settings.use(host: host)
+            // The remembered machine name was the old box's; "Find on this network" learns the new one.
+            settings.knownHostName = (imported["knownHostName"] as? String) ?? (settings.host == hostBefore.host ? hostBefore.knownHostName : nil)
+            HostSettingsStore.save(settings)
+            contents.app.removeValue(forKey: "linuxHostSettings.v1")
+        }
+        let hostChanged = HostSettingsStore.load().host != hostBefore.host || HostSettingsStore.load().user != hostBefore.user
         SettingsBundle.applyAppSettings(contents)
         await runShellPermissions.reloadFromDefaults()
 
@@ -750,7 +776,7 @@ struct ContentView: View {
         }
 
         // The host and the smolagents forward: reconnect the tunnel now.
-        if contents.app["linuxHostSettings.v1"] != nil || contents.app["smolagents.config.v1"] != nil {
+        if hostChanged || contents.app["smolagents.config.v1"] != nil {
             let host = HostSettingsStore.load()
             AppDelegate.shared?.tunnel.reconfigure(.init(
                 host: host.host, user: host.user, managerSocketPath: host.managerSocketPath,
@@ -758,7 +784,7 @@ struct ContentView: View {
             ))
         }
         for bot in created { Task { await bot.boot() } }
-        rebootStalledBots()
+        rebootStalledBots(hostChanged: hostChanged)
     }
 
     private func showExportError(_ message: String, _ error: Error) {
@@ -859,14 +885,17 @@ struct ContentView: View {
 
     /// Re-boots bots that have no sandbox or failed to start: after the host or the manager token changed.
     /// (`boot()` waits for the tunnel itself.)
-    private func rebootStalledBots() {
+    /// `hostChanged`: the app now uses a different Linux box, so every idle bot re-attaches there (its VM on the
+    /// old box isn't reachable any more; on the new one it's created, reusing its workspace if one was copied over).
+    private func rebootStalledBots(hostChanged: Bool = false) {
         for bot in bots where !bot.isBusy {
-            if bot.handle == nil { Task { await bot.boot() }; continue }
+            if hostChanged || bot.handle == nil { Task { await bot.boot() }; continue }
             if case .failed = bot.state { Task { await bot.boot() } }
         }
     }
 
     @State private var saveBotsTask: Task<Void, Never>?
+    @State private var importReview: ImportReview?
     private func scheduleSaveBots() {
         saveBotsTask?.cancel()
         saveBotsTask = Task { @MainActor in

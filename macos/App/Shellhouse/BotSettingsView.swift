@@ -51,7 +51,8 @@ struct BotSettingsView: View {
                 BotSettingsTab(bot: bot, groupChats: groupChats)
 
                 if case .edit = mode {
-                    CollapsibleSection("Danger zone", summary: "Delete or reset", symbol: "exclamationmark.triangle", storageKey: "bot.dangerZone") {
+                    SettingsGroupHeader(title: "Danger zone", symbol: "exclamationmark.triangle", detail: "Can't be undone")
+                    CollapsibleSection("Delete or reset", summary: "Conversation, VM, bot", symbol: "trash", storageKey: "bot.dangerZone") {
                     Card {
                         Button { showingDeleteConversationConfirm = true } label: {
                             SettingRow("Delete conversation…", titleColor: Theme.destructive)
@@ -181,7 +182,9 @@ struct BotSettingsTab: View {
             VStack(alignment: .leading, spacing: 0) {
                 identitySection
 
-                ExpandableCard("Custom Instructions", summary: bot.systemPromptText.isEmpty ? "None" : "Set") {
+
+                SettingsGroupHeader(title: "Behavior", symbol: "text.bubble", detail: "What this bot is told, what it knows how to do, and how it runs a goal")
+                ExpandableCard("Custom instructions", summary: bot.systemPromptText.isEmpty ? "None" : "Set", symbol: "text.quote") {
                     Text("Optional. Added to the built-in behavior (tools, how tasks finish, verification), which every bot always has and which can't be edited here.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
@@ -191,9 +194,8 @@ struct BotSettingsTab: View {
                         .themedEditor()
                 }
                 .help(bot.isBusy ? "A run already going keeps the old instructions; the next one uses these." : "")
-                .padding(.top, 16)
 
-                ExpandableCard("Skills", summary: "\(bot.selectedSkillIDs.count) of \(bot.availableSkills.count)") {
+                ExpandableCard("Skills", summary: "\(bot.selectedSkillIDs.count) of \(bot.availableSkills.count)", symbol: "book.closed") {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 6) {
                             Toggle(isOn: Binding(
@@ -238,290 +240,15 @@ struct BotSettingsTab: View {
                 .help(bot.isBusy ? "A run already going keeps its skills; the next one uses these." : "")
                 .padding(.top, 12)
 
-                ExpandableCard("Permissions", summary: "\(bot.sessionAllowedBinaries.count) session · \(bot.globalAllowedBinaries.count) always · \(bot.blanketShellScopes.count) all-shell") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(bot.blanketShellScopes, id: \.self) { scope in
-                            HStack {
-                                Text("ALL shell commands").font(.system(size: 13, design: .monospaced))
-                                Text(blanketBadge(scope))
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Theme.warning)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 1)
-                                    .background(Theme.warning.opacity(0.18), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                Spacer()
-                                Button("Revoke") { Task { await bot.revokeAllShell(scope: scope) } }
-                                    .buttonStyle(.compactPill)
-                            }
-                        }
-                        if bot.sessionAllowedBinaries.isEmpty && bot.globalAllowedBinaries.isEmpty && bot.blanketShellScopes.isEmpty {
-                            Text("Nothing always-allowed yet — approve a run_shell command and choose "
-                                + "\"Always allow…\" to add one.")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(bot.sessionAllowedBinaries, id: \.self) { binary in
-                            permissionRow(binary, scope: .session, badge: "session")
-                        }
-                        ForEach(bot.globalAllowedBinaries, id: \.self) { binary in
-                            permissionRow(binary, scope: .global, badge: "always")
-                        }
-                    }
-                }
-                .task { await bot.refreshPermissions() }
-                .padding(.top, 12)
-
-                ExpandableCard("Memory", summary: "\(bot.memories.count)") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Notes this bot keeps — from its own `remember` tool during a "
-                            + "conversation, or added here by hand. Pinned and high-importance notes go in every prompt; "
-                            + "the rest appear when relevant to a message.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-
-                        if !bot.memories.isEmpty {
-                            let model = ModelTiers.embeddingModel
-                            Text(model.isEmpty
-                                 ? "Search is by keywords. Pick an embedding model in Settings › Fast model to also search by meaning."
-                                 : "\(bot.memoriesIndexed) of \(bot.memories.count) notes indexed for meaning (\(model)).")
-                                .font(.system(size: 12)).foregroundStyle(.tertiary)
-                        }
-                        if bot.memories.isEmpty {
-                            Text("Nothing remembered yet.")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(Array(bot.memoryBook.entries.enumerated()), id: \.element.id) { index, entry in
-                            HStack(alignment: .top, spacing: 8) {
-                                Button {
-                                    bot.setMemoryPinned(index, !entry.pinned)
-                                } label: {
-                                    Image(systemName: entry.pinned ? "pin.fill" : "pin")
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(entry.pinned ? Theme.accent : .secondary)
-                                .help(entry.pinned ? "Pinned: always in this bot's core notes" : "Pin: always include in this bot's core notes")
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(entry.text).font(.system(size: 14)).textSelection(.enabled)
-                                    Text("importance \(String(repeating: "●", count: entry.importance))\(String(repeating: "○", count: 5 - entry.importance))"
-                                        + (entry.useCount > 0 ? " · used \(entry.useCount)×" : "") + " · \(entry.source)")
-                                        .font(.system(size: 11)).foregroundStyle(.tertiary)
-                                }
-                                Spacer()
-                                Menu {
-                                    ForEach((1...5).reversed(), id: \.self) { level in
-                                        Button("Importance \(level)") { bot.setMemoryImportance(index, level) }
-                                    }
-                                } label: { Image(systemName: "slider.horizontal.3") }
-                                    .menuStyle(.borderlessButton).fixedSize().help("Set how important this note is")
-                                Button {
-                                    bot.removeMemory(at: IndexSet(integer: index))
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        HStack {
-                            TextField("Add an instruction…", text: $newMemoryText)
-                                .themedField()
-                                .onSubmit { addMemory() }
-                            Button("Add") { addMemory() }
-                                .disabled(newMemoryText.trimmingCharacters(in: .whitespaces).isEmpty)
-                        }
-                        HStack {
-                            Button("Tidy up") {
-                                let report = bot.consolidateMemories(force: true)
-                                tidyNote = report.isEmpty ? "Nothing to tidy."
-                                    : "Merged \(report.merged.count) near-duplicate\(report.merged.count == 1 ? "" : "s"), archived \(report.archived.count) stale note\(report.archived.count == 1 ? "" : "s")."
-                            }
-                            .help("Merge near-duplicate notes and archive old, never-used, low-importance ones. Nothing is deleted outright.")
-                            if let tidyNote { Text(tidyNote).font(.system(size: 12)).foregroundStyle(.secondary) }
-                        }
-                    }
-                }
-                .padding(.top, 12)
-
-                ExpandableCard("Tasks", summary: "\(bot.tasks.count)") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("One-shot tasks this bot is carrying — from its own remember_task tool, or added "
-                            + "here by hand. Unlike Memory, these are meant to be removed once done: this bot's "
-                            + "own complete_task tool clears them, or remove one yourself below. They follow "
-                            + "it into a group turn or a delegation, which otherwise have no access to this "
-                            + "chat's history.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-
-                        if bot.tasks.isEmpty {
-                            Text("Nothing in progress.")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(Array(bot.tasks.enumerated()), id: \.offset) { index, task in
-                            HStack(alignment: .top) {
-                                Text(task.text).font(.system(size: 14)).textSelection(.enabled)
-                                Spacer()
-                                Button {
-                                    bot.removeTask(at: IndexSet(integer: index))
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        HStack {
-                            TextField("Add a task…", text: $newTaskText)
-                                .themedField()
-                                .onSubmit { addTask() }
-                            Button("Add") { addTask() }
-                                .disabled(newTaskText.trimmingCharacters(in: .whitespaces).isEmpty)
-                        }
-                    }
-                }
-                .padding(.top, 12)
-
-                ExpandableCard("Routines", summary: "\(bot.routines.count)") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Time-based triggers that queue a message to this bot on their own — added here, "
-                            + "or by the bot itself via its create_routine tool. A routine can post into a "
-                            + "group chat instead of this one, if this bot is already a member of one.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-
-                        if bot.routines.isEmpty {
-                            Text("No routines yet.")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(Array(bot.routines.enumerated()), id: \.offset) { index, routine in
-                            HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack(spacing: 6) {
-                                        Text(routine.schedule.summary).font(.system(size: 14, weight: .semibold))
-                                        if let groupID = routine.targetGroupID {
-                                            Text("→ \(groupChats.first { $0.id == groupID }?.name ?? "deleted group")")
-                                                .font(.system(size: 12))
-                                                .foregroundStyle(.secondary)
-                                                .padding(.horizontal, 6)
-                                                .background(Theme.chip, in: Capsule())
-                                        }
-                                    }
-                                    Text(routine.instruction)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                                Spacer()
-                                Button {
-                                    bot.runRoutineNow(id: routine.id)
-                                } label: {
-                                    Image(systemName: "play.circle.fill")
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .help("Run now (doesn't change its schedule)")
-                                .disabled(bot.sandbox == nil)
-                                Button {
-                                    beginEditingRoutine(routine)
-                                } label: {
-                                    Image(systemName: "pencil.circle.fill")
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                Button {
-                                    if editingRoutineID == routine.id { cancelEditingRoutine() }
-                                    bot.removeRoutine(at: IndexSet(integer: index))
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                            }
-                            .padding(8)
-                            .background(
-                                editingRoutineID == routine.id ? Theme.accent.opacity(0.14) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            )
-                        }
-
-                        Divider().overlay(Theme.hairline)
-
-                        if editingRoutineID != nil {
-                            Text("Editing routine").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
-                        }
-
-                        TextField("What should it do when it fires?", text: $newRoutineInstruction)
-                            .themedField()
-
-                        Picker("Schedule", selection: $newRoutineScheduleKind) {
-                            ForEach(RoutineScheduleKind.allCases) { kind in
-                                Text(kind.label).tag(kind)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-
-                        switch newRoutineScheduleKind {
-                        case .once:
-                            DatePicker(
-                                "At", selection: $newRoutineOnceDate, in: Date()...,
-                                displayedComponents: [.date, .hourAndMinute]
-                            )
-                        case .daily:
-                            DatePicker("At", selection: $newRoutineDailyTime, displayedComponents: [.hourAndMinute])
-                        case .interval:
-                            HStack {
-                                Text("Every")
-                                TextField("30", value: $newRoutineIntervalMinutes, format: .number)
-                                    .themedField()
-                                    .frame(width: 70)
-                                Text("minutes")
-                            }
-                        }
-
-                        if !eligibleGroups.isEmpty {
-                            Picker("Post in", selection: $newRoutineTargetGroupID) {
-                                Text("This chat").tag(String?.none)
-                                ForEach(eligibleGroups) { group in
-                                    Text(group.name).tag(String?.some(group.id))
-                                }
-                            }
-                        }
-
-                        HStack {
-                            Button(editingRoutineID != nil ? "Save changes" : "Add routine") {
-                                if editingRoutineID != nil {
-                                    saveRoutineEdit()
-                                } else {
-                                    addRoutine()
-                                }
-                            }
-                            .buttonStyle(.primaryPill)
-                            .disabled(newRoutineInstruction.trimmingCharacters(in: .whitespaces).isEmpty)
-
-                            if editingRoutineID != nil {
-                                Button("Cancel") { cancelEditingRoutine() }
-                            }
-                        }
-                    }
-                }
-                .padding(.top, 12)
-
-                SectionLabel("Linux VM")
                 Card {
-                    SettingRow(
-                        bot.handle.map { "shellhouse-vm-\($0.id)" } ?? "Not running",
-                        subtitle: "This bot's own private Linux VM. Its files and installed packages are not visible to any other bot."
-                    ) {
-                        Image(systemName: "desktopcomputer").foregroundStyle(bot.sandbox == nil ? Color.secondary : Theme.positive)
-                    }
+                    ToggleRow(title: "Checks submitted work itself",
+                              subtitle: "When this bot owns a group goal, it re-runs members' checks before marking steps done. Turn off for a manager that only coordinates: another member validates instead.",
+                              isOn: $bot.checksGoalWorkItself)
                 }
+                .padding(.top, 10)
 
-                CollapsibleSection("Model", summary: bot.selectedModel.isEmpty ? "Not chosen" : bot.selectedModel, symbol: "cpu", storageKey: "bot.model") {
+                SettingsGroupHeader(title: "Model", symbol: "cpu", detail: "Which model answers, a fallback for when it can't be reached, and run limits")
+                CollapsibleSection("Main model, fallback and limits", summary: bot.selectedModel.isEmpty ? "Not chosen" : bot.selectedModel, symbol: "slider.horizontal.3", storageKey: "bot.model") {
                 Card {
                     PickerRow(
                         title: "Provider",
@@ -658,16 +385,297 @@ struct BotSettingsTab: View {
                             .themedField()
                             .frame(width: 110)
                     }
-                    CardDivider()
-                    ToggleRow(title: "Checks submitted work itself",
-                              subtitle: "When this bot owns a group goal, it re-runs members' checks before marking steps done. Turn off for a manager that only coordinates: another member validates instead.",
-                              isOn: $bot.checksGoalWorkItself)
                 }
                 .help(bot.isBusy
                     ? "A run already going keeps its limits; the next one uses these."
                     : "Raise this if you've selected several skills — the whole system prompt resends every turn, "
                     + "so a large one burns through the token budget in a handful of turns.")
                 }
+
+                SettingsGroupHeader(title: "Computer", symbol: "desktopcomputer", detail: "This bot's own Linux VM, and what it may run there without asking")
+                Card {
+                    SettingRow(
+                        bot.handle.map { "shellhouse-vm-\($0.id)" } ?? "Not running",
+                        subtitle: "This bot's own private Linux VM. Its files and installed packages are not visible to any other bot."
+                    ) {
+                        Image(systemName: "desktopcomputer").foregroundStyle(bot.sandbox == nil ? Color.secondary : Theme.positive)
+                    }
+                }
+
+                ExpandableCard("Shell permissions", summary: "\(bot.sessionAllowedBinaries.count) session · \(bot.globalAllowedBinaries.count) always · \(bot.blanketShellScopes.count) all-shell", symbol: "lock.shield") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(bot.blanketShellScopes, id: \.self) { scope in
+                            HStack {
+                                Text("ALL shell commands").font(.system(size: 13, design: .monospaced))
+                                Text(blanketBadge(scope))
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Theme.warning)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Theme.warning.opacity(0.18), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                Spacer()
+                                Button("Revoke") { Task { await bot.revokeAllShell(scope: scope) } }
+                                    .buttonStyle(.compactPill)
+                            }
+                        }
+                        if bot.sessionAllowedBinaries.isEmpty && bot.globalAllowedBinaries.isEmpty && bot.blanketShellScopes.isEmpty {
+                            Text("Nothing always-allowed yet — approve a run_shell command and choose "
+                                + "\"Always allow…\" to add one.")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(bot.sessionAllowedBinaries, id: \.self) { binary in
+                            permissionRow(binary, scope: .session, badge: "session")
+                        }
+                        ForEach(bot.globalAllowedBinaries, id: \.self) { binary in
+                            permissionRow(binary, scope: .global, badge: "always")
+                        }
+                    }
+                }
+                .task { await bot.refreshPermissions() }
+                .padding(.top, 12)
+
+
+                SettingsGroupHeader(title: "Memory and work", symbol: "brain", detail: "What it remembers, what it's tracking, and what it does on a schedule")
+                ExpandableCard("Memory", summary: "\(bot.memories.count) notes", symbol: "brain") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Notes this bot keeps — from its own `remember` tool during a "
+                            + "conversation, or added here by hand. Pinned and high-importance notes go in every prompt; "
+                            + "the rest appear when relevant to a message.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+
+                        if !bot.memories.isEmpty {
+                            let model = ModelTiers.embeddingModel
+                            Text(model.isEmpty
+                                 ? "Search is by keywords. Pick an embedding model in Settings › Fast model to also search by meaning."
+                                 : "\(bot.memoriesIndexed) of \(bot.memories.count) notes indexed for meaning (\(model)).")
+                                .font(.system(size: 12)).foregroundStyle(.tertiary)
+                        }
+                        if bot.memories.isEmpty {
+                            Text("Nothing remembered yet.")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(Array(bot.memoryBook.entries.enumerated()), id: \.element.id) { index, entry in
+                            HStack(alignment: .top, spacing: 8) {
+                                Button {
+                                    bot.setMemoryPinned(index, !entry.pinned)
+                                } label: {
+                                    Image(systemName: entry.pinned ? "pin.fill" : "pin")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(entry.pinned ? Theme.accent : .secondary)
+                                .help(entry.pinned ? "Pinned: always in this bot's core notes" : "Pin: always include in this bot's core notes")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.text).font(.system(size: 14)).textSelection(.enabled)
+                                    Text("importance \(String(repeating: "●", count: entry.importance))\(String(repeating: "○", count: 5 - entry.importance))"
+                                        + (entry.useCount > 0 ? " · used \(entry.useCount)×" : "") + " · \(entry.source)")
+                                        .font(.system(size: 11)).foregroundStyle(.tertiary)
+                                }
+                                Spacer()
+                                Menu {
+                                    ForEach((1...5).reversed(), id: \.self) { level in
+                                        Button("Importance \(level)") { bot.setMemoryImportance(index, level) }
+                                    }
+                                } label: { Image(systemName: "slider.horizontal.3") }
+                                    .menuStyle(.borderlessButton).fixedSize().help("Set how important this note is")
+                                Button {
+                                    bot.removeMemory(at: IndexSet(integer: index))
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        HStack {
+                            TextField("Add an instruction…", text: $newMemoryText)
+                                .themedField()
+                                .onSubmit { addMemory() }
+                            Button("Add") { addMemory() }
+                                .disabled(newMemoryText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                        HStack {
+                            Button("Tidy up") {
+                                let report = bot.consolidateMemories(force: true)
+                                tidyNote = report.isEmpty ? "Nothing to tidy."
+                                    : "Merged \(report.merged.count) near-duplicate\(report.merged.count == 1 ? "" : "s"), archived \(report.archived.count) stale note\(report.archived.count == 1 ? "" : "s")."
+                            }
+                            .help("Merge near-duplicate notes and archive old, never-used, low-importance ones. Nothing is deleted outright.")
+                            if let tidyNote { Text(tidyNote).font(.system(size: 12)).foregroundStyle(.secondary) }
+                        }
+                    }
+                }
+                .padding(.top, 12)
+
+                ExpandableCard("Tasks", summary: "\(bot.tasks.count) open", symbol: "checklist") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("One-shot tasks this bot is carrying — from its own remember_task tool, or added "
+                            + "here by hand. Unlike Memory, these are meant to be removed once done: this bot's "
+                            + "own complete_task tool clears them, or remove one yourself below. They follow "
+                            + "it into a group turn or a delegation, which otherwise have no access to this "
+                            + "chat's history.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+
+                        if bot.tasks.isEmpty {
+                            Text("Nothing in progress.")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(Array(bot.tasks.enumerated()), id: \.offset) { index, task in
+                            HStack(alignment: .top) {
+                                Text(task.text).font(.system(size: 14)).textSelection(.enabled)
+                                Spacer()
+                                Button {
+                                    bot.removeTask(at: IndexSet(integer: index))
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        HStack {
+                            TextField("Add a task…", text: $newTaskText)
+                                .themedField()
+                                .onSubmit { addTask() }
+                            Button("Add") { addTask() }
+                                .disabled(newTaskText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                    }
+                }
+                .padding(.top, 12)
+
+                ExpandableCard("Routines", summary: "\(bot.routines.count)", symbol: "clock.arrow.circlepath") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Time-based triggers that queue a message to this bot on their own — added here, "
+                            + "or by the bot itself via its create_routine tool. A routine can post into a "
+                            + "group chat instead of this one, if this bot is already a member of one.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+
+                        if bot.routines.isEmpty {
+                            Text("No routines yet.")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(Array(bot.routines.enumerated()), id: \.offset) { index, routine in
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(routine.schedule.summary).font(.system(size: 14, weight: .semibold))
+                                        if let groupID = routine.targetGroupID {
+                                            Text("→ \(groupChats.first { $0.id == groupID }?.name ?? "deleted group")")
+                                                .font(.system(size: 12))
+                                                .foregroundStyle(.secondary)
+                                                .padding(.horizontal, 6)
+                                                .background(Theme.chip, in: Capsule())
+                                        }
+                                    }
+                                    Text(routine.instruction)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                                Spacer()
+                                Button {
+                                    bot.runRoutineNow(id: routine.id)
+                                } label: {
+                                    Image(systemName: "play.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .help("Run now (doesn't change its schedule)")
+                                .disabled(bot.sandbox == nil)
+                                Button {
+                                    beginEditingRoutine(routine)
+                                } label: {
+                                    Image(systemName: "pencil.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                Button {
+                                    if editingRoutineID == routine.id { cancelEditingRoutine() }
+                                    bot.removeRoutine(at: IndexSet(integer: index))
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                            }
+                            .padding(8)
+                            .background(
+                                editingRoutineID == routine.id ? Theme.accent.opacity(0.14) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            )
+                        }
+
+                        Divider().overlay(Theme.hairline)
+
+                        if editingRoutineID != nil {
+                            Text("Editing routine").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                        }
+
+                        TextField("What should it do when it fires?", text: $newRoutineInstruction)
+                            .themedField()
+
+                        Picker("Schedule", selection: $newRoutineScheduleKind) {
+                            ForEach(RoutineScheduleKind.allCases) { kind in
+                                Text(kind.label).tag(kind)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+
+                        switch newRoutineScheduleKind {
+                        case .once:
+                            DatePicker(
+                                "At", selection: $newRoutineOnceDate, in: Date()...,
+                                displayedComponents: [.date, .hourAndMinute]
+                            )
+                        case .daily:
+                            DatePicker("At", selection: $newRoutineDailyTime, displayedComponents: [.hourAndMinute])
+                        case .interval:
+                            HStack {
+                                Text("Every")
+                                TextField("30", value: $newRoutineIntervalMinutes, format: .number)
+                                    .themedField()
+                                    .frame(width: 70)
+                                Text("minutes")
+                            }
+                        }
+
+                        if !eligibleGroups.isEmpty {
+                            Picker("Post in", selection: $newRoutineTargetGroupID) {
+                                Text("This chat").tag(String?.none)
+                                ForEach(eligibleGroups) { group in
+                                    Text(group.name).tag(String?.some(group.id))
+                                }
+                            }
+                        }
+
+                        HStack {
+                            Button(editingRoutineID != nil ? "Save changes" : "Add routine") {
+                                if editingRoutineID != nil {
+                                    saveRoutineEdit()
+                                } else {
+                                    addRoutine()
+                                }
+                            }
+                            .buttonStyle(.primaryPill)
+                            .disabled(newRoutineInstruction.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                            if editingRoutineID != nil {
+                                Button("Cancel") { cancelEditingRoutine() }
+                            }
+                        }
+                    }
+                }
+
             }
             .padding(.bottom, 8)
         }
@@ -683,6 +691,7 @@ struct BotSettingsTab: View {
 
     private var identitySection: some View {
         VStack(alignment: .leading, spacing: 0) {
+            SettingsGroupHeader(title: "Identity", symbol: "person.crop.circle", detail: "How this bot appears in the sidebar and in chats")
             BotAvatar(colorHex: bot.colorHex, style: AvatarStyle(rawValue: bot.avatarStyle) ?? .blob, size: 96)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)

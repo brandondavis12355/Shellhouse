@@ -162,34 +162,26 @@ struct PickerRow<Value: Hashable>: View {
 struct ExpandableCard<Content: View>: View {
     let title: String
     var summary: String?
-    @State private var isExpanded: Bool
+    var symbol: String?
+    private let storageKey: String
+    private let startsExpanded: Bool
     private let content: Content
 
-    init(_ title: String, summary: String? = nil, startsExpanded: Bool = false, @ViewBuilder content: () -> Content) {
+    /// The same outlined, collapsible group as `CollapsibleSection` (so every expandable part of the app looks
+    /// alike), with its contents on one card. `storageKey` defaults to the title.
+    init(_ title: String, summary: String? = nil, symbol: String? = nil, storageKey: String? = nil,
+         startsExpanded: Bool = false, @ViewBuilder content: () -> Content) {
         self.title = title
         self.summary = summary
-        self._isExpanded = State(initialValue: startsExpanded)
+        self.symbol = symbol
+        self.storageKey = storageKey ?? "card." + title.lowercased().replacingOccurrences(of: " ", with: "-")
+        self.startsExpanded = startsExpanded
         self.content = content()
     }
 
     var body: some View {
-        Card {
-            Button {
-                withAnimation(.easeOut(duration: 0.18)) { isExpanded.toggle() }
-            } label: {
-                SettingRow(title) {
-                    HStack(spacing: 8) {
-                        if let summary { Text(summary).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(1) }
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            if isExpanded {
-                CardDivider()
+        CollapsibleSection(title, summary: summary, symbol: symbol, storageKey: storageKey, startsExpanded: startsExpanded) {
+            Card {
                 VStack(alignment: .leading, spacing: 10) { content }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -260,11 +252,12 @@ struct CollapsibleSection<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let content: Content
 
-    init(_ title: String, summary: String? = nil, symbol: String? = nil, storageKey: String, @ViewBuilder content: () -> Content) {
+    init(_ title: String, summary: String? = nil, symbol: String? = nil, storageKey: String, startsExpanded: Bool = false,
+         @ViewBuilder content: () -> Content) {
         self.title = title
         self.summary = summary
         self.symbol = symbol
-        self._isExpanded = AppStorage(wrappedValue: false, "settings.section.\(storageKey).expanded")
+        self._isExpanded = AppStorage(wrappedValue: startsExpanded, "settings.section.\(storageKey).expanded")
         self.content = content()
     }
 

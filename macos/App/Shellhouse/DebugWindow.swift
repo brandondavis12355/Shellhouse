@@ -304,7 +304,9 @@ struct DebugConsoleWindow: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(Theme.card, in: RoundedRectangle(cornerRadius: 8))
-            .frame(maxWidth: 420)
+            // A definite width range: an open-ended one made AppKit's text field log min/max conflicts on every layout.
+            .frame(minWidth: 200, idealWidth: 320, maxWidth: 420)
+            .fixedSize(horizontal: false, vertical: true)
             Text("\(filtered.count) of \(log.entries.count)").font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary)
             Spacer()
             Toggle("Follow", isOn: $follow).toggleStyle(.checkbox).help("Keep scrolled to the newest entry")

@@ -14,6 +14,12 @@
 #   4. Prepares the app's settings (host, user, manager token) in ~/.config/shellhouse, readable only by you.
 #      If Shellhouse is already installed, hands them over now; otherwise ./build.sh does it after installing.
 #
+# Run it again with the same box to update it: nothing is overwritten (its .env and token stay, the image is rebuilt).
+# Run it with a NEW box to move to it (a changeover): everything in the app on this Mac (settings, bots, groups,
+# conversations, memories) stays as it is, and only the host it uses changes. It also offers to bring the old box's
+# .env options and each bot's workspace files over. The old box is left untouched; remove it later with
+# ./uninstall.sh --host OLD.
+#
 # Options:
 #   --host ADDR           the Linux box's IP address or hostname
 #   --user NAME           SSH user on the box (default: your Mac user name)
@@ -52,15 +58,50 @@ printf '%sShellhouse — Linux host setup%s\n' "$C_BOLD" "$C_RESET"
 load_state
 
 step "Which Linux box?"
+SAVED_HOST="$SHELLHOUSE_HOST"; SAVED_USER="$SHELLHOUSE_USER"
+[ -n "$SAVED_HOST" ] && info "Shellhouse currently uses $SAVED_USER@$SAVED_HOST. Enter a different box to move to it."
 SHELLHOUSE_HOST="${HOST_ARG:-$(ask "IP address or hostname of the Linux box" "${SHELLHOUSE_HOST:-}")}"
 valid_host "$SHELLHOUSE_HOST" || die "\"$SHELLHOUSE_HOST\" doesn't look like an IP address or hostname."
 SHELLHOUSE_USER="${USER_ARG:-$(ask "SSH user on $SHELLHOUSE_HOST" "${SHELLHOUSE_USER:-$(id -un)}")}"
 valid_user "$SHELLHOUSE_USER" || die "\"$SHELLHOUSE_USER\" doesn't look like a Linux user name."
+
+# A changeover: a different box than before (or one a previous, unfinished changeover was moving to).
+if [ -n "$SAVED_HOST" ] && { [ "$SAVED_HOST" != "$SHELLHOUSE_HOST" ] || [ "$SAVED_USER" != "$SHELLHOUSE_USER" ]; }; then
+  SHELLHOUSE_PREV_HOST="$SAVED_HOST"; SHELLHOUSE_PREV_USER="$SAVED_USER"
+fi
+CHANGEOVER=0
+if [ -n "${SHELLHOUSE_PREV_HOST:-}" ] && [ "$SHELLHOUSE_PREV_HOST@$SHELLHOUSE_PREV_USER" != "$SHELLHOUSE_HOST@$SHELLHOUSE_USER" ]; then
+  CHANGEOVER=1
+  step "Changeover: $SHELLHOUSE_PREV_USER@$SHELLHOUSE_PREV_HOST → $SHELLHOUSE_USER@$SHELLHOUSE_HOST"
+  info "Everything in the app on this Mac stays: settings, bots, groups, conversations and memories."
+  info "Only the box it uses changes. $SHELLHOUSE_PREV_HOST itself isn't changed."
+else
+  SHELLHOUSE_PREV_HOST=""; SHELLHOUSE_PREV_USER=""
+  [ "$SAVED_HOST" = "$SHELLHOUSE_HOST" ] && info "Same box as before: updating it in place (its .env and manager token are kept)."
+fi
 save_state
 
 step "Connecting"
 ssh_connect
-trap ssh_close EXIT
+NEW_TARGET="$SSH_TARGET"
+trap 'ssh_close; [ -n "${OLD_TARGET:-}" ] && ssh "${SSH_OPTS[@]}" -O exit "$OLD_TARGET" >/dev/null 2>&1; true' EXIT
+
+# The old box, for a changeover: reachable (the password is asked once if needed), or the move goes on without it.
+OLD_TARGET=""; CARRY_ENV=0; CARRY_VOLUMES=0
+old_run() { ssh "${SSH_OPTS[@]}" "$OLD_TARGET" "$@"; }
+if [ "$CHANGEOVER" = "1" ]; then
+  step "Checking the old box"
+  if ssh "${SSH_OPTS[@]}" "$SHELLHOUSE_PREV_USER@$SHELLHOUSE_PREV_HOST" true 2>/dev/null; then
+    OLD_TARGET="$SHELLHOUSE_PREV_USER@$SHELLHOUSE_PREV_HOST"
+    ok "Reached $OLD_TARGET"
+    old_run "test -f ~/$SHELLHOUSE_REMOTE_DIR/.env" 2>/dev/null \
+      && confirm "Bring its .env options over (sudo in bot VMs, resource limits…)? Its token stays behind; the new box gets its own." Y \
+      && CARRY_ENV=1
+    confirm "Copy each bot's workspace files (/workspace in its VM) over? Installed packages aren't copied." Y && CARRY_VOLUMES=1
+  else
+    warn "Couldn't reach $SHELLHOUSE_PREV_HOST. The new box starts fresh: bots get new, empty VMs. The app's settings still stay."
+  fi
+fi
 
 step "Copying the server side to ~/$SHELLHOUSE_REMOTE_DIR on the host"
 # Only what the host runs. The host's own .env, seed folders and manager socket are never overwritten.
@@ -71,8 +112,40 @@ rsync -az --delete \
   -e "ssh ${SSH_OPTS[*]}" "$REPO/" "$SSH_TARGET:$SHELLHOUSE_REMOTE_DIR/"
 ok "Copied"
 
+if [ "$CARRY_ENV" = "1" ]; then
+  # Copied box to box through this Mac without being printed; host-setup.sh applies it and deletes it.
+  old_run "grep -E '^[A-Z_][A-Z0-9_]*=' ~/$SHELLHOUSE_REMOTE_DIR/.env" \
+    | ssh_run "umask 077; cat > ~/$SHELLHOUSE_REMOTE_DIR/.env.carryover" \
+    && ok "Brought the old box's options along (applied during setup)" || warn "Couldn't copy the old box's .env options."
+fi
+
 step "Setting up the host"
 ssh_tty "bash ~/$SHELLHOUSE_REMOTE_DIR/scripts/host-setup.sh ${HOST_FLAGS[*]:-}" || die "Host setup failed (see above). Fix it and run ./initial_setup.sh again; it picks up where it left off."
+
+if [ "$CARRY_VOLUMES" = "1" ]; then
+  step "Copying the bots' workspaces from $SHELLHOUSE_PREV_HOST"
+  old_run "cat > /tmp/shellhouse-host-volume.sh && chmod 700 /tmp/shellhouse-host-volume.sh" < "$REPO/scripts/host-volume.sh"
+  VOLUMES="$(old_run "bash /tmp/shellhouse-host-volume.sh list" 2>/dev/null || true)"
+  if [ -z "$VOLUMES" ]; then
+    info "No bot workspaces on the old box."
+  else
+    info "Files are copied as they are now; a bot still working on the old box may change some meanwhile."
+    copied=0; skipped=0; failed=0
+    for vol in $VOLUMES; do
+      if old_run "bash /tmp/shellhouse-host-volume.sh export $vol" \
+         | ssh_run "bash ~/$SHELLHOUSE_REMOTE_DIR/scripts/host-volume.sh import $vol" 2>"$SHELLHOUSE_STATE_DIR/volume.err"; then
+        copied=$((copied + 1)); ok "$vol"
+      elif grep -q "already has files" "$SHELLHOUSE_STATE_DIR/volume.err"; then
+        skipped=$((skipped + 1)); info "$vol is already on the new box; left as is"
+      else
+        failed=$((failed + 1)); warn "$vol didn't copy: $(head -1 "$SHELLHOUSE_STATE_DIR/volume.err")"
+      fi
+    done
+    rm -f "$SHELLHOUSE_STATE_DIR/volume.err"
+    ok "Workspaces: $copied copied, $skipped already there, $failed failed"
+  fi
+  old_run "rm -f /tmp/shellhouse-host-volume.sh" || true
+fi
 
 step "Preparing the app's settings"
 # The token is read straight into this file; it is never printed or put on a command line.
@@ -106,11 +179,18 @@ EOF
 unset TOKEN
 chmod 600 "$SHELLHOUSE_PENDING_SETTINGS"
 ok "Saved for the app (readable only by you; deleted once the app takes it)"
+SHELLHOUSE_PREV_HOST=""; SHELLHOUSE_PREV_USER=""; save_state
 
 if app_installed; then
   hand_off_to_app
   step "Done"
-  info "Shellhouse is connected to $SHELLHOUSE_HOST. Add a bot from the sidebar's + menu."
+  if [ "$CHANGEOVER" = "1" ]; then
+    info "Shellhouse now uses $SHELLHOUSE_HOST, with all of its settings, bots and groups as they were."
+    info "$SHELLHOUSE_PREV_HOST is untouched. Once everything works, you can remove Shellhouse from it:"
+    info "  ./uninstall.sh --host $SHELLHOUSE_PREV_HOST --user $SHELLHOUSE_PREV_USER"
+  else
+    info "Shellhouse is connected to $SHELLHOUSE_HOST. Add a bot from the sidebar's + menu."
+  fi
 else
   step "Host done. Next: build and install the app"
   info "Run:  ./build.sh"

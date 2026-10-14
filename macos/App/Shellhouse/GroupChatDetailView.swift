@@ -336,9 +336,7 @@ struct GroupChatSettingsView: View {
     var onDelete: () -> Void
     @Environment(\.dismiss) private var dismiss
 
-    // Edits are made on a draft and only applied by Save; Cancel (or Esc)
-    // throws them away. (Sharing and Delete act immediately — they're
-    // actions on the relay / the group itself, not fields.)
+    // Every change applies as you make it (the group is saved when the sheet closes); Delete and Clear ask first.
     @State private var name = ""
     @State private var memberIDs: [String] = []
     @State private var coordinatorBotID: String?
@@ -361,6 +359,7 @@ struct GroupChatSettingsView: View {
     var body: some View {
         SheetScaffold(title: "Group settings", onClose: { dismiss() }, content: {
             VStack(alignment: .leading, spacing: 0) {
+                SettingsGroupHeader(title: "Group", symbol: "bubble.left.and.bubble.right", detail: "Its name, as everyone in it sees it")
                 AvatarCluster(members: selectedMembers, size: 150)
                     .frame(maxWidth: .infinity)
                     .padding(.top, 8)
@@ -375,7 +374,8 @@ struct GroupChatSettingsView: View {
                         .padding(.horizontal, 16)
                 }
 
-                SectionLabel("Members (\(memberIDs.count)/\(GroupChatSession.maxMembers))")
+                SettingsGroupHeader(title: "Members", symbol: "person.2",
+                                    detail: "\(memberIDs.count) of up to \(GroupChatSession.maxMembers). Each member works on its own Linux VM.")
                 Card {
                     ForEach(Array(allBots.enumerated()), id: \.element.id) { index, bot in
                         if index > 0 { CardDivider(inset: 58) }
@@ -404,9 +404,8 @@ struct GroupChatSettingsView: View {
                         .padding(.vertical, 9)
                     }
                 }
-                SectionFooter("Group Chats can have up to \(GroupChatSession.maxMembers) members.")
 
-                SectionLabel("Goals")
+                SettingsGroupHeader(title: "Goals", symbol: "target", detail: "Who runs a goal by default, and when an idle goal pauses or closes")
                 Card {
                     SettingRow("Coordinator", subtitle: "Owns goals by default") {
                         Picker("", selection: $coordinatorBotID) {
@@ -427,13 +426,13 @@ struct GroupChatSettingsView: View {
                     }
                 }
 
-                SectionLabel("Friends")
+                SettingsGroupHeader(title: "Friends", symbol: "person.badge.plus", detail: "Share this group with friends through your relay")
                 Card {
                     GroupSharingSection(group: group)
                         .padding(16)
                 }
-                SectionFooter("Sharing takes effect immediately, without Save.")
 
+                SettingsGroupHeader(title: "Danger zone", symbol: "exclamationmark.triangle", detail: "Can't be undone")
                 Card {
                     Button { showingClearConfirm = true } label: {
                         SettingRow(
@@ -450,18 +449,21 @@ struct GroupChatSettingsView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.top, 22)
             }
         }, footer: {
             SheetFooter {
-                if hasChanges { Text("Unsaved changes").font(.system(size: 13)).foregroundStyle(Theme.warning) }
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { save() }
+                if trimmedName.isEmpty { Text("A group needs a name").font(.system(size: 13)).foregroundStyle(Theme.warning) }
+                Button("Done") { dismiss() }
                     .buttonStyle(.primaryPill)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!hasChanges || trimmedName.isEmpty)
             }
         })
+        // Applied as you go.
+        .onChange(of: name) { _, _ in apply() }
+        .onChange(of: memberIDs) { _, _ in apply() }
+        .onChange(of: coordinatorBotID) { _, _ in apply() }
+        .onChange(of: stallLimit) { _, _ in apply() }
+        .onChange(of: confirmTimeoutMinutes) { _, _ in apply() }
         .frame(width: 520, height: 700)
         .onAppear(perform: loadDraft)
         .alert("Clear this conversation?", isPresented: $showingClearConfirm) {
@@ -490,8 +492,9 @@ struct GroupChatSettingsView: View {
         confirmTimeoutMinutes = group.confirmTimeoutMinutes
     }
 
-    private func save() {
-        group.name = trimmedName
+    private func apply() {
+        guard hasChanges else { return }
+        if !trimmedName.isEmpty { group.name = trimmedName }
         let current = group.memberBotIDs
         for id in current where !memberIDs.contains(id) { group.removeMember(id) }
         for id in memberIDs where !current.contains(id) {
@@ -501,6 +504,5 @@ struct GroupChatSettingsView: View {
         group.coordinatorBotID = coordinatorBotID.flatMap { memberIDs.contains($0) ? $0 : nil }
         group.stallLimit = stallLimit
         group.confirmTimeoutMinutes = confirmTimeoutMinutes
-        dismiss()
     }
 }

@@ -146,6 +146,19 @@ set_env() {
 set_env SANDBOX_ALLOW_SUDO "$ALLOW_SUDO"
 DGID="$(stat -c '%g' /var/run/docker.sock)"
 set_env DOCKER_GID "$DGID"
+# A changeover from another box: its options come along (initial_setup.sh copied them to .env.carryover), but not
+# what is this machine's own (the token, the docker group, the socket owner, the relay's address).
+if [ -f .env.carryover ]; then
+  carried=0
+  while IFS= read -r line; do
+    [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    case "$key" in MANAGER_TOKEN|DOCKER_GID|MANAGER_SOCKET_UID|MANAGER_SOCKET_GID|MANAGER_SOCKET_HOST_DIR|RELAY_BIND|EGRESS_ADMIN_TOKEN|SECRETS_KEY) continue ;; esac
+    set_env "$key" "$value"; carried=$((carried + 1))
+  done < .env.carryover
+  rm -f .env.carryover
+  ok "Kept $carried option(s) from the previous host's .env"
+fi
 mkdir -p sandbox-manager-run
 chmod 600 .env
 ok "Wrote .env (manager token generated; it never leaves this host except to your Mac's Keychain)"
