@@ -60,3 +60,17 @@ final class GoalEditTests: XCTestCase {
         XCTAssertNil(h.steps[1].dependsOn, "ship no longer waits on the removed step")
     }
 }
+
+final class ChatImageStoreTests: XCTestCase {
+    func testOnlyRealImagesAreKeptAndIdsCannotEscape() throws {
+        // a 1x1 PNG
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")!
+        XCTAssertEqual(ChatImageStore.imageExtension(of: png), "png")
+        XCTAssertNil(ChatImageStore.imageExtension(of: Data("<html>not an image</html>".utf8)))
+        let id = try XCTUnwrap(ChatImageStore.save(png))
+        XCTAssertNotNil(ChatImageStore.url(for: id))
+        XCTAssertNil(ChatImageStore.url(for: "../../etc/passwd"))
+        XCTAssertNil(ChatImageStore.url(for: "../" + id))
+        try? FileManager.default.removeItem(at: ChatImageStore.url(for: id)!)
+    }
+}

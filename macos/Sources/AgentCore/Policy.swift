@@ -124,6 +124,7 @@ public enum Policy: Sendable {
         "propose_goal": .allow,
         "add_goal_step": .allow,
         "edit_goal_step": .allow,
+        "post_screenshot": .allow,
         "update_goal_step": .allow,
         "propose_goal_complete": .allow,
 

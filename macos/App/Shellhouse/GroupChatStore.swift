@@ -56,6 +56,8 @@ struct GroupMessage: Codable, Identifiable {
     var speakerName: String
     var text: String
     var timestamp: Date = Date()
+    /// Images posted with this message (`post_screenshot`), as `ChatImageStore` ids. Optional so old transcripts decode.
+    var imageIDs: [String]?
     /// App-generated notice (goal set, step done, paused…), not a member
     /// or the user. Optional so older transcripts still decode.
     var isSystem: Bool?

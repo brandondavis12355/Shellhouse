@@ -208,6 +208,7 @@ struct TranscriptEntry: Codable {
     /// `.isTaskSummary`.
     var toolName: String?
     var isTaskSummary: Bool?
+    var imageIDs: [String]?
 }
 
 /// Persists one bot's conversation — read back on launch (`Bot`'s `init`s

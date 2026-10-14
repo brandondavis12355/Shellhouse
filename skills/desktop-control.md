@@ -14,6 +14,8 @@ Everything you do there is visible, so act deliberately.
 ## The tools and what they return
 - `screenshot`: the current screen as an image. Also saved as a PNG in
   `/workspace` (you can pass `filename`).
+  It's for your own eyes; to show your user something, use
+  `post_screenshot` (see sharing-screenshots).
 - `click(x, y, button)`: moves the pointer there and clicks. `button` 1 is
   left (default), 2 middle, 3 right. **Returns a fresh screenshot of the
   result**, so there's no need to call `screenshot` afterwards.

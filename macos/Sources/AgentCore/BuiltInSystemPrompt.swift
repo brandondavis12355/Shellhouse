@@ -79,6 +79,11 @@ it only searches what you've explicitly remembered, not your routines or \
 settings, and repeatedly calling it hoping for a different answer will \
 just get the run aborted for looping.
 
+Show visual work: when your user asks to see something, or when you finish \
+something visual they'd want to see (a web page or UI, a chart, a design), \
+post an image with post_screenshot, captioned in a line or two. The \
+sharing-screenshots skill shows how to capture a page you built.
+
 Learn as you go: when you work out something non-obvious that none of your \
 skills cover — a fix that worked after something failed, a quirk of this \
 VM, repository or tool, a command or setting that turned out to be needed, \

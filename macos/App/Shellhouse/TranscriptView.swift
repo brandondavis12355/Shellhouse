@@ -160,6 +160,7 @@ private struct MessageBubble: View {
                     ForEach(message.attachmentNames, id: \.self) { filename in
                         AttachmentCard(filename: filename, isImage: isImageFilename(filename))
                     }
+                    ForEach(message.imageIDs, id: \.self) { ChatImageView(imageID: $0) }
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 13)

@@ -89,7 +89,8 @@ public struct ToolRegistry: Sendable {
         onUpdateUser: (@Sendable (String) async -> [String: Any])? = nil,
         onAskHelpers: (@Sendable ([String]) async -> [String: Any])? = nil,
         onRequestCredentials: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
-        onGoalTool: (@Sendable (String, [String: AnyCodable]) async -> [String: Any])? = nil
+        onGoalTool: (@Sendable (String, [String: AnyCodable]) async -> [String: Any])? = nil,
+        onPostImage: (@Sendable (String, Data) async -> [String: Any])? = nil
     ) {
         var schemas = Self.buildSchemas()
         var executors = Self.buildExecutors()
@@ -261,8 +262,56 @@ public struct ToolRegistry: Sendable {
                 return await onPostToGroup(groupName, message)
             }
         }
+        if let onPostImage {
+            schemas.append(Self.postScreenshotSchema)
+            executors["post_screenshot"] = { sandboxID, sandbox, arguments, _ in
+                let caption = (arguments["caption"]?.asString ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let data: Data
+                if let path = arguments["path"]?.asString, !path.isEmpty {
+                    guard let file = try? await sandbox.readFile(sandboxID, path: path, maxBytes: ChatImageStore.maxBytes) else {
+                        return ["error": "Couldn't read '\(path)' on your VM. Check the path with list_files."]
+                    }
+                    data = file
+                } else {
+                    guard let shot = await ToolRegistry.captureScreenshotData(sandboxID: sandboxID, sandbox: sandbox) else {
+                        return ["error": "The screenshot failed (scrot) or couldn't be read back."]
+                    }
+                    data = shot
+                }
+                guard ChatImageStore.imageExtension(of: data) != nil else {
+                    return ["error": "That file isn't a PNG, JPEG, GIF or WebP image."]
+                }
+                return await onPostImage(caption, data)
+            }
+        }
         self.schemas = schemas
         self.executors = executors
+    }
+
+    private static var postScreenshotSchema: ToolSchema {
+        ToolSchema(
+            name: "post_screenshot",
+            description: "Post an image into the chat you're working in, so your user (and the group) can see it: a "
+                + "screenshot of your VM's screen right now, or an image file from your VM (a chart, a rendered page, a "
+                + "design). Use it when seeing beats describing: a UI you built, a result, an error on screen. The caption "
+                + "is posted with it.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "caption": ["type": "string", "description": "One or two lines saying what the image shows."],
+                    "path": ["type": "string", "description": "Optional: an image file on your VM (PNG, JPEG, GIF, WebP). Leave out to capture the screen."],
+                ],
+                "required": ["caption"],
+            ]
+        )
+    }
+
+    /// The screen as PNG bytes, full quality (for people to look at, unlike `captureScreenshot`'s copy for the model).
+    private static func captureScreenshotData(sandboxID: String, sandbox: any SandboxProvider) async -> Data? {
+        let filename = ".shellhouse/screens/shot-\(Int(Date().timeIntervalSince1970)).png"
+        guard let captured = try? await sandbox.exec(sandboxID, command: "mkdir -p /workspace/.shellhouse/screens && scrot \(shellQuote("/workspace/" + filename))", timeout: 20, env: nil),
+              captured.exitCode == 0 else { return nil }
+        return try? await sandbox.readFile(sandboxID, path: filename, maxBytes: ChatImageStore.maxBytes)
     }
 
     private static var useSkillSchema: ToolSchema {

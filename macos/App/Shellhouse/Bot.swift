@@ -35,6 +35,8 @@ struct DisplayMessage: Identifiable {
     /// whatever the model already said just before it, so `MessageBubble`
     /// collapses it by default too. See `ChatMessage.isTaskSummary`.
     var isTaskSummary: Bool = false
+    /// Images a bot posted with this message (`post_screenshot`), as `ChatImageStore` ids.
+    var imageIDs: [String] = []
 }
 
 /// Which run currently holds a bot's run lock — `pendingApproval` is a
@@ -518,7 +520,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 DisplayMessage(
                     role: $0.role, text: $0.text, attachmentNames: $0.attachmentNames ?? [],
                     interBotPeerID: $0.interBotPeerID, interBotPeerName: $0.interBotPeerName,
-                    timestamp: $0.timestamp ?? Date(), toolName: $0.toolName, isTaskSummary: $0.isTaskSummary ?? false
+                    timestamp: $0.timestamp ?? Date(), toolName: $0.toolName, isTaskSummary: $0.isTaskSummary ?? false,
+                    imageIDs: $0.imageIDs ?? []
                 )
             }
             // Saved before summaries were judged per turn: show any whose answer was never shown otherwise.
@@ -562,7 +565,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 TranscriptEntry(
                     role: $0.role, text: $0.text, attachmentNames: $0.attachmentNames.isEmpty ? nil : $0.attachmentNames,
                     interBotPeerID: $0.interBotPeerID, interBotPeerName: $0.interBotPeerName, timestamp: $0.timestamp,
-                    toolName: $0.toolName, isTaskSummary: $0.isTaskSummary
+                    toolName: $0.toolName, isTaskSummary: $0.isTaskSummary, imageIDs: $0.imageIDs.isEmpty ? nil : $0.imageIDs
                 )
             }
             TranscriptStore.saveInBackground(id: botID, entries)
@@ -629,7 +632,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             TranscriptEntry(
                 role: $0.role, text: $0.text, attachmentNames: $0.attachmentNames.isEmpty ? nil : $0.attachmentNames,
                 interBotPeerID: $0.interBotPeerID, interBotPeerName: $0.interBotPeerName, timestamp: $0.timestamp,
-                toolName: $0.toolName, isTaskSummary: $0.isTaskSummary
+                toolName: $0.toolName, isTaskSummary: $0.isTaskSummary, imageIDs: $0.imageIDs.isEmpty ? nil : $0.imageIDs
             )
         })
     }
@@ -1692,6 +1695,26 @@ final class Bot: Identifiable, @unchecked Sendable {
         return ["posted": true]
     }
 
+    /// `post_screenshot` in the 1:1 chat: the image appears as this bot's message right away.
+    func postImageToOwnChat(caption: String, data: Data) -> [String: Any] {
+        guard let imageID = ChatImageStore.save(data) else { return ["error": "Couldn't save that image (too big, or not an image)."] }
+        displayMessages.append(DisplayMessage(role: .assistant, text: caption, imageIDs: [imageID]))
+        streamingIndex = nil
+        persistTranscript()
+        hasUnread = true
+        return ["posted": true, "note": "The image is in the chat now. Don't describe it again at length."]
+    }
+
+    /// `post_screenshot` during a group turn: posted into that group as this bot's message.
+    func postImageToGroup(groupName: String, caption: String, data: Data) -> [String: Any] {
+        guard let group = botDirectory.group(named: groupName), group.memberBotIDs.contains(id) else {
+            return ["error": "No group named '\(groupName)' that you're in."]
+        }
+        guard let imageID = ChatImageStore.save(data) else { return ["error": "Couldn't save that image (too big, or not an image)."] }
+        group.postFromBot(self, text: caption, imageIDs: [imageID])
+        return ["posted": true, "group": group.name, "note": "The image is in the group chat now. Don't describe it again at length."]
+    }
+
     /// The `post_to_group` tool — posts `message` into a group this bot is
     /// already a member of, immediately and verbatim.
     func postToGroup(groupName: String, message: String) -> [String: Any] {
@@ -2081,7 +2104,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 return "Your reply stated specifics that appear in NONE of your tool output or the chat: "
                     + unsupported.joined(separator: ", ") + ". Verify each with a tool now, or leave it out, then call finish_task "
                     + "with the corrected reply. Never state unverified versions, paths, addresses or numbers."
-            }
+            },
+            imageGroupName: groupName
         )
         // Last resort: lines that still state unverified specifics are removed rather than posted as fact.
         if Reliability.isOn(.replyChecks), !outcome.failed, outcome.text != "[[silent]]", !outcome.text.hasPrefix("(stopped early") {
@@ -2281,7 +2305,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         allowBotMessaging: Bool = false,
         initialTaint: [TaintSource] = [],
         onDraft: (@MainActor (String?) -> Void)? = nil,
-        followUp: (@MainActor (IsolatedResult) async -> String?)? = nil
+        followUp: (@MainActor (IsolatedResult) async -> String?)? = nil,
+        imageGroupName: String? = nil
     ) async -> IsolatedResult {
         guard let sandbox, let handle else {
             return IsolatedResult(text: "\(name) has no running sandbox to work with right now.", failed: true)
@@ -2445,6 +2470,13 @@ final class Bot: Identifiable, @unchecked Sendable {
                             var arguments = arguments
                             arguments["_observations"] = AnyCodable(toolCallCounter.observations)
                             return await handler(name, arguments, toolCallCounter.value)
+                        }
+                    },
+                    onPostImage: imageGroupName.map { groupName in
+                        { [weak self] caption, data in
+                            await MainActor.run {
+                                self?.postImageToGroup(groupName: groupName, caption: caption, data: data) ?? ["error": "bot no longer available"]
+                            }
                         }
                     }
                 ),
@@ -3105,6 +3137,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                             guard let self else { return ["error": "bot no longer available"] }
                             let tainted = await self.runtime?.isTainted ?? false
                             return await self.requestCredentialsFromTool(arguments, untrusted: tainted)
+                        },
+                        onPostImage: { [weak self] caption, data in
+                            await MainActor.run { self?.postImageToOwnChat(caption: caption, data: data) ?? ["error": "bot no longer available"] }
                         }
                     )
                 let eventHandler: @Sendable (AgentRuntime.Event) -> Void = { [weak self] event in

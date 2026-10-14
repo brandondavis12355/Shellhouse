@@ -143,8 +143,13 @@ private struct GroupMessageBubble: View {
                     }
                     .padding(.leading, 6)
                 }
-                MentionPillText(text: message.text, mentionColors: mentionColors, fontSize: 16)
-                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 8) {
+                    if !message.text.isEmpty {
+                        MentionPillText(text: message.text, mentionColors: mentionColors, fontSize: 16)
+                            .textSelection(.enabled)
+                    }
+                    ForEach(message.imageIDs ?? [], id: \.self) { ChatImageView(imageID: $0) }
+                }
                     .padding(.horizontal, 18)
                     .padding(.vertical, 13)
                     .background(isUser ? Theme.userBubble : Theme.bubble)

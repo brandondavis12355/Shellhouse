@@ -325,6 +325,9 @@ final class GroupChatSession: Identifiable {
                     + message.text.replacingOccurrences(of: "\n", with: "\n    ")
             }
             var line = "\(message.speakerName): \(message.text)"
+            if let images = message.imageIDs, !images.isEmpty {
+                line += " [posted \(images.count == 1 ? "a screenshot" : "\(images.count) screenshots") in the chat]"
+            }
             if Reliability.isOn(.evidenceSharing), let evidence = message.evidence, !evidence.isEmpty {
                 line += "\n    (evidence from \(message.speakerName)'s own commands: \(String(evidence.prefix(400))))"
             }
@@ -776,8 +779,10 @@ final class GroupChatSession: Identifiable {
     /// Posts `text` as `bot` right now — the `post_to_group` tool's landing
     /// point. No model call: the bot already wrote the message. Members are
     /// woken, so anyone it @mentions actually responds.
-    func postFromBot(_ bot: Bot, text: String) {
-        displayMessages.append(GroupMessage(speakerBotID: bot.id, speakerName: bot.name, text: text))
+    func postFromBot(_ bot: Bot, text: String, imageIDs: [String] = []) {
+        var message = GroupMessage(speakerBotID: bot.id, speakerName: bot.name, text: text)
+        if !imageIDs.isEmpty { message.imageIDs = imageIDs }
+        displayMessages.append(message)
         persist()
         noteBotMessagePosted()
         notifyNewMessage(authorID: bot.id)
