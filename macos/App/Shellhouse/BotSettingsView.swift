@@ -587,18 +587,16 @@ struct BotSettingsTab: View {
                         TextField("200000", text: $bot.maxTokensText)
                             .themedField()
                             .frame(width: 110)
-                            .disabled(bot.isBusy)
                     }
                     CardDivider()
                     SettingRow("Max iterations") {
                         TextField("40", text: $bot.maxIterationsText)
                             .themedField()
                             .frame(width: 110)
-                            .disabled(bot.isBusy)
                     }
                 }
                 .help(bot.isBusy
-                    ? "Locked while this bot is working."
+                    ? "A run already going keeps its limits; the next one uses these."
                     : "Raise this if you've selected several skills — the whole system prompt resends every turn, "
                     + "so a large one burns through the token budget in a handful of turns.")
                 }

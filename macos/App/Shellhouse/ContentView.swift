@@ -257,6 +257,14 @@ struct ContentView: View {
                 defaultMaxTokens: $defaultMaxTokens,
                 defaultMaxIterations: $defaultMaxIterations,
                 onSkillsChanged: { for bot in bots { bot.refreshAvailableSkills() } },
+                onApplyDefaultsToAllBots: {
+                    for bot in bots {
+                        bot.maxIterationsText = defaultMaxIterations
+                        bot.maxTokensText = defaultMaxTokens
+                    }
+                    saveBots()
+                    defaultsWhenSettingsOpened = (defaultMaxIterations, defaultMaxTokens)
+                },
                 onHostChanged: {
                     // Give the new tunnel a few seconds, then re-boot any bot that
                     // never got its sandbox (boot() itself waits for the tunnel).

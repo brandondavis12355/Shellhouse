@@ -8,7 +8,10 @@ struct AppSettingsView: View {
     var onSkillsChanged: () -> Void = {}
     /// The Linux host's address was saved — bots that couldn't reach the
     /// sandbox before should try again.
+    /// Copies the defaults above onto every existing bot.
+    var onApplyDefaultsToAllBots: () -> Void = {}
     var onHostChanged: () -> Void = {}
+    @State private var appliedDefaults = false
     @Environment(\.dismiss) private var dismiss
 
     /// A singleton, not a `@Binding` threaded down from `ContentView` —
@@ -121,7 +124,17 @@ struct AppSettingsView: View {
                         TextField("40", text: $defaultMaxIterations).themedField().frame(width: 120)
                     }
                 }
-                SectionFooter("Used for new bots, and for every bot still on the old default when you close Settings. A bot you gave its own value in its settings keeps it.")
+                HStack {
+                    Button(appliedDefaults ? "Applied to all bots" : "Apply to all bots") {
+                        onApplyDefaultsToAllBots(); appliedDefaults = true
+                    }
+                    .disabled(appliedDefaults)
+                    Spacer()
+                }
+                .padding(.top, 4)
+                .onChange(of: defaultMaxIterations) { appliedDefaults = false }
+                .onChange(of: defaultMaxTokens) { appliedDefaults = false }
+                SectionFooter("Used for new bots, and for every bot still on the old default when you close Settings. Apply to all bots sets every existing bot, including ones you changed. A run already going keeps its limits; the next one uses the new ones.")
                 }
 
                 CollapsibleSection("Resource stats", storageKey: "resourceStats") {
