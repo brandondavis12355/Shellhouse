@@ -749,9 +749,12 @@ public actor AgentRuntime {
         if Reliability.isOn(.failureHints) { shown = ObservationPolicy.annotate(tool: call.name, observation: shown) }
         appendToolResult(name: call.name, observation: shown)
         onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(shown)))
+        let staleKey = Reliability.isOn(.loopGuards) ? staleKey(call, observation: observation) : nil
+        let alreadySeen = staleKey.map { seenResults.saw($0) } ?? false
         // Something changed on the machine (an install, a write, a command with side effects): checking again
-        // is now a different question, so earlier identical checks no longer count as a loop.
-        if !ObservationPolicy.isObservation(decision) {
+        // is now a different question, so earlier identical checks no longer count as a loop. Unless it printed
+        // exactly what it printed before (`git checkout` of the branch you're on): then nothing changed.
+        if !ObservationPolicy.isObservation(decision), !alreadySeen {
             callFingerprints.removeAll()
             lastResultKey = ""
             sameResultStreak = 0
@@ -761,8 +764,8 @@ public actor AgentRuntime {
         noteFailure(FailureCheck.kind(shown), key: call.name + FailureCheck.key(shown))
         Telemetry.recorder.toolRun(call.name, seconds: Date().timeIntervalSince(toolStarted), failed: FailureCheck.kind(shown) != .ok)
         let streak = noteResult(call, observation: observation)
-        if Reliability.isOn(.loopGuards), let key = staleKey(call, observation: observation) {
-            staleStreak = seenResults.saw(key) ? staleStreak + 1 : 0
+        if staleKey != nil {
+            staleStreak = alreadySeen ? staleStreak + 1 : 0
             if staleStreak == Self.staleNudgeAt {
                 messages.append(ChatMessage(
                     role: .user,

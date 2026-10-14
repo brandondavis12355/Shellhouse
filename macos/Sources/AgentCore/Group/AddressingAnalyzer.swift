@@ -154,7 +154,7 @@ public enum AddressingAnalyzer {
     }
 
     private static let statusPattern = try! NSRegularExpression(
-        pattern: #"(?<![\p{L}\p{N}])(?:stand[\s-]?ups?|daily scrum|status\s+(?:updates?|reports?|check)|your\s+status|check[\s-]?ins?|blockers?|progress\s+(?:update|report)|what\s+(?:are|have)\s+you\s+(?:you\s+)?(?:working\s+on|been\s+(?:working|doing)|done)|what(?:'s| is)\s+on\s+your\s+plate|what\s+did\s+you\s+(?:do|work\s+on)|report\s+in)(?![\p{L}\p{N}])"#,
+        pattern: #"(?<![\p{L}\p{N}])(?:stand[\s-]?ups?|daily scrum|status\s+(?:updates?|reports?|check)|your\s+status|check[\s-]?ins?|blockers?|progress\s+(?:update|report)|what\s+(?:are|have)\s+you\s+(?:you\s+)?(?:working\s+on|been\s+(?:working|doing)|done)|what(?:'s| is)\s+on\s+your\s+plate|what\s+did\s+you\s+(?:do|work\s+on)|report\s+in|how(?:'s| is| are)\s+(?:we|(?:the|our)\s+(?:goal|project|work|plan|progress|team)|progress)\s+(?:doing|going|looking|coming(?:\s+along)?|progressing)|how\s+far\s+along|where\s+are\s+we\s+(?:at|on|with)|what(?:'s| is)\s+the\s+(?:status|progress|latest)|any\s+(?:progress|updates?)\s+on|(?:goal|project)\s+status)(?![\p{L}\p{N}])"#,
         options: [.caseInsensitive]
     )
 

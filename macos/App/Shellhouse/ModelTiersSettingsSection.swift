@@ -171,3 +171,23 @@ struct ModelSchedulingSettingsSection: View {
         }
     }
 }
+
+/// A token-budget field with an Unlimited switch ("unlimited" is saved as the text, so it round-trips).
+struct TokenLimitField: View {
+    @Binding var text: String
+    var width: CGFloat = 110
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Toggle("Unlimited", isOn: Binding(
+                get: { Bot.isUnlimited(text) },
+                set: { text = $0 ? "unlimited" : "200000" }
+            ))
+            .toggleStyle(.checkbox)
+            .help("No token budget for a run. The iteration and time limits and the loop guards still stop a runaway run.")
+            if !Bot.isUnlimited(text) {
+                TextField("200000", text: $text).themedField().frame(width: width)
+            }
+        }
+    }
+}

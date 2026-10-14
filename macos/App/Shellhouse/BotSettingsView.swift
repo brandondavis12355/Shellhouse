@@ -598,9 +598,7 @@ struct BotSettingsTab: View {
                     CardDivider()
 
                     SettingRow("Max tokens") {
-                        TextField("200000", text: $bot.maxTokensText)
-                            .themedField()
-                            .frame(width: 110)
+                        TokenLimitField(text: $bot.maxTokensText, width: 110)
                     }
                     CardDivider()
                     SettingRow("Max iterations") {

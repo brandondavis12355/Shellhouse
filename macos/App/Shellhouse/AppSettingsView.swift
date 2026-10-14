@@ -117,7 +117,7 @@ struct AppSettingsView: View {
                 CollapsibleSection("Defaults for new bots", summary: "\(defaultMaxIterations) steps · \(defaultMaxTokens) tokens", storageKey: "botDefaults") {
                 Card {
                     SettingRow("Max tokens") {
-                        TextField("200000", text: $defaultMaxTokens).themedField().frame(width: 120)
+                        TokenLimitField(text: $defaultMaxTokens, width: 120)
                     }
                     CardDivider()
                     SettingRow("Max iterations") {

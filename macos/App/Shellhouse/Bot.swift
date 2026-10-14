@@ -503,9 +503,16 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// A number typed into a settings field: spaces and thousands separators ("100 ", "200,000") are fine;
     /// anything unreadable falls back to the default, and the value is kept within `range`.
     static func parsedLimit(_ text: String, default fallback: Int, range: ClosedRange<Int>) -> Int {
+        if isUnlimited(text) { return Int.max }
         let digits = text.filter { !$0.isWhitespace && $0 != "," && $0 != "_" }
         guard let value = Int(digits) else { return fallback }
         return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    /// "unlimited" (or ∞) in a limit field: no cap. Only offered for tokens; the iteration and time limits and the
+    /// loop guards still end a runaway run.
+    static func isUnlimited(_ text: String) -> Bool {
+        ["unlimited", "∞", "none", "no limit"].contains(text.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
     /// How much this bot needs the model right now, for `ModelScheduler` (which adds recent use and waiting time).
@@ -2353,7 +2360,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             }
             let model = selectedModel
             let budgets = AgentRuntime.Budgets(
-                maxIterations: Self.parsedLimit(maxIterationsText, default: 40, range: 1...1_000),
+                maxIterations: Self.isUnlimited(maxIterationsText) ? 40 : Self.parsedLimit(maxIterationsText, default: 40, range: 1...1_000),
                 maxTokens: Self.parsedLimit(maxTokensText, default: 200_000, range: 1_000...50_000_000)
             )
             let selectedSkills = availableSkills.filter { selectedSkillIDs.contains($0.id) }
@@ -3087,7 +3094,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             } else {
                 let model = selectedModel
                 let budgets = AgentRuntime.Budgets(
-                    maxIterations: Self.parsedLimit(maxIterationsText, default: 40, range: 1...1_000),
+                    maxIterations: Self.isUnlimited(maxIterationsText) ? 40 : Self.parsedLimit(maxIterationsText, default: 40, range: 1...1_000),
                     maxTokens: Self.parsedLimit(maxTokensText, default: 200_000, range: 1_000...50_000_000)
                 )
                 let selectedSkills = availableSkills.filter { selectedSkillIDs.contains($0.id) }

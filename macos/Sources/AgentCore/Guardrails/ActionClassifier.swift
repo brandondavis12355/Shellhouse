@@ -662,7 +662,8 @@ public enum ActionClassifier {
         // `echo` labels between steps are fine: with no `$` or backticks allowed above, they can't print anything secret.
         guard !programs.isEmpty, programs.allSatisfy({ ["git", "gh", "cd", "ls", "echo"].contains($0) }) else { return false }
         let gitVerbs: Set<String> = ["clone", "pull", "fetch", "push", "ls-remote", "status", "log", "remote", "checkout", "switch", "branch",
-                                     "diff", "show", "rev-parse"]
+                                     "diff", "show", "rev-parse", "ls-tree", "ls-files", "cat-file", "rev-list", "merge-base",
+                                     "merge", "rebase", "tag", "describe", "stash", "add", "commit", "blame", "shortlog"]
         for cmd in analysis.commands where cmd.program == "git" {
             let verb = cmd.args.first { !$0.hasPrefix("-") } ?? ""
             // Setting the commit identity is routine and touches nothing credential-related.
