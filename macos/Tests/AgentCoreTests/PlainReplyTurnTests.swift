@@ -153,3 +153,60 @@ final class SameResultLoopTests: XCTestCase {
         XCTAssertEqual(model.calls, AgentRuntime.sameResultAbortAt)
     }
 }
+
+/// Polling while waiting: rotating through a few checks whose answers never change, across runs.
+final class StaleResultLoopTests: XCTestCase {
+    private final class Poll: ModelBackend, @unchecked Sendable {
+        let name = "poll"
+        private let lock = NSLock()
+        private(set) var calls = 0
+        // The checkout is a side effect, which resets the older loop guards: only the seen-results check catches this.
+        static let commands = ["cd /workspace/r && git checkout fix && git log --oneline -3", "cd /workspace/r && git branch -a", "cd /workspace/r && git diff --stat main..fix"]
+        func supportsVision(model: String?) async -> Bool { false }
+        func availableModels() async throws -> [String] { [] }
+        func chat(messages: [ChatMessage], tools: [ToolSchema], model: String?, temperature: Double) async throws -> ModelReply {
+            lock.lock(); defer { lock.unlock() }
+            calls += 1
+            return ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [
+                ToolCall(name: "run_shell", arguments: ["command": AnyCodable(Self.commands[calls % 3])])]), usage: nil)
+        }
+        func reset() { lock.lock(); calls = 0; lock.unlock() }
+    }
+    private final class Repo: SandboxProvider, @unchecked Sendable {
+        let name = "repo"
+        func exec(_ sandboxID: String, command: String, timeout: TimeInterval, env: [String: String]?) async throws -> ExecResult {
+            ExecResult(exitCode: 0, stdout: "the unchanging answer to: \(command.suffix(20)) — nothing new here\n", stderr: "")
+        }
+        func create(taskID: String, persistent: Bool) async throws -> SandboxHandle { SandboxHandle(id: taskID, provider: name, persistent: persistent) }
+        func start(_ sandboxID: String) async throws -> SandboxHandle { SandboxHandle(id: sandboxID, provider: name, persistent: true) }
+        func readFile(_ sandboxID: String, path: String, maxBytes: Int) async throws -> Data { Data() }
+        func writeFile(_ sandboxID: String, path: String, contents: Data) async throws {}
+        func pause(_ sandboxID: String) async throws {}
+        func resume(_ sandboxID: String) async throws {}
+        func destroy(_ sandboxID: String) async throws {}
+        func health(_ sandboxID: String) async -> Bool { true }
+        func reconcile() async throws -> [SandboxHandle] { [] }
+        func listSandboxes() async throws -> [SandboxHandle] { [] }
+    }
+    private final class Seen: @unchecked Sendable {
+        private let lock = NSLock(); private(set) var aborted: String?
+        func add(_ e: AgentRuntime.Event) { if case .status(.aborted(let why)) = e { lock.lock(); aborted = why; lock.unlock() } }
+    }
+
+    func testRotatingChecksThatNeverChangeEndTheRunAndTheNextRunSooner() async {
+        let shared = SeenResults()
+        let model = Poll(); let seen = Seen()
+        let first = AgentRuntime(model: model, sandbox: Repo(), sandboxID: "t", budgets: AgentRuntime.Budgets(maxIterations: 40),
+                                 onEvent: { seen.add($0) }, requestApproval: { _ in .approve }, seenResults: shared)
+        await first.start(systemPrompt: "x", goal: "wait for the push")
+        XCTAssertNotNil(seen.aborted, "must stop")
+        XCTAssertLessThan(model.calls, 20, "stopped well before the iteration budget (\(model.calls) calls)")
+
+        model.reset(); let seenAgain = Seen()
+        let second = AgentRuntime(model: model, sandbox: Repo(), sandboxID: "t", budgets: AgentRuntime.Budgets(maxIterations: 40),
+                                  onEvent: { seenAgain.add($0) }, requestApproval: { _ in .approve }, seenResults: shared)
+        await second.start(systemPrompt: "x", goal: "wait for the push")
+        XCTAssertTrue(seenAgain.aborted?.contains("nothing new") == true, seenAgain.aborted ?? "nil")
+        XCTAssertEqual(model.calls, AgentRuntime.staleAbortAt, "a re-woken run that only re-checks ends at once")
+    }
+}

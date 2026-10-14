@@ -31,6 +31,33 @@ public enum ContextBudget {
         DECISIONS: choices made and by whom.
         OPEN: what is still in progress, blocked, or waiting on someone, and what's next.
         Quote exact values (paths, versions, IDs, error text) rather than paraphrasing them. Never include \
-        passwords, tokens or keys. This replaces the history above, so leave out nothing still needed.
+        passwords, tokens or keys. Later tool results override earlier claims: drop anything a later result \
+        contradicts, and don't list as done or decided what no tool result or message confirmed. This replaces \
+        the history above, so leave out nothing still needed.
         """
+
+    /// The summary text without a reasoning model's thinking (everything up to a closing `</think>`).
+    public static func cleanSummary(_ text: String) -> String {
+        var out = text
+        if let end = out.range(of: "</think>", options: .backwards) { out = String(out[end.upperBound...]) }
+        out = out.replacingOccurrences(of: #"<think>[\s\S]*"#, with: "", options: .regularExpression)
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// Tool results one bot has already seen, kept for a while across its runs (see `AgentRuntime.staleStreak`).
+public final class SeenResults: @unchecked Sendable {
+    private var seen: [String: Date] = [:]
+    private let lock = NSLock()
+    private let lifetime: TimeInterval
+    public init(lifetime: TimeInterval = 15 * 60) { self.lifetime = lifetime }
+
+    /// Records `key`; whether it had already been seen within the lifetime.
+    public func saw(_ key: String, now: Date = Date()) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        seen = seen.filter { now.timeIntervalSince($0.value) < lifetime }
+        let before = seen[key] != nil
+        seen[key] = now
+        return before
+    }
 }

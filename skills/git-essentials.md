@@ -56,6 +56,22 @@ description: >-
 - Read the output of every command. `git push` printing
   `<old>..<new>  <branch> -> <branch>` is what proves a push happened.
 
+## Checking a teammate's work
+Your local branches only change when you pull, so `main..their-branch` can show
+an old picture. To see what someone pushed:
+1. `git fetch origin` (token).
+2. Compare the remote copies: `git log --oneline -3 origin/<branch>`,
+   `git diff --stat origin/main..origin/<branch>`.
+3. To run their code: `git checkout <branch>` and `git pull`, then check
+   `git log -1` shows the commit they announced. `Your branch is behind`
+   means you haven't pulled yet.
+
+## Waiting on someone
+If what you need isn't pushed yet, don't keep fetching, re-reading the same
+files or re-posting the same status. Say once what you're waiting for, and
+from whom, then end your turn: you're woken when they post. Every re-check
+costs everyone time and fills your context.
+
 ## Undoing safely
 | Situation | Command |
 |---|---|

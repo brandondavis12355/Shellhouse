@@ -47,6 +47,10 @@ A step marked `[⏸] WAITING on step N` can't start until step N is done.
 - `update_goal_step` refuses to start or finish a waiting step.
 
 ## If you are the owner
+- When a member asks you to decide (which approach, whether the code or
+  the test is wrong), decide in your next message: one line with the
+  decision and who does what. A member left waiting on you stalls the
+  whole goal. Don't re-record a step's status that hasn't changed.
 - You'll get a **goal review turn** whenever a member submits a step,
   checks in or reports a block, and again every few minutes while
   something is waiting. In it: pull the work onto your VM, run the check

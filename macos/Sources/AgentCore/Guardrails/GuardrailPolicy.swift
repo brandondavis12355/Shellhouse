@@ -55,7 +55,8 @@ public enum TaintRules {
         case "run_shell":
             let command = arguments["command"]?.asString ?? ""
             if shellDownloads(command, ruleHint: rules), !failedBeforeAnyRemoteContent(observation),
-               !fromTrustedGitHubOwner(command, observation: observation, trusted: GuardrailConfig.trustedGitHubOwners) {
+               !fromTrustedGitHubOwner(command, observation: observation, trusted: GuardrailConfig.trustedGitHubOwners),
+               !gitBroughtNothingIn(command, observation: observation) {
                 out.append(.download)
             }
         default:
@@ -113,6 +114,18 @@ public enum TaintRules {
             }
         }
         return !owners.isEmpty && owners.allSatisfy(trusted.contains)
+    }
+
+    /// A plain `git fetch`/`pull` against the existing remote (no URL in the command) that printed no `From …`
+    /// or `remote:` line: no new commits or server text came in, so there's nothing outside to taint the run.
+    static func gitBroughtNothingIn(_ command: String, observation: [String: Any]) -> Bool {
+        let plain = ActionClassifier.withoutExitCodeBoilerplate(command)
+        guard !plain.contains("://"), !plain.contains("git@") else { return false }
+        let analysis = ShellAnalyzer.analyze(plain)
+        guard ActionClassifier.isSimpleCommandLine(analysis),
+              analysis.commands.allSatisfy({ ["git", "cd", "ls", "echo"].contains($0.program ?? "") }) else { return false }
+        let output = ((observation["stdout"] as? String) ?? "") + "\n" + ((observation["stderr"] as? String) ?? "")
+        return !output.split(separator: "\n").contains { $0.hasPrefix("From ") || $0.hasPrefix("remote:") }
     }
 
     static func failedBeforeAnyRemoteContent(_ observation: [String: Any]) -> Bool {

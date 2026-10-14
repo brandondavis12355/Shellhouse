@@ -236,7 +236,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         if newStatus == .inProgress || newStatus == .done, !waitingOn.isEmpty {
             let list = waitingOn.map { "step \($0.number) (\($0.step.text))" }.joined(separator: ", ")
             return .rejected("Step \(index + 1) can't start yet: it waits on \(list), which isn't done. Don't work on it or build "
-                + "a stand-in for the missing piece. Say in one line what you're waiting for and stop, or help finish \(list).")
+                + "a stand-in for the missing piece. Say in one line what you're waiting for and stop, or send whoever is doing \(list) what they need.")
         }
         if newStatus == .review {
             return .rejected("'review' is set by the app when a member submits a step; use 'done' with evidence.")
@@ -245,6 +245,15 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             // Members work steps; only the owner decides they're finished.
             if current == .done { return .rejected("This step is already validated as done by the goal owner.") }
             if current == .review { return .rejected("This step is waiting for the goal owner's validation; only the owner can change it now.") }
+        }
+        // The same status again is no news: say so, rather than record it and let the bot keep re-announcing it.
+        if !steps[index].isPerMember, newStatus == current, newStatus == .blocked || newStatus == .inProgress {
+            let state = newStatus == .blocked ? "blocked" : "in progress"
+            return .rejected("Step \(index + 1) is already marked \(state); recording it again changes nothing. "
+                + (byOwner
+                    ? "If a member is waiting on your decision, decide now: post the decision in one line and who does what. "
+                    : "")
+                + "If you're waiting on someone, say once what you're waiting for and end your turn.")
         }
         if steps[index].isPerMember {
             return updatePerMemberStep(at: index, status: newStatus, evidence: evidence, actorName: actorName,
@@ -464,7 +473,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         if steps.contains(where: isWaiting) {
             lines.append("Steps marked [⏸] can't start until the steps they wait on are done. Don't work on them, and don't write "
                 + "stand-ins (stubs, mocks, placeholder files) for what they need. If all your work is waiting, say so in one line "
-                + "and stop; or help finish the step everyone is waiting on.")
+                + "and stop; or send the member doing the step everyone is waiting on what they need.")
         }
         return lines.joined(separator: "\n")
     }

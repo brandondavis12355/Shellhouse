@@ -173,6 +173,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     private var drainTask: Task<Void, Never>?
     /// What the live `runtime` was built with — see `currentRuntimeSettingsKey`.
     private var runtimeSettingsKey: String?
+    /// Results this bot's runs have already seen (15 minutes): a re-woken run that only re-checks is caught fast.
+    let seenResults = SeenResults()
     /// Everything baked into an `AgentRuntime` at creation that the user can
     /// change in Settings: provider, model, vision, endpoint, budgets, and
     /// whether a new API key is pending.
@@ -2457,7 +2459,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 initialTaint: initialTaint,
                 plainReplyEndsTurn: plainReplyEndsTurn,
                 // Goal work must still record its steps, so only without a goal.
-                answerEndsTurnAfterTools: goalHandler == nil
+                answerEndsTurnAfterTools: goalHandler == nil,
+                seenResults: seenResults
             )
 
             taintProbe.runtime = runtime
@@ -3092,7 +3095,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                         actionReviewer: makeActionReviewer(),
                         audit: AuditLog.shared,
                         inbox: PendingInboxStore.standard,
-                        answerEndsTurnAfterTools: true
+                        answerEndsTurnAfterTools: true,
+                        seenResults: seenResults
                     )
                 }
                 runtime = newRuntime

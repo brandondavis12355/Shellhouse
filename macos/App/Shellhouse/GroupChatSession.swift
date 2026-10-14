@@ -804,9 +804,18 @@ final class GroupChatSession: Identifiable {
         the other members are waiting for the plan. Give it a one-line title and 2-8 concrete, verifiable steps (each should be \
         checkable with a command or observation). Every member has its own separate Linux VM, so work that must happen on each machine needs one step per member; never refer to a shared sandbox. Then briefly tell the group the plan in your reply, and @mention \
         the member best placed to start. Do not do the work before proposing the goal. \
+        Word steps by the outcome, not a guessed cause ("make the 6 failing tests pass: fix whichever of the code or \
+        the tests is wrong", not "fix 6 bugs in game.py"), so a member who finds the cause elsewhere isn't stuck. \
         If a step needs another step's result (tests or a UI need the core code; a push needs the work), say so with \
         depends_on, so nobody starts it early or builds a stand-in; members whose steps wait are told to hold off.
         """
+
+    /// Who a step belongs to: its assignee, else a member named at the start of its text ("Bugbot: run …").
+    private func stepHolder(_ step: GroupGoal.Step) -> String? {
+        if let name = step.assigneeName, !name.isEmpty { return name }
+        let text = step.text.trimmingCharacters(in: .whitespaces)
+        return members.map(\.name).first { text.lowercased().hasPrefix($0.lowercased() + ":") }
+    }
 
     private func goalBlockText(_ goal: GroupGoal) -> String {
         let ownerName = members.first(where: { $0.id == goal.ownerBotID })?.name ?? "unknown"
@@ -827,6 +836,10 @@ final class GroupChatSession: Identifiable {
             text += " You own this goal and are the ONLY one who can mark steps done. Steps marked [?] were submitted by a member: "
                 + "VALIDATE each yourself with your own tools (re-run the check, read the output) before update_goal_step → done with what "
                 + "you saw; if it doesn't hold up, set it back to inProgress and say what's wrong. Never accept a submission on trust. "
+                + "When a member asks you to choose (an approach, a branch, whether the code or the test is wrong), decide in your "
+                + "next message: one line with the decision and who does what. Don't re-verify what a member already showed you "
+                + "with evidence unless the choice depends on it, and don't re-record a step's status that hasn't changed. "
+                + "To check a member's push: `git fetch origin`, then look at `origin/<branch>` (your local branches go stale). "
                 + "add_goal_step adjusts the plan. The goal closes by itself once every step is validated done; if some steps "
                 + "end blocked, call propose_goal_complete with a summary and the user confirms. "
                 + "Use update_user at milestones."
@@ -994,6 +1007,12 @@ final class GroupChatSession: Identifiable {
                 return ["ok": true, "already_done": true,
                         "note": "Step \(index + 1) is already done; nothing to record. "
                             + (next.map { "Next open step: \($0.offset + 1). \(GroupGoal.displayText($0.element.text))" } ?? "Every step is done.")]
+            }
+            // A step that's another member's (assigned, or named "Name: …" in its text) is theirs to update.
+            if !isOwner, let index = g.steps.firstIndex(where: { $0.id == stepID }), !g.steps[index].isPerMember,
+               let holder = stepHolder(g.steps[index]), holder.caseInsensitiveCompare(bot.name) != .orderedSame {
+                return ["error": "Step \(index + 1) is \(holder)'s: only \(holder) or the goal owner updates it. If you have evidence that "
+                    + "helps, send it to \(holder) (@mention) instead, or leave it if they already have it."]
             }
             // Members can only put themselves on a step; the owner may assign anyone.
             let assignee = isOwner ? (arguments["assignee"]?.asString ?? (status == .inProgress ? bot.name : nil)) : bot.name

@@ -192,6 +192,14 @@ public actor AgentRuntime {
     private var currentGoal = ""
     private var budgetWarningsSent: Set<Int> = []
     private var abortForStuck: String?
+    /// Results this bot already saw, in this run or a recent one (shared across its runs). A run getting back
+    /// nothing but already-seen results is waiting or polling, whatever the commands look like, and side
+    /// effects (a `git fetch`, a checkout) don't reset it the way they reset the other loop guards.
+    private let seenResults: SeenResults
+    private var staleStreak = 0
+    private var abortForStale = false
+    static let staleNudgeAt = 4
+    static let staleAbortAt = 7
 
     /// Tools that may still run without approval during an untrusted run:
     /// they only read this bot's own state or update shared bookkeeping.
@@ -325,8 +333,10 @@ public actor AgentRuntime {
         inbox: PendingInboxStore? = nil,
         initialTaint: [TaintSource] = [],
         plainReplyEndsTurn: Bool = false,
-        answerEndsTurnAfterTools: Bool = false
+        answerEndsTurnAfterTools: Bool = false,
+        seenResults: SeenResults = SeenResults()
     ) {
+        self.seenResults = seenResults
         self.plainReplyEndsTurn = plainReplyEndsTurn
         self.answerEndsTurnAfterTools = answerEndsTurnAfterTools
         self.alwaysRequireApproval = alwaysRequireApproval
@@ -366,6 +376,7 @@ public actor AgentRuntime {
         startedAt = Date()
         secondsWaitingForHuman = 0
         stuck = StuckDetector(); abortForStuck = nil
+        staleStreak = 0; abortForStale = false
         iterations = 0
         tokensUsed = 0
         chargedThrough = 0
@@ -379,6 +390,7 @@ public actor AgentRuntime {
         startedAt = Date()
         secondsWaitingForHuman = 0
         stuck = StuckDetector(); abortForStuck = nil
+        staleStreak = 0; abortForStale = false
         iterations = 0
         tokensUsed = 0
         chargedThrough = 0
@@ -685,6 +697,12 @@ public actor AgentRuntime {
                 return false
             }
             if abortForFailures { return stopForFailures() }
+            if abortForStale {
+                let error = RuntimeError.repeated("nothing new came back for \(staleStreak) calls in a row: it was waiting, not working")
+                emitAbortMessage(for: error)
+                onEvent(.status(.aborted("\(error)")))
+                return false
+            }
             if abortForSameResults {
                 let error = RuntimeError.repeated("'\(call.name)' kept returning the same result; the run was going in circles")
                 emitAbortMessage(for: error)
@@ -720,6 +738,20 @@ public actor AgentRuntime {
         noteFailure(FailureCheck.kind(shown), key: call.name + FailureCheck.key(shown))
         Telemetry.recorder.toolRun(call.name, seconds: Date().timeIntervalSince(toolStarted), failed: FailureCheck.kind(shown) != .ok)
         let streak = noteResult(call, observation: observation)
+        if Reliability.isOn(.loopGuards), let key = staleKey(call, observation: observation) {
+            staleStreak = seenResults.saw(key) ? staleStreak + 1 : 0
+            if staleStreak == Self.staleNudgeAt {
+                messages.append(ChatMessage(
+                    role: .user,
+                    content: "Your last \(staleStreak) results were all ones you had already seen (this turn or an earlier one): "
+                        + "nothing has changed. Checking again won't change it. If you're waiting on someone (a push, a review, a "
+                        + "decision), say in one line what you're waiting for and end your turn now; you'll be woken when they post. "
+                        + "If you're the one who should act, act on what you already know."
+                ))
+            } else if staleStreak >= Self.staleAbortAt {
+                abortForStale = true
+            }
+        }
         if !Reliability.isOn(.loopGuards) {
             // same-result guard switched off
         } else if streak == Self.sameResultNudgeAt {
@@ -868,7 +900,19 @@ public actor AgentRuntime {
         // formatting); it includes the schemas, so compare it against the whole usable window.
         let reported = lastPromptTokens - schemaTokens
         guard max(estimatedTotal, reported) > threshold else { return }
+        // Old tool output is usually most of it: dropping that first is free, a summary costs a model call.
+        let collapsed = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
+        if collapsed.reduce(0, { $0 + estimatedTokens(for: $1) }) < Int(Double(threshold) * 0.7) {
+            messages = collapsed
+            lastPromptTokens = 0
+            chargedThrough = messages.count
+            return
+        }
         await compact()
+        // Aim well under the threshold so the next compaction isn't a few calls away.
+        if messages.reduce(0, { $0 + estimatedTokens(for: $1) }) > Int(Double(threshold) * 0.7) {
+            messages = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
+        }
         // Still too big (a few huge recent tool results): shrink older results harder.
         if messages.reduce(0, { $0 + estimatedTokens(for: $1) }) > threshold {
             messages = ObservationPolicy.collapseStale(messages, keepLast: 3, minCharacters: 400, batch: 1)
@@ -936,7 +980,7 @@ public actor AgentRuntime {
         do {
             let reply = try await model.chat(messages: summaryRequest, tools: [], model: modelName, temperature: 0.2)
             if let usage = reply.usage { tokensUsed += countsResentContext ? usage.total : usage.completionTokens }
-            summaryText = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            summaryText = ContextBudget.cleanSummary(reply.message.content)
         } catch {
             // Don't lose history over a failed summarization attempt —
             // just skip compaction this time; the normal budget checks
@@ -1034,6 +1078,24 @@ public actor AgentRuntime {
         let key = call.name + "|" + jsonString(observation)
         if key == lastResultKey { sameResultStreak += 1 } else { lastResultKey = key; sameResultStreak = 1 }
         return sameResultStreak
+    }
+
+    /// What a result says, for `seenResults`: shell output without echo labels or checkout chatter. `nil` for
+    /// tiny or write-type results, which neither count nor reset the streak.
+    private func staleKey(_ call: ToolCall, observation: [String: Any]) -> String? {
+        if ["update_user", "post_to_group", "message_bot", "write_file", "edit_file", "remember", "finish_task"].contains(call.name) { return nil }
+        let text: String
+        if call.name == "run_shell" {
+            let raw = ["stdout", "stderr", "error"].compactMap { observation[$0] as? String }.joined(separator: "\n")
+            text = raw.split(separator: "\n").filter { line in
+                let t = line.trimmingCharacters(in: .whitespaces)
+                return !(t.hasPrefix("---") || t.hasPrefix("===") || t.hasPrefix("Already on ") || t.hasPrefix("Switched to branch "))
+            }.joined(separator: "\n")
+        } else {
+            text = jsonString(observation)
+        }
+        guard text.count >= 40 else { return nil }
+        return call.name + "|" + text
     }
 
     // MARK: - Transcript helpers

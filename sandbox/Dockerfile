@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # fonts & themes so the desktop doesn't look broken
     fonts-dejavu fonts-liberation adwaita-icon-theme \
     # the actual toolchain the agent uses
-    python3 python3-pip python3-venv nodejs npm git \
+    python3 python3-pip python3-venv python-is-python3 python3-pytest nodejs npm git \
     curl wget jq unzip ca-certificates bash procps \
     # remote access and file transfer
     openssh-client rsync gnupg gh \

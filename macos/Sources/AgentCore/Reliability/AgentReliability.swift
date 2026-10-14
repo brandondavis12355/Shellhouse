@@ -62,7 +62,7 @@ public enum ObservationPolicy {
         if exit != 0 || shown != nil {
             if let hint = recoveryHint(for: combined) { out["hint"] = hint }
         }
-        if exit == 0, shown == nil, observation["job_id"] == nil, combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if exit == 0, shown == nil, observation["job_id"] == nil, observation["error"] == nil, combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             out["note"] = "No output, exit code 0. A command that only changes things (writes a file, copies, sleeps, installs quietly) "
                 + "normally prints nothing, so this usually means it worked; don't run it again. For a search or lookup it means nothing was found."
         }
@@ -72,6 +72,8 @@ public enum ObservationPolicy {
     static func recoveryHint(for text: String) -> String? {
         if AuthFailure.matches(text) { return AuthFailure.hint }
         let t = text.lowercased()
+        if t.contains("python: command not found") { return "This VM has no `python` command: use `python3`." }
+        if t.contains("no module named pytest") { return "pytest isn't installed here: run the tests with `python3 -m unittest`, or install it with `pip3 install --break-system-packages pytest`." }
         if t.contains("command not found") { return "That program is not installed on this VM. Check with `command -v <name>`; install with `sudo apt-get update && sudo apt-get install -y <package>` if appropriate, or use another tool." }
         if t.contains("unable to locate package") { return "Package lists may be empty: run `sudo apt-get update` first, then retry." }
         if t.contains("permission denied") || t.contains("operation not permitted") { return "Not allowed as this user. Check ownership with `ls -l`, use a path under /workspace or /home, or `sudo` if installing system packages." }
