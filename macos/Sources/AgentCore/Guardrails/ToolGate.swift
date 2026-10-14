@@ -69,6 +69,8 @@ public actor ToolGate {
     // MARK: state
 
     public var isTainted: Bool { taint.isTainted }
+    /// Tools only the user can approve, whatever YOLO, grants or the reviewer would say.
+    static let alwaysAsksUser: Set<String> = ["set_bot_instructions"]
     public var taintSources: [String] { taint.sources.map(\.rawValue) }
 
     /// The user vouches that the conversation is trustworthy again. A friend's
@@ -200,6 +202,11 @@ public actor ToolGate {
             return await prepareToRun(call, decision, outcome: "auto", askedHuman: false)
 
         case .ask, .askStrict:
+            // Changing what a bot is told to do is how an injected instruction would spread from bot to bot:
+            // no grant, YOLO or reviewer model settles it, only the user.
+            if Self.alwaysAsksUser.contains(call.name) {
+                return await askHuman(call, decision, binary: nil, notes: ["Changing a bot's instructions always needs your OK."])
+            }
             // Standing shell grants only ever satisfy a plain, clean-run ask for
             // `run_shell` (`decision.grantable`).
             let binary = call.name == "run_shell"

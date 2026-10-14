@@ -58,10 +58,21 @@ struct GroupGoalCard: View {
                         .onTapGesture(count: 2) { if goal.isLive { editText = goal.title; editingID = "title" } }
                         .help(goal.isLive ? "Double-click to rename" : "")
                 }
-                Text("\(statusLabel(goal.status)) · owner \(ownerName) · \(goal.doneCount)/\(goal.steps.count) steps · \(goal.messagesSinceProgress)/\(goal.stallLimit) since last progress")
+                Text("\(statusLabel(goal.status)) · owner \(ownerName)\(goal.validatorName.map { " · validated by \($0)" } ?? "") · \(goal.doneCount)/\(goal.steps.count) steps · \(goal.messagesSinceProgress)/\(goal.stallLimit) since last progress")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
+            if goal.isLive {
+                Menu {
+                    Button("The owner (\(ownerName))") { group.setGoalValidator(nil) }
+                    Divider()
+                    ForEach(group.members.map(\.name).filter { $0 != ownerName }, id: \.self) { name in
+                        Button(name) { group.setGoalValidator(name) }
+                    }
+                } label: { Image(systemName: "checkmark.seal") }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .help("Who checks submitted steps and marks them done")
+            }
             if !inPopover {
                 Button { expanded.toggle() } label: { Image(systemName: expanded ? "chevron.up" : "chevron.down") }
                     .buttonStyle(.plain)

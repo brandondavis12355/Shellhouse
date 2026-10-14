@@ -63,6 +63,9 @@ final class BotDirectory {
     /// `GroupChatSession.maxMembers`.
     var addBotToGroup: (_ bot: Bot, _ groupName: String) -> Bool = { _, _ in false }
 
+    /// Set once by `ContentView`: writes every bot's settings to disk (after a tool changed one).
+    var saveBots: () -> Void = {}
+
     /// The `list_bots` tool's own view: name plus role. `tagline` doubles
     /// as that role description — the same one shown next to a bot's name
     /// in the sidebar — reading as "General-purpose" when empty rather

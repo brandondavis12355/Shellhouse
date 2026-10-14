@@ -88,7 +88,8 @@ final class GroupChatSession: Identifiable {
     private var confirmTimerTask: Task<Void, Never>?
     /// The goal owner owes a review turn: something was submitted, checked in or blocked, or the periodic
     /// check found steps waiting for validation (see `startOwnerReviewLoop`).
-    private var ownerReviewDue = false
+    /// Bots due a goal review turn: the owner (blocks, closing the goal) and the validator (submissions).
+    private var reviewDue: Set<String> = []
     /// Members owed a working turn after answering a status request during a live goal (the report itself runs no tools).
     private var resumeWorkDue: Set<String> = []
     private var ownerReviewTask: Task<Void, Never>?
@@ -484,8 +485,9 @@ final class GroupChatSession: Identifiable {
             // The goal owner's review turn: validate submissions, unblock, or close the goal. It may stay
             // silent if, on looking, nothing needs it.
             var ownerReviewTurn = false
-            if ownerReviewDue, let live = goal, live.isLive, live.ownerBotID == botID, live.ownerReviewWork() != nil {
-                ownerReviewDue = false
+            ensureValidator()
+            if reviewDue.contains(botID), let live = goal, live.isLive, reviewWork(live, botID: botID) != nil {
+                reviewDue.remove(botID)
                 ownerReviewTurn = true
                 lastOwnerReview = Date()
                 lastReviewedSignature = live.reviewSignature
@@ -594,14 +596,14 @@ final class GroupChatSession: Identifiable {
             }
             if !isIntakeTurn, let live = goal, live.isLive {
                 extraSuffix = goalPrompt(for: live, botID: botID)
-                if ownerReviewTurn || (resumeTurn && live.ownerBotID == botID), let work = live.ownerReviewWork() { extraSuffix += "\n\n" + work }
+                if ownerReviewTurn || resumeTurn, let work = reviewWork(live, botID: botID) { extraSuffix += "\n\n" + work }
                 if goalAdditionTurn {
                     extraSuffix += "\n\n" + Self.goalAdditionInstruction
                 }
                 if resumeTurn {
                     extraSuffix += "\n\nYou just gave the user a status report. Now get back to work on the goal with tools: "
                         + (live.ownerBotID == botID
-                            ? "validate anything submitted, unblock or reassign stuck steps, @mention whoever should act next, or close the goal if every step is done."
+                            ? (live.validatorName == nil ? "validate anything submitted, " : "") + "unblock or reassign stuck steps, @mention whoever should act next, or close the goal if every step is done."
                             : "continue your open step.")
                         + " Don't repeat the status report; if nothing needs you, finish silently."
                 }
@@ -759,7 +761,7 @@ final class GroupChatSession: Identifiable {
             finishTurn(messageID: turnMessageID, bot: bot, .replied)
             notifyNewMessage(authorID: botID)
             if isStatusReport, usedQuickPath, let live = goal, live.isLive, live.status == .active,
-               live.ownerBotID == botID || live.hasActionableWork(for: bot.name) {
+               reviewWork(live, botID: botID) != nil || live.hasActionableWork(for: bot.name) {
                 resumeWorkDue.insert(botID)
             }
         }
@@ -860,11 +862,18 @@ final class GroupChatSession: Identifiable {
             + "A step marked \"each member on their own VM\" is done by every listed member checking in their OWN part "
             + "(update_goal_step → done with evidence from their own tools); nobody can check in for anyone else."
         let ownerName = members.first(where: { $0.id == goal.ownerBotID })?.name ?? "the owner"
+        let me = members.first(where: { $0.id == botID })?.name ?? ""
         if botID == goal.ownerBotID {
-            text += " You own this goal and are the ONLY one who can mark steps done. Steps marked [?] were submitted by a member: "
-                + "VALIDATE each yourself with your own tools (re-run the check, read the output) before update_goal_step → done with what "
-                + "you saw; if it doesn't hold up, set it back to inProgress and say what's wrong. Never accept a submission on trust. "
-                + "When a member asks you to choose (an approach, a branch, whether the code or the test is wrong), decide in your "
+            if let validator = goal.validatorName {
+                text += " You own this goal and coordinate it. \(validator) validates submitted [?] steps and marks them done: don't "
+                    + "run tests or re-check members' work yourself, and don't do the members' steps for them. Your job is the plan, "
+                    + "decisions, unblocking, and telling each member what to do next. "
+            } else {
+                text += " You own this goal and are the ONLY one who can mark steps done. Steps marked [?] were submitted by a member: "
+                    + "VALIDATE each yourself with your own tools (re-run the check, read the output) before update_goal_step → done with what "
+                    + "you saw; if it doesn't hold up, set it back to inProgress and say what's wrong. Never accept a submission on trust. "
+            }
+            text += "When a member asks you to choose (an approach, a branch, whether the code or the test is wrong), decide in your "
                 + "next message: one line with the decision and who does what. Don't re-verify what a member already showed you "
                 + "with evidence unless the choice depends on it, and don't re-record a step's status that hasn't changed. "
                 + "To check a member's push: `git fetch origin`, then look at `origin/<branch>` (your local branches go stale). "
@@ -872,9 +881,15 @@ final class GroupChatSession: Identifiable {
                 + "your user can also change it from the goal card, and those changes appear as messages. The goal closes by itself once every step is validated done; if some steps "
                 + "end blocked, call propose_goal_complete with a summary and the user confirms. "
                 + "Use update_user at milestones."
+        } else if goal.validates(me, isOwner: false) {
+            text += " You validate this goal's work: steps marked [?] were submitted by a member. Check each yourself with your own "
+                + "tools (git fetch, then look at origin/<branch>; re-run the test) before update_goal_step → done with what you saw; "
+                + "if it doesn't hold up, set it back to inProgress and say what's wrong. Never accept a submission on trust. "
+                + "\(ownerName) owns the plan: ask \(ownerName) for changes to it, and @mention \(ownerName) for decisions."
         } else {
-            text += " You can claim steps and submit them as done with evidence, but only the owner (\(ownerName)) validates them and "
-                + "marks them done — @mention \(ownerName) after submitting. Only the owner proposes completion. "
+            let checker = goal.validatorName ?? ownerName
+            text += " You can claim steps and submit them as done with evidence, but only \(checker) validates them and "
+                + "marks them done — @mention \(checker) after submitting. Only the owner proposes completion. "
                 + "If work is missing from the plan, add it with add_goal_step; to change an existing step, ask \(ownerName). "
                 + "If no open step is assigned to you and nobody asked you something, stay silent: do not start side "
                 + "investigations or re-check what others already covered. If a command gives an empty or unchanged "
@@ -913,10 +928,42 @@ final class GroupChatSession: Identifiable {
 
     /// Asks the owner to review now (or right after its current turn).
     private func requestOwnerReview() {
-        guard let live = goal, live.isLive, live.ownerReviewWork() != nil,
-              let owner = members.first(where: { $0.id == live.ownerBotID }) else { return }
-        ownerReviewDue = true
-        wake(owner)
+        ensureValidator()
+        guard let live = goal, live.isLive else { return }
+        for reviewer in members where reviewWork(live, botID: reviewer.id) != nil {
+            reviewDue.insert(reviewer.id)
+            wake(reviewer)
+        }
+    }
+
+    /// What `botID` has to look at on a goal review turn: as owner, blocked steps and closing the goal; as
+    /// validator (the owner, unless it hands that off), submitted steps.
+    private func reviewWork(_ g: GroupGoal, botID: String) -> String? {
+        var parts: [String] = []
+        if g.ownerBotID == botID, let work = g.ownerReviewWork() { parts.append(work) }
+        if let validator = g.validatorName, let bot = members.first(where: { $0.id == botID }),
+           validator.caseInsensitiveCompare(bot.name) == .orderedSame, let work = g.validatorReviewWork() { parts.append(work) }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
+
+    /// An owner set not to check work itself needs someone who does: pick a tester-like member once.
+    private func ensureValidator() {
+        guard var g = goal, g.isLive, g.validatorName == nil,
+              let owner = members.first(where: { $0.id == g.ownerBotID }), !owner.checksGoalWorkItself,
+              let validator = Self.pickValidator(among: members.filter { $0.id != owner.id }) else { return }
+        g.validatorName = validator.name
+        goal = g; persistGoal()
+        postSystem("🔍 \(validator.name) validates submitted steps for this goal (\(owner.name) coordinates).")
+    }
+
+    /// The member whose role is testing or review; else the first one that checks work itself.
+    static func pickValidator(among candidates: [Bot]) -> Bot? {
+        let keywords = ["test", "qa", "quality", "review", "valid", "verif", "bug"]
+        let willing = candidates.filter(\.checksGoalWorkItself)
+        return willing.first { bot in
+            let text = (bot.tagline + " " + bot.name).lowercased()
+            return keywords.contains { text.contains($0) }
+        } ?? willing.first
     }
 
     /// Every minute: if work is waiting for the owner and it's idle, give it a review turn. Repeats for the same
@@ -927,7 +974,7 @@ final class GroupChatSession: Identifiable {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
                 guard let self, let live = self.goal, live.isLive, live.status == .active,
-                      live.ownerReviewWork() != nil, self.workers[live.ownerBotID] == nil else { continue }
+                      self.members.contains(where: { self.reviewWork(live, botID: $0.id) != nil && self.workers[$0.id] == nil }) else { continue }
                 let quiet = Date().timeIntervalSince(self.lastOwnerReview)
                 let changed = live.reviewSignature != self.lastReviewedSignature
                 if (changed && quiet > Self.ownerReviewInterval) || quiet > 600 { self.requestOwnerReview() }
@@ -1000,12 +1047,18 @@ final class GroupChatSession: Identifiable {
             }
             var proposed = GroupGoal(title: title, ownerBotID: botID, steps: steps, stallLimit: stallLimit)
             proposed.setDependencies(GroupGoal.dependencyMap(from: arguments["depends_on"]))
+            if let named = arguments["validator"]?.asString,
+               let validator = members.first(where: { $0.id != botID && $0.name.caseInsensitiveCompare(named) == .orderedSame }) {
+                proposed.validatorName = validator.name
+            }
             goal = proposed
             persistGoal()
             // The plan exists now: let the other members start on it instead of
             // waiting for the owner's whole turn to finish.
             if intakeOwnerID == botID { intakeOwnerID = nil }
-            postSystem("🎯 Goal set by \(bot.name): “\(title)” — \(steps.count) steps.")
+            postSystem("🎯 Goal set by \(bot.name): “\(title)” — \(steps.count) steps."
+                + (proposed.validatorName.map { " \($0) validates submitted steps." } ?? ""))
+            ensureValidator()
             _ = bot.postUpdateToUser("Started working on a goal in “\(name)”: \(title) (\(steps.count) steps).", source: "group: \(name)")
             return ["ok": true, "goal": goalBlockText(goal!)]
 
@@ -1069,17 +1122,18 @@ final class GroupChatSession: Identifiable {
                             + (next.map { "Next open step: \($0.offset + 1). \(GroupGoal.displayText($0.element.text))" } ?? "Every step is done.")]
             }
             // A step that's another member's (assigned, or named "Name: …" in its text) is theirs to update.
-            if !isOwner, let index = g.steps.firstIndex(where: { $0.id == stepID }), !g.steps[index].isPerMember,
+            let isValidator = g.validates(bot.name, isOwner: isOwner)
+            if !isOwner, !isValidator, let index = g.steps.firstIndex(where: { $0.id == stepID }), !g.steps[index].isPerMember,
                let holder = stepHolder(g.steps[index]), holder.caseInsensitiveCompare(bot.name) != .orderedSame {
                 return ["error": "Step \(index + 1) is \(holder)'s: only \(holder) or the goal owner updates it. If you have evidence that "
                     + "helps, send it to \(holder) (@mention) instead, or leave it if they already have it."]
             }
             // Members can only put themselves on a step; the owner may assign anyone.
             let assignee = isOwner ? (arguments["assignee"]?.asString ?? (status == .inProgress ? bot.name : nil)) : bot.name
-            let ownerName = members.first(where: { $0.id == g.ownerBotID })?.name ?? "the goal owner"
+            let ownerName = g.validatorName ?? members.first(where: { $0.id == g.ownerBotID })?.name ?? "the goal owner"
             let result = g.updateStep(
                 id: stepID, status: status, evidence: arguments["evidence"]?.asString,
-                assigneeName: assignee, turnHadToolCalls: backedByTools, byOwner: isOwner, actorName: bot.name
+                assigneeName: assignee, turnHadToolCalls: backedByTools, byOwner: isValidator, actorName: bot.name
             )
             goal = g; persistGoal()
             if case .rejected = result {} else { syncGoalTask(goal: g, stepID: stepID, actor: bot, evidence: arguments["evidence"]?.asString) }
@@ -1106,7 +1160,7 @@ final class GroupChatSession: Identifiable {
                 postSystem("🔎 Step \(index) submitted by \(bot.name) — waiting for \(ownerName) to validate.")
                 requestOwnerReview()
                 return ["ok": true, "counted_as_progress": false,
-                        "note": "Submitted for validation. Only \(ownerName) (the goal owner) can mark it done after re-checking it. @mention \(ownerName) with what to verify; do not mark it done again.",
+                        "note": "Submitted for validation. Only \(ownerName) can mark it done after re-checking it. @mention \(ownerName) with what to verify; do not mark it done again.",
                         "goal": goalBlockText(g)]
             case .recorded:
                 let note = status == .done
@@ -1244,6 +1298,15 @@ final class GroupChatSession: Identifiable {
         guard !trimmed.isEmpty, trimmed != goal?.title else { return }
         goal?.setTitle(trimmed); persistGoal()
         postSystem("✏️ You renamed the goal: “\(trimmed)”.")
+    }
+    /// Who checks submitted steps: a member's name, or nil for the owner.
+    func setGoalValidator(_ name: String?) {
+        guard var g = goal, g.isLive, g.validatorName != name else { return }
+        g.validatorName = name
+        goal = g; persistGoal()
+        let ownerName = members.first(where: { $0.id == g.ownerBotID })?.name ?? "the owner"
+        postSystem("🔍 You set who validates submitted steps: \(name ?? ownerName).")
+        requestOwnerReview()
     }
     private func goalStepNumber(_ stepID: String) -> Int? {
         goal?.steps.firstIndex(where: { $0.id == stepID }).map { $0 + 1 }

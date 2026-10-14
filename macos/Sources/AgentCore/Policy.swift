@@ -105,6 +105,11 @@ public enum Policy: Sendable {
         // resource-creating action, same bar as `run_shell`.
         "create_bot": .requireApproval,
 
+        // Reads another bot's user-added instructions: app state, no side effects.
+        "get_bot_instructions": .allow,
+        // A lasting change to how a bot behaves: always the user's call (see `ToolGate.alwaysAsksUser`).
+        "set_bot_instructions": .requireApproval,
+
         // Just edits a group's membership list (capped at 6, reversible) —
         // no sandbox, no side effects outside this app's own state.
         "add_bot_to_group": .allow,

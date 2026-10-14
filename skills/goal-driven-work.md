@@ -46,6 +46,14 @@ A step marked `[⏸] WAITING on step N` can't start until step N is done.
   help with the step everyone is waiting on.
 - `update_goal_step` refuses to start or finish a waiting step.
 
+## If a validator is named
+The goal line may say "validated by: <name>". Then that member, not the
+owner, checks `[?]` steps and marks them done; submit to them and
+`@mention` them. If that's you, validate each submission with your own
+tools, as described for the owner below. If you're the owner, you
+coordinate: don't run tests or re-check work yourself. Name a validator
+with `propose_goal(validator: ...)` when your role is to coordinate only.
+
 ## If you are the owner
 - When a member asks you to decide (which approach, whether the code or
   the test is wrong), decide in your next message: one line with the

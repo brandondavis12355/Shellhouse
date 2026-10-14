@@ -391,6 +391,7 @@ struct ContentView: View {
                 Task { await bot.boot() }
                 return bot
             }
+            botDirectory.saveBots = { saveBots() }
             botDirectory.addBotToGroup = { bot, groupName in
                 guard let group = groupChats.first(where: { $0.name.caseInsensitiveCompare(groupName) == .orderedSame }) else {
                     return false

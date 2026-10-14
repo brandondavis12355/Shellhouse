@@ -113,6 +113,9 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// chat header), matching the reference app's per-bot role badge.
     /// Purely cosmetic — nothing reads this for behavior.
     var tagline: String
+    /// As a goal owner, whether this bot re-checks members' submitted steps itself. Off for a manager that only
+    /// coordinates: a validator member does the checking (see `GroupGoal.validatorName`).
+    var checksGoalWorkItself = true
     /// Sidebar section header this bot is filed under (e.g. "General").
     /// Organizational only — bots in the same group don't share anything;
     /// there's no multi-bot group-chat mechanism behind this.
@@ -187,6 +190,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         [
             modelProvider.rawValue, selectedModel, String(modelHasVision), remoteBaseURLText,
             maxTokensText, maxIterationsText, String(remoteAPIKeyInput.hashValue), engine.rawValue,
+            String(systemPromptText.hashValue),
         ].joined(separator: "|")
     }
     /// Whether THIS chat specifically (not a delegation/group turn — see
@@ -378,6 +382,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         modelProvider = config.modelProvider ?? .ollama
         engine = config.engine ?? .builtin
         remoteBaseURLText = config.remoteBaseURLText ?? ""
+        checksGoalWorkItself = config.checksGoalWorkItself ?? true
     }
 
     /// Reconstructs a bot from an imported/duplicated `BotTemplate` — same
@@ -404,6 +409,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         maxIterationsText = template.maxIterationsText
         modelProvider = template.modelProvider ?? .ollama
         remoteBaseURLText = template.remoteBaseURLText ?? ""
+        checksGoalWorkItself = template.checksGoalWorkItself ?? true
         memoryBook = MemoryBook(legacy: template.memories)
         memories = memoryBook.texts
         routines = template.routines
@@ -429,7 +435,8 @@ final class Bot: Identifiable, @unchecked Sendable {
             name: name, colorHex: colorHex, avatarStyle: avatarStyle, tagline: tagline, group: group,
             systemPromptText: systemPromptText, selectedSkillIDs: selectedSkillIDs, selectedModel: selectedModel,
             modelHasVision: modelHasVision, maxTokensText: maxTokensText, maxIterationsText: maxIterationsText,
-            memories: memories, routines: routines, modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText
+            memories: memories, routines: routines, modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText,
+            checksGoalWorkItself: checksGoalWorkItself
         )
     }
 
@@ -448,7 +455,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             systemPromptText: systemPromptText, selectedSkillIDs: selectedSkillIDs, selectedModel: selectedModel,
             modelHasVision: modelHasVision, maxTokensText: maxTokensText, maxIterationsText: maxIterationsText,
             modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText,
-            engine: engine, knownSkillIDs: Set(availableSkills.map(\.id))
+            engine: engine, knownSkillIDs: Set(availableSkills.map(\.id)), checksGoalWorkItself: checksGoalWorkItself
         )
     }
 
@@ -1710,6 +1717,53 @@ final class Bot: Identifiable, @unchecked Sendable {
         return ["posted": true]
     }
 
+    /// `get_bot_instructions` / `set_bot_instructions`: read or change a bot's user-added instructions (its own, or
+    /// another bot's). The user has already approved a change (`ToolGate.alwaysAsksUser`); a run that read untrusted
+    /// content can't change any, since that is how an injected instruction would make itself permanent.
+    func botInstructionsForTool(botName: String?, mode: String, text: String?, untrusted: Bool) -> [String: Any] {
+        let trimmedName = botName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let target: Bot?
+        if trimmedName.isEmpty || trimmedName.caseInsensitiveCompare(name) == .orderedSame { target = self }
+        else { target = botDirectory.allBots().first { $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame } }
+        guard let target else {
+            return ["error": "No bot named \(trimmedName). Bots: " + botDirectory.allBots().map(\.name).joined(separator: ", ")]
+        }
+        let current = target.systemPromptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if mode == "view" {
+            return ["bot": target.name, "role": target.tagline, "instructions": current.isEmpty ? "(none: only the built-in rules)" : current]
+        }
+        guard !untrusted else {
+            return ["error": "This run has read untrusted content, so it can't change any bot's instructions. Tell your user what "
+                + "you'd change and why; they can edit it in the bot's settings."]
+        }
+        let addition = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !addition.isEmpty || mode == "replace" else { return ["error": "'text' is empty: nothing to add."] }
+        if Self.looksLikeSecret(addition) {
+            return ["error": "That text looks like it contains a credential. Instructions are plain prose; secrets go in the secret store."]
+        }
+        let updated = mode == "replace" ? addition : (current.isEmpty ? addition : current + "\n\n" + addition)
+        guard updated.count <= Self.maxCustomInstructions else {
+            return ["error": "Too long: instructions are capped at \(Self.maxCustomInstructions) characters (this would be \(updated.count)). "
+                + "Use replace with a tighter version."]
+        }
+        target.systemPromptText = updated
+        botDirectory.saveBots()
+        let by = target === self ? "itself" : name
+        _ = target.postUpdateToUser("My instructions were changed by \(by) (\(mode)). They now read:\n\n\(updated.isEmpty ? "(none)" : updated)",
+                                    source: "instructions")
+        return ["ok": true, "bot": target.name, "mode": mode, "instructions": updated,
+                "note": target.isBusy ? "Saved. \(target.name)'s current run keeps the old ones; its next run uses these." : "Saved; \(target.name)'s next run uses these."]
+    }
+
+    static let maxCustomInstructions = 6000
+
+    static func looksLikeSecret(_ text: String) -> Bool {
+        let patterns = [#"gh[pousr]_[A-Za-z0-9]{20,}"#, #"\bsk-[A-Za-z0-9]{16,}"#, #"\bAIza[0-9A-Za-z_-]{30,}"#,
+                        #"(?i)\b(password|passwd|api[_ ]?key|token)\s*[:=]\s*\S{8,}"#, #"://[^/\s]+:[^@\s]+@"#,
+                        #"-----BEGIN [A-Z ]*PRIVATE KEY-----"#]
+        return patterns.contains { text.range(of: $0, options: .regularExpression) != nil }
+    }
+
     /// `post_screenshot` in the 1:1 chat: the image appears as this bot's message right away.
     func postImageToOwnChat(caption: String, data: Data) -> [String: Any] {
         guard let imageID = ChatImageStore.save(data) else { return ["error": "Couldn't save that image (too big, or not an image)."] }
@@ -2502,6 +2556,13 @@ final class Bot: Identifiable, @unchecked Sendable {
                                 self?.postImageToGroup(groupName: groupName, caption: caption, data: data) ?? ["error": "bot no longer available"]
                             }
                         }
+                    },
+                    onBotInstructions: { [weak self] botName, mode, text in
+                        let tainted = await taintProbe.runtime?.isTainted ?? false
+                        return await MainActor.run {
+                            self?.botInstructionsForTool(botName: botName, mode: mode, text: text, untrusted: untrustedInput || tainted)
+                                ?? ["error": "bot no longer available"]
+                        }
                     }
                 ),
                 permissions: permissions,
@@ -3167,6 +3228,13 @@ final class Bot: Identifiable, @unchecked Sendable {
                         },
                         onPostImage: { [weak self] caption, data in
                             await MainActor.run { self?.postImageToOwnChat(caption: caption, data: data) ?? ["error": "bot no longer available"] }
+                        },
+                        onBotInstructions: { [weak self] botName, mode, text in
+                            guard let self else { return ["error": "bot no longer available"] }
+                            let tainted = await self.runtime?.isTainted ?? false
+                            return await MainActor.run {
+                                self.botInstructionsForTool(botName: botName, mode: mode, text: text, untrusted: tainted)
+                            }
                         }
                     )
                 let eventHandler: @Sendable (AgentRuntime.Event) -> Void = { [weak self] event in

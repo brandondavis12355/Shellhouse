@@ -344,6 +344,12 @@ public enum ActionClassifier {
         case "post_to_group", "add_bot_to_group":
             return Classification(findings: [Finding(.external, "tool.\(tool)", "posts to or changes a group (may be shared with friends)", clean: .allow, tainted: .askStrict)])
 
+        case "get_bot_instructions":
+            return Classification(findings: [Finding(.state, "tool.get_bot_instructions", "reads a bot's custom instructions", clean: .allow, tainted: .allow)])
+
+        case "set_bot_instructions":
+            return Classification(findings: [Finding(.state, "tool.set_bot_instructions", "changes a bot's standing instructions", clean: .askStrict, tainted: .askStrict)])
+
         case "create_bot":
             return Classification(findings: [Finding(.external, "tool.create_bot", "creates a new bot with its own sandbox", clean: .ask, tainted: .askStrict)])
 

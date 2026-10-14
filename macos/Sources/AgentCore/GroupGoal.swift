@@ -101,6 +101,15 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     public var pauseSummary: String?
     public var completionSummary: String?
     public var confirmationRequestedAt: Date?
+    /// The member who checks submitted steps and marks them done, when the owner doesn't do that itself
+    /// (a manager that only coordinates). `nil`: the owner validates.
+    public var validatorName: String?
+
+    /// Whether `name` (the owner if `isOwner`) is the one who validates submissions into `done`.
+    public func validates(_ name: String, isOwner: Bool) -> Bool {
+        guard let validatorName else { return isOwner }
+        return validatorName.caseInsensitiveCompare(name) == .orderedSame
+    }
 
     public init(id: String = UUID().uuidString, title: String, ownerBotID: String, steps: [Step] = [],
                 stallLimit: Int = GroupGoal.defaultStallLimit, createdAt: Date = Date()) {
@@ -492,7 +501,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     /// as an instruction for its review turn, or nil if nothing does.
     public func ownerReviewWork() -> String? {
         var lines: [String] = []
-        for (index, step) in steps.enumerated() where step.status == .review {
+        for (index, step) in steps.enumerated() where step.status == .review && validatorName == nil {
             let evidence = (step.evidence ?? "").prefix(300)
             lines.append("- Waiting for your validation: step \(index + 1) \"\(Self.displayText(step.text))\""
                 + (step.assigneeName.map { ", submitted by \($0)" } ?? "") + (evidence.isEmpty ? "" : ". Their evidence: \(evidence)"))
@@ -510,6 +519,21 @@ public struct GroupGoal: Codable, Sendable, Equatable {
             + "For a blocked step, choose a way forward or ask the user. If, on checking, nothing needs you, finish silently."
     }
 
+    /// What the validator (when it isn't the owner) needs to check, as an instruction for its review turn.
+    public func validatorReviewWork() -> String? {
+        guard let validatorName else { return nil }
+        let lines = steps.enumerated().filter { $0.element.status == .review }.map { index, step in
+            "- Waiting for your validation: step \(index + 1) \"\(Self.displayText(step.text))\""
+                + (step.assigneeName.map { ", submitted by \($0)" } ?? "")
+                + ((step.evidence ?? "").isEmpty ? "" : ". Their evidence: \((step.evidence ?? "").prefix(300))")
+        }
+        guard !lines.isEmpty else { return nil }
+        return "GOAL REVIEW (you, \(validatorName), validate this goal's submitted work):\n" + lines.joined(separator: "\n")
+            + "\nFor each: get the work onto your VM (git fetch, then look at origin/<branch>), run the check yourself, then "
+            + "update_goal_step done quoting what YOU saw, or set it back to inProgress with what's missing and @mention the member. "
+            + "If, on checking, nothing needs you, finish silently."
+    }
+
     /// Changes whenever a step moves between statuses, so a periodic owner check only repeats when something new
     /// is waiting.
     public var reviewSignature: String {
@@ -524,7 +548,8 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     }
 
     public func promptBlock(ownerName: String) -> String {
-        var lines = ["CURRENT GROUP GOAL (owner: \(ownerName), status: \(status.rawValue)): \(title)"]
+        var lines = ["CURRENT GROUP GOAL (owner: \(ownerName)" + (validatorName.map { ", validated by: \($0)" } ?? "")
+            + ", status: \(status.rawValue)): \(title)"]
         for (index, step) in steps.enumerated() {
             let mark: String
             switch step.status {

@@ -44,6 +44,8 @@ struct BotConfig: Codable {
     /// is switched on by default without re-enabling ones the user turned
     /// off. See `SkillLibrary.reconcileSelection`.
     var knownSkillIDs: Set<String>? = nil
+    /// `nil` (saved before this existed) means true.
+    var checksGoalWorkItself: Bool? = nil
 }
 
 /// A bot's settings plus memory and routines, portable across export/
@@ -73,6 +75,7 @@ struct BotTemplate: Codable {
     /// imports it enters their own.
     var modelProvider: ModelProvider?
     var remoteBaseURLText: String?
+    var checksGoalWorkItself: Bool? = nil
 
     /// XML rather than JSON — an XML property list (`PropertyListEncoder`
     /// with `.xml` output), the standard Foundation-native way to get a

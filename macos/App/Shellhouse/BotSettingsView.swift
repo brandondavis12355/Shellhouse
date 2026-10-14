@@ -188,10 +188,9 @@ struct BotSettingsTab: View {
                     TextEditor(text: $bot.systemPromptText)
                         .font(.system(size: 13, design: .monospaced))
                         .frame(height: 120)
-                        .disabled(bot.hasStarted)
                         .themedEditor()
                 }
-                .help(bot.hasStarted ? "Locked in for this conversation — start a new one to use different instructions." : "")
+                .help(bot.isBusy ? "A run already going keeps the old instructions; the next one uses these." : "")
                 .padding(.top, 16)
 
                 ExpandableCard("Skills", summary: "\(bot.selectedSkillIDs.count) of \(bot.availableSkills.count)") {
@@ -606,6 +605,10 @@ struct BotSettingsTab: View {
                             .themedField()
                             .frame(width: 110)
                     }
+                    CardDivider()
+                    ToggleRow(title: "Checks submitted work itself",
+                              subtitle: "When this bot owns a group goal, it re-runs members' checks before marking steps done. Turn off for a manager that only coordinates: another member validates instead.",
+                              isOn: $bot.checksGoalWorkItself)
                 }
                 .help(bot.isBusy
                     ? "A run already going keeps its limits; the next one uses these."

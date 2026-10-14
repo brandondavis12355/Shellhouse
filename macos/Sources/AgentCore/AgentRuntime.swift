@@ -212,6 +212,7 @@ public actor AgentRuntime {
         "screenshot", "list_windows", "use_skill", "search_memory", "recall_memory",
         "list_routines", "get_profile", "list_tasks", "list_secrets", "list_bots", "complete_task", "update_user",
         "get_goal", "update_goal_step", "propose_goal", "add_goal_step", "edit_goal_step", "propose_goal_complete", "ask_helpers",
+        "get_bot_instructions",
     ]
 
     /// Screenshots dominate token cost once skills are lazy-loaded (see

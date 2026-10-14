@@ -90,7 +90,9 @@ public struct ToolRegistry: Sendable {
         onAskHelpers: (@Sendable ([String]) async -> [String: Any])? = nil,
         onRequestCredentials: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
         onGoalTool: (@Sendable (String, [String: AnyCodable]) async -> [String: Any])? = nil,
-        onPostImage: (@Sendable (String, Data) async -> [String: Any])? = nil
+        onPostImage: (@Sendable (String, Data) async -> [String: Any])? = nil,
+        /// (bot name or nil for yourself, action "view"/"append"/"replace", text)
+        onBotInstructions: (@Sendable (String?, String, String?) async -> [String: Any])? = nil
     ) {
         var schemas = Self.buildSchemas()
         var executors = Self.buildExecutors()
@@ -203,6 +205,19 @@ public struct ToolRegistry: Sendable {
                     return ["error": "message_bot requires 'to' and 'message'"]
                 }
                 return await onMessageBot(to, message)
+            }
+        }
+        if let onBotInstructions {
+            schemas.append(Self.getBotInstructionsSchema)
+            schemas.append(Self.setBotInstructionsSchema)
+            executors["get_bot_instructions"] = { _, _, arguments, _ in
+                await onBotInstructions(arguments["bot"]?.asString, "view", nil)
+            }
+            executors["set_bot_instructions"] = { _, _, arguments, _ in
+                let mode = arguments["mode"]?.asString ?? "append"
+                guard ["append", "replace"].contains(mode) else { return ["error": "mode must be 'append' or 'replace'"] }
+                guard let text = arguments["text"]?.asString else { return ["error": "set_bot_instructions requires 'text'"] }
+                return await onBotInstructions(arguments["bot"]?.asString, mode, text)
             }
         }
         if let onCreateBot {
@@ -615,6 +630,32 @@ public struct ToolRegistry: Sendable {
         )
     }
 
+    private static var getBotInstructionsSchema: ToolSchema {
+        ToolSchema(
+            name: "get_bot_instructions",
+            description: "Read a bot's custom instructions: the part of its system prompt its user added (its role, how it should "
+                + "work). Leave out 'bot' for your own. Read before changing them.",
+            parameters: ["type": "object", "properties": [
+                "bot": ["type": "string", "description": "The bot's name; omit for yourself."],
+            ], "required": []]
+        )
+    }
+
+    private static var setBotInstructionsSchema: ToolSchema {
+        ToolSchema(
+            name: "set_bot_instructions",
+            description: "Change a bot's custom instructions (yours, or another bot's), for a lasting change to its role or how it "
+                + "works — not for one task (send that with message_bot). The user approves every change. 'append' adds a "
+                + "paragraph; 'replace' rewrites them all (read them first with get_bot_instructions and keep what still applies). "
+                + "The built-in rules and tools are not part of this and can't be changed.",
+            parameters: ["type": "object", "properties": [
+                "bot": ["type": "string", "description": "The bot's name; omit for yourself."],
+                "mode": ["type": "string", "enum": ["append", "replace"], "description": "append (default) or replace."],
+                "text": ["type": "string", "description": "The paragraph to add, or the full new instructions. Plain prose, no secrets."],
+            ], "required": ["text"]]
+        )
+    }
+
     private static var createBotSchema: ToolSchema {
         ToolSchema(
             name: "create_bot",
@@ -663,7 +704,8 @@ public struct ToolRegistry: Sendable {
                                    "items": ["type": "object", "properties": [
                                        "step": ["type": "integer"],
                                        "after": ["type": "array", "items": ["type": "integer"]],
-                                   ] as [String: Any], "required": ["step", "after"]] as [String: Any]] as [String: Any]],
+                                   ] as [String: Any], "required": ["step", "after"]] as [String: Any]] as [String: Any],
+                    "validator": str("Optional: the member who checks submitted steps and marks them done, if not you (e.g. the tester when you only coordinate).")],
                    required: ["title", "steps"]),
             schema("add_goal_step", "Append a step to the checklist. Start its text with the member who should do it (\"Bugbot: …\"). Any member can add a step; the owner can edit or remove it.",
                    ["text": str("The new step."),
