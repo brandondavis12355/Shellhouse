@@ -1000,7 +1000,8 @@ public struct ToolRegistry: Sendable {
         [
             "list_files": { sandboxID, sandbox, args, _ in
                 let path = args["path"]?.asString ?? ""
-                let target = (path.isEmpty || path == ".") ? "/workspace" : "/workspace/\(path)"
+                // Relative to /workspace; an absolute path ("/workspace/repo") is taken as is, not doubled.
+                let target = (path.isEmpty || path == ".") ? "/workspace" : (path.hasPrefix("/") ? path : "/workspace/\(path)")
                 do {
                     let result = try await sandbox.exec(sandboxID, command: "ls -1A \(shellQuote(target))", timeout: 20, env: nil)
                     guard result.exitCode == 0 else { return ["error": result.stderr] }

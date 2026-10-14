@@ -136,7 +136,9 @@ public actor AgentRuntime {
     private var chargedThrough = 0
     private var lastPromptTokens = 0
     private var schemaTokens = 0
-    private var countsResentContext: Bool { !(model is OllamaBackend) }
+    /// The local model (also when wrapped by `ModelScheduler`): it keeps the prompt cached, so only new tokens count.
+    private var isLocalModel: Bool { ((model as? ScheduledBackend)?.inner ?? model) is OllamaBackend }
+    private var countsResentContext: Bool { !isLocalModel }
     /// Why the current turn stopped early, for telemetry (nil = it finished).
     private var stopReason: String?
     private var startedAt = Date()
@@ -192,6 +194,8 @@ public actor AgentRuntime {
     private var currentGoal = ""
     private var budgetWarningsSent: Set<Int> = []
     private var abortForStuck: String?
+    /// The text of a reply that announced a step without taking it (see the loop's narration nudge).
+    private var lastNarration: String?
     /// Results this bot already saw, in this run or a recent one (shared across its runs). A run getting back
     /// nothing but already-seen results is waiting or polling, whatever the commands look like, and side
     /// effects (a `git fetch`, a checkout) don't reset it the way they reset the other loop guards.
@@ -518,7 +522,16 @@ public actor AgentRuntime {
                 reply = ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [recovered]), usage: reply.usage)
             }
             messages.append(reply.message)
-            onEvent(.message(reply.message))
+            // After "I'll do X" with no tool call, the model usually repeats that sentence alongside the call:
+            // show it once, not twice.
+            let replyText = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let narrated = lastNarration, !replyText.isEmpty, replyText == narrated, !(reply.message.toolCalls ?? []).isEmpty {
+                var shown = reply.message; shown.content = ""
+                onEvent(.message(shown))
+            } else {
+                onEvent(.message(reply.message))
+            }
+            lastNarration = nil
 
             guard let calls = reply.message.toolCalls, !calls.isEmpty else {
                 let plain = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -544,6 +557,13 @@ public actor AgentRuntime {
                     messages.append(ChatMessage(role: .user, content: text))
                 case .fine:
                     break
+                }
+                if ReplyQuality.looksLikeNarration(plain) || ReplyQuality.endsWithIntent(plain) {
+                    // It said what it would do next: one short push to do it, so the retry is the action itself.
+                    lastNarration = plain
+                    messages.append(ChatMessage(role: .user, content: "You said what you'll do next but didn't call a tool. "
+                        + "Call it now in this reply; don't repeat that text. Next time, put the tool call in the same reply as any sentence about it."))
+                    continue
                 }
                 messages.append(ChatMessage(
                     role: .user,
@@ -921,7 +941,7 @@ public actor AgentRuntime {
         chargedThrough = messages.count
     }
 
-    private var contextWindow: Int { model is OllamaBackend ? OllamaBackend.contextWindowTokens : 32_768 }
+    private var contextWindow: Int { isLocalModel ? OllamaBackend.contextWindowTokens : 32_768 }
 
     private func chargeUsage(_ usage: TokenUsage?) {
         guard let usage else { return }

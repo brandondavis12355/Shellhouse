@@ -46,3 +46,12 @@ final class WaitingLoopTests: XCTestCase {
         XCTAssertEqual(hint["hint"] as? String, "This VM has no `python` command: use `python3`.")
     }
 }
+
+final class RunFixesTests: XCTestCase {
+    func testPipRefusedByPEP668DoesNotTaint() {
+        let refused: [String: Any] = ["stdout": "error: externally-managed-environment\n\n× This environment is externally managed\n", "stderr": ""]
+        XCTAssertTrue(TaintRules.failedBeforeAnyRemoteContent(refused))
+        let hint = ObservationPolicy.annotate(tool: "run_shell", observation: ["exit_code": 1, "stdout": "error: externally-managed-environment"])
+        XCTAssertTrue((hint["hint"] as? String)?.contains(".venv") == true)
+    }
+}

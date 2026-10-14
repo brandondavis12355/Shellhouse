@@ -72,6 +72,9 @@ public enum ObservationPolicy {
     static func recoveryHint(for text: String) -> String? {
         if AuthFailure.matches(text) { return AuthFailure.hint }
         let t = text.lowercased()
+        if t.contains("externally-managed-environment") || t.contains("externally managed") {
+            return "System Python is locked (PEP 668). Use the project's virtual environment (`python3 -m venv .venv`, then `.venv/bin/pip install …`), or `pip install --break-system-packages …` for a quick one-off tool."
+        }
         if t.contains("python: command not found") { return "This VM has no `python` command: use `python3`." }
         if t.contains("no module named pytest") { return "pytest isn't installed here: run the tests with `python3 -m unittest`, or install it with `pip3 install --break-system-packages pytest`." }
         if t.contains("command not found") { return "That program is not installed on this VM. Check with `command -v <name>`; install with `sudo apt-get update && sudo apt-get install -y <package>` if appropriate, or use another tool." }

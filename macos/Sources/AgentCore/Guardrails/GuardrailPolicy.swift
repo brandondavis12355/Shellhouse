@@ -130,6 +130,10 @@ public enum TaintRules {
 
     static func failedBeforeAnyRemoteContent(_ observation: [String: Any]) -> Bool {
         let output = ((observation["stdout"] as? String) ?? "") + "\n" + ((observation["stderr"] as? String) ?? "")
+        // pip refusing to touch the system Python (PEP 668) downloads nothing.
+        if output.contains("externally-managed-environment") || output.contains("This environment is externally managed") {
+            return output.count < 3_000
+        }
         guard AuthFailure.matches(output), !output.contains("remote:") else { return false }
         // Only git/ssh/gh boilerplate around the failure, and nothing long enough to carry a payload.
         return output.count < 600
