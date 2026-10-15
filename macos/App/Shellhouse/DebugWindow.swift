@@ -139,7 +139,9 @@ struct DebugConsoleWindow: View {
     @State private var botFilter: Set<String> = []
     @State private var contextFilter: String?
     @State private var search = ""
-    @State private var follow = true
+    /// Whether the newest entry is in view: new entries only pull the view down when it is, so scrolling up to read
+    /// something stays put while the log keeps filling.
+    @State private var atBottom = true
     @State private var showActivity = true
 
     private var hidden: Set<DebugCategory> {
@@ -309,7 +311,6 @@ struct DebugConsoleWindow: View {
             .fixedSize(horizontal: false, vertical: true)
             Text("\(filtered.count) of \(log.entries.count)").font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary)
             Spacer()
-            Toggle("Follow", isOn: $follow).toggleStyle(.checkbox).help("Keep scrolled to the newest entry")
             Toggle("Activity", isOn: $showActivity).toggleStyle(.checkbox).help("Show what each bot is doing right now")
             Button { copy(filtered) } label: { Label("Copy", systemImage: "doc.on.doc") }
                 .disabled(filtered.isEmpty).help("Copy what's shown (with the filters applied)")
@@ -340,13 +341,24 @@ struct DebugConsoleWindow: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 8) {
                             ForEach(entries) { entry in DebugEntryCard(entry: entry).id(entry.id) }
+                            Color.clear.frame(height: 1).id(TranscriptEnd.id)
+                                .onAppear { atBottom = true }
+                                .onDisappear { atBottom = false }
                         }
                         .padding(14)
                     }
                     .defaultScrollAnchor(.bottom)
                     .onChange(of: entries.last?.id) { _, last in
-                        if follow, let last { proxy.scrollTo(last, anchor: .bottom) }
+                        if atBottom, last != nil { proxy.scrollTo(TranscriptEnd.id, anchor: .bottom) }
                     }
+                    .overlay(alignment: .bottomTrailing) {
+                        if !atBottom {
+                            Button { proxy.scrollTo(TranscriptEnd.id, anchor: .bottom) } label: { Label("Latest", systemImage: "arrow.down") }
+                                .buttonStyle(.borderedProminent).controlSize(.small).padding(14)
+                                .transition(.opacity)
+                        }
+                    }
+                    .motion(Motion.quick, value: atBottom)
                 }
             }
         }
