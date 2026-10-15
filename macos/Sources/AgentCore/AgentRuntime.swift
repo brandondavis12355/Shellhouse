@@ -203,6 +203,8 @@ public actor AgentRuntime {
     /// effects (a `git fetch`, a checkout) don't reset it the way they reset the other loop guards.
     private let seenResults: SeenResults
     private var staleStreak = 0
+    /// How many messages the conversation had after the last compaction (see `compactContextIfNeeded`).
+    private var lastCompactionMessageCount: Int?
     private var abortForStale = false
     static let staleNudgeAt = 4
     static let staleAbortAt = 7
@@ -755,8 +757,18 @@ public actor AgentRuntime {
                 shown["warning"] = trash
             }
         }
-        appendToolResult(name: call.name, observation: shown)
-        onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(shown)))
+        // The same look at the same thing, with the same answer, while the first answer is still in the conversation:
+        // say so instead of pasting it again (it doubled the context and sent bots round in circles).
+        let resultText = jsonString(shown)
+        if Reliability.isOn(.loopGuards), ObservationPolicy.isObservation(decision), resultText.count > 400,
+           messages.suffix(40).contains(where: { $0.role == .tool && $0.toolName == call.name && $0.content == resultText }) {
+            appendToolResult(name: call.name, observation: ["unchanged": true, "note":
+                "Identical to your earlier \(call.name) result with the same arguments, which is still above in this conversation. "
+                + "Nothing changed. Use what you already have and take the next step; don't read it again."])
+        } else {
+            appendToolResult(name: call.name, observation: shown)
+        }
+        onEvent(.toolCompleted(name: call.name, resultJSON: resultText))
         let staleKey = Reliability.isOn(.loopGuards) ? staleKey(call, observation: observation) : nil
         let alreadySeen = staleKey.map { seenResults.saw($0) } ?? false
         // Something changed on the machine (an install, a write, a command with side effects): checking again
@@ -935,6 +947,11 @@ public actor AgentRuntime {
         // formatting); it includes the schemas, so compare it against the whole usable window.
         let reported = lastPromptTokens - schemaTokens
         guard max(estimatedTotal, reported) > threshold else { return }
+        // Just compacted: unless the context is close to the window itself, let the bot work a few steps first.
+        // Compacting every step is slow and each summary of a summary loses more of what it had found.
+        let hardLimit = Int(Double(contextWindow - schemaTokens - ContextBudget.replyReserve) * 0.9)
+        if let last = lastCompactionMessageCount, messages.count < last + 8, max(estimatedTotal, reported) < hardLimit { return }
+        defer { lastCompactionMessageCount = messages.count }
         // Old tool output is usually most of it: dropping that first is free, a summary costs a model call.
         let before = max(estimatedTotal, reported)
         let collapsed = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)

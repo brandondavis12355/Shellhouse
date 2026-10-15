@@ -328,9 +328,16 @@ private struct GroupTile: View {
     var body: some View {
         VStack(spacing: 6) {
             AvatarCluster(members: members, size: 96)
+                .overlay(alignment: .topTrailing) {
+                    if group.hasUnread {
+                        Circle().fill(Theme.accent).frame(width: 14, height: 14)
+                            .overlay(Circle().strokeBorder(Theme.bg, lineWidth: 2))
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
             Text(group.name)
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 14, weight: group.hasUnread ? .semibold : .regular))
+                .foregroundStyle(group.hasUnread ? Color.primary : Color.secondary)
                 .lineLimit(1)
                 .frame(maxWidth: 108)
         }
@@ -338,6 +345,7 @@ private struct GroupTile: View {
         .padding(.vertical, 8)
         .background(isSelected ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .motion(Motion.quick, value: isSelected)
+        .motion(Motion.quick, value: group.hasUnread)
         .contentShape(Rectangle())
         .help(group.displayMessages.last.map { "\($0.speakerName): \($0.text)" } ?? "\(group.memberBotIDs.count) members")
     }
@@ -365,12 +373,17 @@ private struct GroupSidebarRow: View {
             AvatarCluster(members: members, size: 48)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
-                    Text(group.name).font(.system(size: 17, weight: .medium)).lineLimit(1)
+                    Text(group.name).font(.system(size: 17, weight: group.hasUnread ? .semibold : .medium)).lineLimit(1)
                     Spacer(minLength: 4)
                     Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(.tertiary)
                 }
                 if let preview {
-                    Text(preview).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(preview).font(.system(size: 15))
+                            .foregroundStyle(group.hasUnread ? Color.primary : Color.secondary).lineLimit(1)
+                        Spacer(minLength: 0)
+                        if group.hasUnread { Circle().fill(Theme.accent).frame(width: 9, height: 9) }
+                    }
                 }
             }
         }

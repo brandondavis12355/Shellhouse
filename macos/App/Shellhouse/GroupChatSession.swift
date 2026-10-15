@@ -16,7 +16,17 @@ final class GroupChatSession: Identifiable {
     let id: String
     var name: String
     var memberBotIDs: [String]
-    var displayMessages: [GroupMessage] = []
+    var displayMessages: [GroupMessage] = [] {
+        didSet {
+            // A new message from a bot or a friend (not your own, not a system notice) is unread until you open the chat.
+            guard displayMessages.count > oldValue.count, let last = displayMessages.last,
+                  last.speakerBotID != nil || last.externalUserID != nil, last.isSystem != true else { return }
+            hasUnread = true
+        }
+    }
+    /// Set when a new message arrives; cleared by `markRead()` (the chat calls it while it is on screen).
+    var hasUnread = false
+    func markRead() { if hasUnread { hasUnread = false } }
     var input = ""
     var isBusy = false
     var status = ""
@@ -616,7 +626,8 @@ final class GroupChatSession: Identifiable {
                 if probeTurn {
                     extraSuffix += "\n\nThe group has been quiet for \(Int(Self.idleProbeSeconds)) seconds while this goal is active. "
                         + "You own it: work out what is stuck (a step nobody is on, someone waiting, a missing answer), then act with tools "
-                        + "or @mention whoever should move next. If everything is genuinely in hand, finish silently."
+                        + "or @mention whoever should move next. Don't re-read files you already read or ask someone who is already working "
+                        + "on it for an update. If everything is genuinely in hand, finish silently."
                 }
                 if resumeTurn {
                     extraSuffix += "\n\nYou just gave the user a status report. Now get back to work on the goal with tools: "
@@ -877,6 +888,9 @@ final class GroupChatSession: Identifiable {
             + "@mention the specific member who should act next, and don't reply just to acknowledge. "
             + "Every member has its OWN Linux VM: a step that installs or changes something affects only the assignee's VM, "
             + "so if every member needs it, there must be one step per member. "
+            + "That also means your copy of the code can be behind or different from a teammate's: before you say something is "
+            + "missing, broken or fixed, run `git fetch` and `git log -1 --oneline`, check you're on the branch and commit being "
+            + "discussed, and name that commit in what you report. Never judge someone's work from a stale checkout. "
             + "A step marked \"each member on their own VM\" is done by every listed member checking in their OWN part "
             + "(update_goal_step → done with evidence from their own tools); nobody can check in for anyone else."
         let ownerName = members.first(where: { $0.id == goal.ownerBotID })?.name ?? "the owner"
@@ -1013,6 +1027,8 @@ final class GroupChatSession: Identifiable {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard let self else { return }
                 let busy = !self.workers.isEmpty
+                    || self.members.contains { $0.isProcessingMessage }
+                    || BotActivity.shared.spans.contains { span in self.members.contains { $0.id == span.botID } }
                 if busy || self.displayMessages.count != lastCount {
                     lastCount = self.displayMessages.count
                     lastActivity = Date()
@@ -1024,6 +1040,12 @@ final class GroupChatSession: Identifiable {
                       let owner = self.members.first(where: { $0.id == live.ownerBotID }),
                       !self.members.contains(where: { $0.pendingApproval != nil || $0.pendingCredentialRequest != nil }) else { continue }
                 probed = true
+                // Work already submitted waits on its validator, not on the owner: wake the validator (once) rather
+                // than sending the owner to ask it again and again while it is mid-check.
+                if live.steps.contains(where: { $0.status == .review }) {
+                    self.requestOwnerReview()
+                    continue
+                }
                 self.probeDue.insert(owner.id)
                 self.wake(owner)
             }

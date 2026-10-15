@@ -83,4 +83,35 @@ final class ContextBudgetTests: XCTestCase {
         XCTAssertLessThanOrEqual(model.summaryRequests.count, 7, "compaction must not re-run on every step (14 steps here)")
         XCTAssertFalse(model.summaryRequests.contains { $0.contains { $0.content == task } }, "the task is never summarized away")
     }
+
+    private final class Rereads: ModelBackend, @unchecked Sendable {
+        let name = "rereads"
+        private let lock = NSLock()
+        private var calls = 0
+        func supportsVision(model: String?) async -> Bool { false }
+        func availableModels() async throws -> [String] { [] }
+        func chat(messages: [ChatMessage], tools: [ToolSchema], model: String?, temperature: Double) async throws -> ModelReply {
+            lock.lock(); defer { lock.unlock() }
+            calls += 1
+            if calls <= 2 {   // the same look at the same thing, twice
+                return ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [
+                    ToolCall(name: "run_shell", arguments: ["command": AnyCodable("cat same.txt")]),
+                ]), usage: nil)
+            }
+            return ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [
+                ToolCall(name: "finish_task", arguments: ["summary": AnyCodable("done"), "outcome": AnyCodable("done")]),
+            ]), usage: nil)
+        }
+    }
+
+    func testAnIdenticalReadOfTheSameThingIsNotPastedTwice() async {
+        let runtime = AgentRuntime(model: Rereads(), sandbox: Chatty(), sandboxID: "t",
+                                   budgets: AgentRuntime.Budgets(maxIterations: 10), requestApproval: { _ in .approve })
+        await runtime.start(systemPrompt: "system", goal: "look")
+        let results = await runtime.transcript().filter { $0.role == .tool }
+        XCTAssertEqual(results.count, 2)
+        XCTAssertTrue(results[0].content.contains("line of output"))
+        XCTAssertTrue(results[1].content.contains("Identical to your earlier"), results[1].content)
+        XCTAssertLessThan(results[1].content.count, 600)
+    }
 }

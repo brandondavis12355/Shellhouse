@@ -222,6 +222,8 @@ struct GroupChatDetailView: View {
             }
         }
         .background(Theme.bg)
+        .onAppear { group.markRead() }
+        .onChange(of: group.displayMessages.count) { _, _ in group.markRead() }
         // Lower than before (was 700/600) — see `BotDetailView`'s
         // matching comment: this fought the debug console's own
         // `HSplitView` divider, which can't shrink this side below

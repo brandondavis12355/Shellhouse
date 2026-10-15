@@ -130,7 +130,7 @@ public enum PagedRead {
         var out: [String: Any] = ["content": picked.joined(separator: "\n"), "start_line": start, "end_line": end, "total_lines": total]
         if end < total {
             out["next_offset"] = end + 1
-            out["note"] = "Showing lines \(start)–\(end) of \(total). Call read_file with offset \(end + 1) to continue."
+            out["note"] = "Showing lines \(start)–\(end) of \(total). Call read_file with offset \(end + 1) to continue. This is not the whole file: before saying something is missing from it, read the rest or use search_files."
         }
         return out
     }

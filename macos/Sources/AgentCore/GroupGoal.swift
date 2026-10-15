@@ -533,8 +533,10 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         }
         guard !lines.isEmpty else { return nil }
         return "GOAL REVIEW (you, \(validatorName), validate this goal's submitted work):\n" + lines.joined(separator: "\n")
-            + "\nFor each: get the work onto your VM (git fetch, then look at origin/<branch>), run the check yourself, then "
-            + "update_goal_step done quoting what YOU saw, or set it back to inProgress with what's missing and @mention the member. "
+            + "\nFor each: get the work onto your VM (git fetch, then check out the exact branch and commit the submitter names; "
+            + "if they named none, ask once), run the check yourself, then "
+            + "update_goal_step done quoting what YOU saw and the commit you tested, or set it back to inProgress with what's missing and @mention the member. "
+            + "Check what the step asked for, not an unrelated review of the whole project. "
             + "If, on checking, nothing needs you, finish silently."
     }
 
