@@ -26,7 +26,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 . "$REPO/scripts/lib/common.sh"
 
-CONFIGURATION="Release"; TEAM_ARG=""; WITH_MODELS=1; LAUNCH=1; ASSUME_YES=0
+CONFIGURATION="Release"; TEAM_ARG=""; WITH_MODELS=1; LAUNCH=1; ASSUME_YES=0; PREPARE_ONLY=0
 DEFAULT_MODELS=("qwen2.5:7b-instruct" "nomic-embed-text")
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -35,6 +35,9 @@ while [ $# -gt 0 ]; do
     --no-models) WITH_MODELS=0; shift ;;
     --no-launch) LAUNCH=0; shift ;;
     --yes) ASSUME_YES=1; shift ;;
+    # Only the Mac's tools and signing (initial_setup.sh does this first, so every question comes up front).
+    --prepare-only) PREPARE_ONLY=1; shift ;;
+    --no-ui) SHELLHOUSE_UI=0; export SHELLHOUSE_UI; shift ;;
     -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) die "Unknown option: $1 (see --help)" ;;
   esac
@@ -47,18 +50,47 @@ printf '%sShellhouse — build and install%s\n' "$C_BOLD" "$C_RESET"
 
 # --- 1. Tools --------------------------------------------------------------------------------------------
 step "Checking Xcode"
-DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
-if [ -z "$DEV_DIR" ] || [[ "$DEV_DIR" == *CommandLineTools* ]]; then
-  if [ -d /Applications/Xcode.app ]; then
-    die "Xcode is installed but the command-line tools point elsewhere. Run:  sudo xcode-select -s /Applications/Xcode.app"
+# Admin steps (pointing the developer tools at Xcode, accepting its license, its first-launch components) go
+# through macOS's own password dialog with the UI, or sudo in Terminal.
+as_admin() {
+  if ui_on; then
+    osascript - "$1" >/dev/null <<'AS'
+on run argv
+  do shell script (item 1 of argv) with administrator privileges
+end run
+AS
+  else
+    sudo /bin/sh -c "$1"
   fi
-  die "Xcode is required (the Command Line Tools alone can't build the app). Install it from the App Store, open it once, then run ./build.sh again."
+}
+# The Xcode the developer tools already point at (a beta, say), else the first one in /Applications.
+find_xcode() {
+  local selected; selected="$(xcode-select -p 2>/dev/null || true)"
+  if [[ "$selected" == /Applications/Xcode*.app/Contents/Developer ]]; then printf '%s' "${selected%/Contents/Developer}"; return; fi
+  ls -d /Applications/Xcode*.app 2>/dev/null | head -1
+}
+XCODE="$(find_xcode)"
+while [ -z "$XCODE" ]; do
+  # Xcode only comes from the App Store (or Apple's developer site) with your Apple ID: open its page and wait.
+  confirm "Shellhouse is built with Xcode, which isn't installed. It's free from the App Store (about 10 GB). Open its App Store page now? Install it there, then come back here and continue." Y "Open the App Store" "Cancel" \
+    || die "Xcode is needed to build the app. Install it from the App Store, then run this again."
+  open "macappstore://apps.apple.com/app/id497799835"
+  until [ -n "$(find_xcode)" ]; do
+    confirm "Waiting for Xcode to finish installing from the App Store. Continue when it's done." Y "It's installed" "Cancel" \
+      || die "Stopped while waiting for Xcode."
+  done
+  XCODE="$(find_xcode)"
+done
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+NEEDS=""
+[[ "$DEV_DIR" == "$XCODE"* ]] || NEEDS="xcode-select -s '$XCODE/Contents/Developer'; "
+DEVELOPER_DIR="$XCODE/Contents/Developer" xcodebuild -license check >/dev/null 2>&1 || NEEDS="$NEEDS'$XCODE/Contents/Developer/usr/bin/xcodebuild' -license accept; "
+DEVELOPER_DIR="$XCODE/Contents/Developer" xcodebuild -checkFirstLaunchStatus >/dev/null 2>&1 || NEEDS="$NEEDS'$XCODE/Contents/Developer/usr/bin/xcodebuild' -runFirstLaunch; "
+if [ -n "$NEEDS" ]; then
+  info "Finishing Xcode's one-time setup (asks for your Mac password)…"
+  as_admin "$NEEDS" || die "Couldn't finish Xcode's setup. Open Xcode once (it offers the same steps), then run this again."
 fi
-xcodebuild -version >/dev/null 2>&1 || die "xcodebuild doesn't run. Open Xcode once to finish its setup, or run:  sudo xcodebuild -license accept"
-if ! xcodebuild -checkFirstLaunchStatus >/dev/null 2>&1; then
-  info "Xcode needs its first-launch components; installing (asks for your password)…"
-  sudo xcodebuild -runFirstLaunch || die "Couldn't finish Xcode's first-launch setup. Open Xcode once, then try again."
-fi
+xcodebuild -version >/dev/null 2>&1 || die "xcodebuild still doesn't run. Open Xcode once, then run this again."
 ok "$(xcodebuild -version | head -1)"
 
 # Homebrew: already on PATH, installed but not on PATH yet (a new shell), or installed now with its official
@@ -102,16 +134,34 @@ detect_teams() {
   done | sed -n 's/^[[:space:]]*organizationalUnitName[[:space:]]*=[[:space:]]*\([A-Z0-9]\{10\}\).*/\1/p' | sort -u
   rm -rf "$tmp"
 }
+xcode_signed_in() { defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists 2>/dev/null | grep -q '@'; }
 TEAM="${TEAM_ARG:-$(current_team)}"
 if [ -z "$TEAM" ]; then
   TEAMS="$(detect_teams || true)"
+  if [ -z "$TEAMS" ] && ! xcode_signed_in; then
+    # Signing needs your Apple ID in Xcode (a free account works). Apple doesn't allow that to be scripted.
+    open -a "$XCODE"
+    until xcode_signed_in; do
+      confirm "Sign in to Xcode with your Apple ID (a free one works): in Xcode, choose Settings… › Accounts › + › Apple ID. Continue when you've signed in." Y "I've signed in" "Cancel" \
+        || die "Signing in to Xcode is needed to build the app."
+    done
+    TEAMS="$(detect_teams || true)"
+  fi
   COUNT="$(printf '%s' "$TEAMS" | grep -c . || true)"
   if [ "$COUNT" = "1" ]; then
-    TEAM="$TEAMS"; info "Found your signing team: $TEAM"
+    TEAM="$TEAMS"; ok "Found your signing team"
+  elif [ "$COUNT" -gt 1 ] && ui_on && [ "${ASSUME_YES:-0}" != "1" ]; then
+    TEAM="$(osascript - $TEAMS <<'AS' 2>/dev/null
+on run argv
+  set picked to choose from list argv with title "Shellhouse setup" with prompt "Which Apple signing team should the app be signed with?" default items {item 1 of argv}
+  if picked is false then return ""
+  return item 1 of picked
+end run
+AS
+)"
+    [ -n "$TEAM" ] || die "No signing team chosen."
   else
-    [ "$COUNT" -gt 1 ] && info "Signing teams in your keychain: $(echo $TEAMS)"
-    info "Your team ID is in Xcode › Settings › Accounts › (your Apple ID) › team (10 letters and digits)."
-    TEAM="$(ask "Apple signing team ID" "$(printf '%s' "$TEAMS" | head -1)")"
+    TEAM="$(ask "Your Apple signing team ID: in Xcode › Settings… › Accounts, select your Apple ID; it's the 10-character Team ID next to your team" "$(printf '%s' "$TEAMS" | head -1)")"
   fi
 fi
 [[ "$TEAM" =~ ^[A-Z0-9]{10}$ ]] || die "\"$TEAM\" isn't a team ID (10 capital letters and digits). See README.md › Building the app."
@@ -120,6 +170,15 @@ if [ "$(current_team)" != "$TEAM" ]; then
   ok "Wrote macos/Signing.local.xcconfig (git-ignored)"
 else
   ok "Team $TEAM"
+fi
+
+if [ "$PREPARE_ONLY" = "1" ]; then
+  # Ollama too, so nothing is left to ask about later.
+  if [ "$WITH_MODELS" = "1" ] && ! command -v ollama >/dev/null && [ ! -d /Applications/Ollama.app ]; then
+    ensure_brew; info "Installing Ollama with Homebrew…"; brew install ollama >/dev/null && ok "Installed Ollama"
+  fi
+  ok "This Mac has everything it needs to build Shellhouse"
+  exit 0
 fi
 
 # --- 3. Build and install --------------------------------------------------------------------------------
@@ -134,7 +193,8 @@ if ! ( cd "$MACOS" && xcodebuild -project "Shellhouse.xcodeproj" -scheme "Shellh
         -destination 'platform=macOS' -derivedDataPath "$DERIVED" -allowProvisioningUpdates build ) >"$LOG" 2>&1; then
   grep -E "error:|Provisioning|provisioning profile|No Account|signing" "$LOG" | sort -u | head -15 >&2 || true
   if grep -qiE "provisioning profile|No Account|requires a development team|Signing for" "$LOG"; then
-    die "Signing failed. Do the one-time Xcode step in README.md › Building the app (sign in to Xcode with your Apple ID and build once from Xcode), then run ./build.sh again. Full log: $LOG"
+    open -a "$XCODE" "$MACOS/Shellhouse.xcodeproj" 2>/dev/null || true
+    die "Signing failed. Xcode is open on the project: select the Shellhouse target › Signing & Capabilities, pick your team, press ⌘B once, then run this again. Full log: $LOG"
   fi
   die "The build failed. Full log: $LOG"
 fi

@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Sets up a Linux box as Shellhouse's sandbox host, from your Mac, over ordinary SSH.
+# The one-stop install: sets up this Mac, a Linux box (over ordinary SSH) and the Shellhouse app, start to finish.
+#
+#   1. This Mac: Xcode (opens the App Store if it's missing, then finishes its one-time setup), Homebrew,
+#      XcodeGen, your Apple signing team (opens Xcode to sign in if needed), and Ollama. Every question comes
+#      up front, before the long parts.
 #
 #   ./initial_setup.sh                    # asks for the address and user
 #   ./initial_setup.sh --host 192.0.2.10 --user alice
 #
-# What it does, start to finish:
+# Then the Linux box:
 #   1. Connects over SSH (password or your key; offers to install your key so later runs don't ask).
 #   2. Copies the server side of this repo to ~/shellhouse on the host.
 #   3. On the host (asks for your sudo password once): installs Docker and Compose if they're missing,
@@ -12,7 +16,8 @@
 #      with a fresh manager token, builds the sandbox image and starts the sandbox manager.
 #      Everything it changes is recorded in ~/.shellhouse-install-state for uninstall.sh.
 #   4. Prepares the app's settings (host, user, manager token) in ~/.config/shellhouse, readable only by you.
-#      If Shellhouse is already installed, hands them over now; otherwise ./build.sh does it after installing.
+# And last, the app (./build.sh): builds it, installs it in /Applications, pulls the default models, starts it
+# and connects it to the box. (--no-app skips this; ./build.sh alone rebuilds the app any time.)
 #
 # Run it again with the same box to update it: nothing is overwritten (its .env and token stay, the image is rebuilt).
 # Run it with a NEW box to move to it (a changeover): everything in the app on this Mac (settings, bots, groups,
@@ -29,6 +34,9 @@
 #   --no-sudo-in-sandboxes  don't give the bots sudo inside their own VMs (they then can't apt-get install)
 #   --host-fingerprint SHA256:…  the box's host key fingerprint, to verify it without asking
 #                         (on the box: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)
+#   --no-app              set up the box only (no Mac tools, no app build)
+#   --with-relay          also set up the friends relay (share group chats with friends) and connect the app to it
+#   --with-egress         also put the bots' outbound traffic behind an allowlist (experimental; docs/EGRESS.md)
 #   --rotate-token        replace the sandbox manager's token with a new one (box and app together), nothing else
 #   --no-ui               ask in Terminal instead of macOS dialogs
 #   --yes                 accept the defaults instead of asking (needs --host-fingerprint for a new box)
@@ -49,20 +57,24 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 . "$REPO/scripts/lib/common.sh"
 
-HOST_ARG=""; USER_ARG=""; HOST_FLAGS=(); ASSUME_YES=0; ROTATE=0; HOST_FINGERPRINT=""; SHELLHOUSE_UI=1
+HOST_ARG=""; USER_ARG=""; HOST_FLAGS=(); ASSUME_YES=0; ROTATE=0; HOST_FINGERPRINT=""; SHELLHOUSE_UI=1; WITH_APP=1; ASKED_SMOL=0
+WANT_RELAY=""; WANT_EGRESS=""; WANT_FC=""; NEW_RELAY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST_ARG="${2:?--host needs a value}"; shift 2 ;;
     --user) USER_ARG="${2:?--user needs a value}"; shift 2 ;;
-    --with-smolagents) HOST_FLAGS+=(--with-smolagents); shift ;;
-    --with-firecracker) HOST_FLAGS+=(--with-firecracker); shift ;;
-    --no-firecracker) HOST_FLAGS+=(--no-firecracker); shift ;;
+    --with-smolagents) HOST_FLAGS+=(--with-smolagents); ASKED_SMOL=1; shift ;;
+    --no-app) WITH_APP=0; shift ;;
+    --with-relay) WANT_RELAY=1; shift ;;
+    --with-egress) WANT_EGRESS=1; shift ;;
+    --with-firecracker) WANT_FC=1; shift ;;
+    --no-firecracker) WANT_FC=0; shift ;;
     --no-sudo-in-sandboxes) HOST_FLAGS+=(--no-sudo-in-sandboxes); shift ;;
     --yes) ASSUME_YES=1; HOST_FLAGS+=(--yes); shift ;;
     --host-fingerprint) HOST_FINGERPRINT="${2:?--host-fingerprint needs a value}"; shift 2 ;;
     --rotate-token) ROTATE=1; shift ;;
     --no-ui) SHELLHOUSE_UI=0; shift ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
     *) die "Unknown option: $1 (see --help)" ;;
   esac
 done
@@ -85,11 +97,23 @@ write_pending_settings() {
         '<plist version="1.0"><dict>' \
         '<key>format</key><string>shellhouse-settings</string><key>version</key><integer>1</integer>'
       if [ "$with_host" = "1" ]; then
-        printf '<key>app</key><dict><key>linuxHostSettings.v1</key><dict><key>host</key><string>%s</string><key>user</key><string>%s</string><key>recentHosts</key><array><string>%s</string></array></dict></dict>\n' \
+        printf '<key>app</key><dict><key>linuxHostSettings.v1</key><dict><key>host</key><string>%s</string><key>user</key><string>%s</string><key>recentHosts</key><array><string>%s</string></array></dict>' \
           "$(xml_escape "$SHELLHOUSE_HOST")" "$(xml_escape "$SHELLHOUSE_USER")" "$(xml_escape "$SHELLHOUSE_HOST")"
+        # A relay set up in this run: the app connects to it (an existing one's app settings are left alone).
+        if [ "${NEW_RELAY:-0}" = "1" ] && [ -n "${RELAY_FP:-}" ]; then
+          printf '<key>relaySettings.v1</key><dict><key>address</key><string>%s</string><key>fingerprint</key><string>%s</string><key>displayName</key><string>%s</string></dict>' \
+            "$(xml_escape "$RELAY_ADDRESS")" "$(xml_escape "$RELAY_FP")" "$(xml_escape "$RELAY_NAME")"
+        fi
+        printf '</dict>\n'
       fi
       [ -n "$keys" ] && printf '<key>sshKnownHosts</key><array>%s</array>\n' "$keys"
-      printf '<key>secrets</key><dict><key>SANDBOX_MANAGER_TOKEN</key><string>%s</string></dict>\n' "$token"
+      printf '<key>secrets</key><dict><key>SANDBOX_MANAGER_TOKEN</key><string>%s</string>' "$token"
+      if [ "$with_host" = "1" ] && [ "${NEW_RELAY:-0}" = "1" ]; then
+        relay_token="$(ssh_run "sed -n 's/^RELAY_REGISTRATION_TOKEN=//p' ~/$SHELLHOUSE_REMOTE_DIR/.env | head -1")"
+        [[ "$relay_token" =~ ^[A-Za-z0-9]{16,}$ ]] && printf '<key>RELAY_REGISTRATION_TOKEN</key><string>%s</string>' "$relay_token"
+        unset relay_token
+      fi
+      printf '</dict>\n'
       printf '%s\n' '</dict></plist>'
     } > "$SHELLHOUSE_PENDING_SETTINGS" )
   unset token
@@ -122,6 +146,14 @@ if [ "$ROTATE" = "1" ]; then
   exit 0
 fi
 
+# This Mac first: Xcode, Homebrew, XcodeGen, signing, Ollama. Anything it needs from you is asked now.
+BUILD_FLAGS=()
+[ "$ASSUME_YES" = "1" ] && BUILD_FLAGS+=(--yes)
+[ "$SHELLHOUSE_UI" = "0" ] && BUILD_FLAGS+=(--no-ui)
+if [ "$WITH_APP" = "1" ]; then
+  "$REPO/build.sh" --prepare-only ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} || die "This Mac isn't ready to build the app yet (see above). Fix that and run ./initial_setup.sh again."
+fi
+
 step "Which Linux box?"
 SAVED_HOST="$SHELLHOUSE_HOST"; SAVED_USER="$SHELLHOUSE_USER"
 [ -n "$SAVED_HOST" ] && info "Shellhouse currently uses $SAVED_USER@$SAVED_HOST. Enter a different box to move to it."
@@ -146,10 +178,63 @@ else
 fi
 save_state
 
+# The optional smolagents engine (experimental; docs/SMOLAGENTS.md) needs one more sshd setting on the box.
+if [ "$ASKED_SMOL" = "0" ] && [ "$ASSUME_YES" != "1" ] \
+   && confirm "Also prepare the box for the optional smolagents agent engine? It's experimental; you can add it later by running this again with --with-smolagents." N "Prepare it" "Not now"; then
+  HOST_FLAGS+=(--with-smolagents)
+fi
+
 step "Connecting"
+# SSH has to be running on the box before anything else can happen; it can only be started there.
+until nc -z -G 5 "$SHELLHOUSE_HOST" 22 >/dev/null 2>&1; do
+  cmds="Ubuntu/Debian:  sudo apt-get install -y openssh-server && sudo systemctl enable --now ssh
+Fedora:         sudo dnf install -y openssh-server && sudo systemctl enable --now sshd"
+  printf '%s\n' "$cmds" | pbcopy 2>/dev/null || true
+  confirm "$SHELLHOUSE_HOST doesn't answer on SSH (port 22). On the box itself, open a terminal and run (copied to your clipboard):
+
+$cmds
+
+Then continue. (Also check the address, and that both machines are on the same network.)" Y "Check again" "Cancel" \
+    || die "SSH isn't reachable on $SHELLHOUSE_HOST."
+done
+ok "$SHELLHOUSE_HOST answers on SSH"
 ssh_connect
 NEW_TARGET="$SSH_TARGET"
 trap 'ssh_close; [ -n "${OLD_TARGET:-}" ] && ssh "${SSH_OPTS[@]}" -O exit "$OLD_TARGET" >/dev/null 2>&1; true' EXIT
+
+# Optional parts. A relay the box already runs is kept as it is (and the app's own relay settings aren't touched).
+RELAY_EXISTS=0
+ssh_run "grep -q '^RELAY_BIND=[0-9]' ~/$SHELLHOUSE_REMOTE_DIR/.env 2>/dev/null && test -f ~/$SHELLHOUSE_REMOTE_DIR/group-relay/certs/fullchain.pem" 2>/dev/null && RELAY_EXISTS=1
+if [ "$RELAY_EXISTS" = "1" ]; then
+  info "The friends relay is already set up on this box; it's left as it is."
+elif [ "$WANT_RELAY" = "1" ] || { [ -z "$WANT_RELAY" ] && [ "$ASSUME_YES" != "1" ] \
+     && confirm "Also set up the friends relay on this box? It lets friends' Shellhouse apps join your group chats." N "Set it up" "Not now"; }; then
+  if [[ "$SHELLHOUSE_HOST" =~ ^[0-9.]+$ ]]; then RELAY_IP="$SHELLHOUSE_HOST"
+  else RELAY_IP="$(ssh_run "hostname -I | awk '{print \$1}'")"; fi
+  RELAY_IP="$(ask "Address friends reach the relay at (this box's address on your network)" "$RELAY_IP")"
+  [[ "$RELAY_IP" =~ ^[0-9.]+$ ]] || die "The relay needs an IP address to listen on."
+  RELAY_NAME="$(ask "Your name, as friends will see it" "$(id -F 2>/dev/null || id -un)")"
+  HOST_FLAGS+=("--with-relay=$RELAY_IP:8443"); NEW_RELAY=1; RELAY_ADDRESS="https://$RELAY_IP:8443"
+fi
+if [ "$WANT_EGRESS" = "1" ] || { [ -z "$WANT_EGRESS" ] && [ "$ASSUME_YES" != "1" ] \
+   && confirm "Also restrict the bots' internet access to an allowlist (egress proxy)? It's experimental: bots can only reach the listed sites (package mirrors, GitHub, PyPI…) until you add more." N "Restrict it" "Leave it open"; }; then
+  HOST_FLAGS+=(--with-egress)
+fi
+# Firecracker microVMs instead of Docker containers, if the box has KVM. Once on, later runs keep it.
+BOX_KVM=0; BOX_FC=0
+ssh_run "test -c /dev/kvm" 2>/dev/null && BOX_KVM=1
+ssh_run "grep -q '^SANDBOX_BACKEND=firecracker' ~/$SHELLHOUSE_REMOTE_DIR/.env" 2>/dev/null && BOX_FC=1
+if [ "$WANT_FC" = "1" ]; then
+  [ "$BOX_KVM" = "1" ] || die "$SHELLHOUSE_HOST has no /dev/kvm, so it can't run Firecracker microVMs (docs/FIRECRACKER.md › Host requirements)."
+  HOST_FLAGS+=(--with-firecracker)
+elif [ "$WANT_FC" = "0" ]; then
+  HOST_FLAGS+=(--no-firecracker)
+elif [ "$BOX_FC" = "1" ]; then
+  info "The bots run as Firecracker microVMs on this box; that's kept (--no-firecracker switches back to Docker)."
+elif [ "$BOX_KVM" = "1" ] && [ "$ASSUME_YES" != "1" ] \
+     && confirm "$SHELLHOUSE_HOST supports KVM. Run each bot's computer as its own Firecracker microVM instead of a Docker container? Stronger isolation (its own kernel); the first setup builds a guest kernel and disk image, about 10 minutes." N "Use microVMs" "Keep Docker"; then
+  HOST_FLAGS+=(--with-firecracker)
+fi
 
 # The old box, for a changeover: reachable (the password is asked once if needed), or the move goes on without it.
 OLD_TARGET=""; CARRY_ENV=0; CARRY_VOLUMES=0
@@ -238,23 +323,33 @@ if [ "$CARRY_VOLUMES" = "1" ]; then
   old_run "rm -f /tmp/shellhouse-host-volume.sh" || true
 fi
 
+if [ "$NEW_RELAY" = "1" ]; then
+  # The certificate's fingerprint, for the app to pin.
+  RELAY_FP="$(ssh_run "openssl x509 -in ~/$SHELLHOUSE_REMOTE_DIR/group-relay/certs/fullchain.pem -noout -fingerprint -sha256 2>/dev/null || sudo -n openssl x509 -in ~/$SHELLHOUSE_REMOTE_DIR/group-relay/certs/fullchain.pem -noout -fingerprint -sha256" | sed 's/.*=//')"
+  [ -n "$RELAY_FP" ] || warn "Couldn't read the relay's certificate fingerprint; set the relay up in the app's Friends screen."
+fi
+
 step "Preparing the app's settings"
 write_pending_settings 1
 ok "Saved for the app (readable only by you; deleted once the app takes it)"
+FROM_HOST="${SHELLHOUSE_PREV_HOST:-}"; FROM_USER="${SHELLHOUSE_PREV_USER:-}"
 SHELLHOUSE_PREV_HOST=""; SHELLHOUSE_PREV_USER=""; save_state
 
-if app_installed; then
+if [ "$WITH_APP" = "1" ]; then
+  # Builds and installs the app, pulls the default models, starts it and connects it to the box.
+  ssh_close
+  "$REPO/build.sh" ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} || die "The box is ready, but building the app stopped (see above). Fix that and run ./build.sh; it connects the app when done."
+elif app_installed; then
   hand_off_to_app
-  step "Done"
-  if [ "$CHANGEOVER" = "1" ]; then
-    notify "Shellhouse now uses $SHELLHOUSE_HOST, with all of its settings, bots and groups as they were.
+fi
+step "Done"
+if [ "$CHANGEOVER" = "1" ]; then
+  notify "Shellhouse now uses $SHELLHOUSE_HOST, with all of its settings, bots and groups as they were.
 
-$SHELLHOUSE_PREV_HOST is untouched. Once everything works, remove Shellhouse from it with:
-./uninstall.sh --host $SHELLHOUSE_PREV_HOST --user $SHELLHOUSE_PREV_USER"
-  else
-    notify "Shellhouse is connected to $SHELLHOUSE_HOST. Add a bot from the sidebar's + menu."
-  fi
+$FROM_HOST is untouched. Once everything works, remove Shellhouse from it with:
+./uninstall.sh --host $FROM_HOST --user $FROM_USER"
+elif [ "$WITH_APP" = "1" ] || app_installed; then
+  notify "Everything is set up: Shellhouse is installed and connected to $SHELLHOUSE_HOST. Add your first bot from the sidebar's + menu."
 else
-  step "Host done. Next: build and install the app"
-  notify "$SHELLHOUSE_HOST is ready. Next, run ./build.sh: it installs Shellhouse in /Applications and connects it to the box."
+  notify "$SHELLHOUSE_HOST is ready. Run ./build.sh to install the app; it connects it to the box."
 fi

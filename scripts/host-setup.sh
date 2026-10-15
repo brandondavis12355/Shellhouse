@@ -13,9 +13,15 @@ ALLOW_SUDO=1
 ASSUME_YES=0
 PASSWORD_STDIN=0
 NO_PASSWORD_LOGIN=0
+RELAY_BIND_ARG=""
+WITH_EGRESS=0
 WITH_FIRECRACKER=""      # empty: keep whichever backend this box already uses
 for arg in "$@"; do
   case "$arg" in
+    # The friends relay, listening on this address (the box's own, on the network friends use).
+    --with-relay=*) RELAY_BIND_ARG="${arg#--with-relay=}" ;;
+    # Outbound-traffic allowlist for the bots' VMs (experimental; docs/EGRESS.md).
+    --with-egress) WITH_EGRESS=1 ;;
     # The bots' computers as Firecracker microVMs instead of Docker containers (docs/FIRECRACKER.md).
     --with-firecracker) WITH_FIRECRACKER=1 ;;
     --no-firecracker) WITH_FIRECRACKER=0 ;;
@@ -113,8 +119,23 @@ if ! command -v docker >/dev/null; then
 else
   ok "Docker is already installed ($(docker --version 2>/dev/null | head -1))"
 fi
-docker compose version >/dev/null 2>&1 || sudo docker compose version >/dev/null 2>&1 \
-  || die "Docker Compose v2 isn't available from this distribution's packages. Install it (https://docs.docker.com/compose/install/linux/) and run initial_setup.sh again."
+# Compose v2 where the distribution doesn't package it (Debian 12, for one): Docker's own release of the plugin,
+# from github.com/docker/compose, checked against its published SHA-256 before it's installed.
+if ! docker compose version >/dev/null 2>&1 && ! sudo docker compose version >/dev/null 2>&1; then
+  case "$ARCH" in x86_64|amd64) carch=x86_64 ;; aarch64|arm64) carch=aarch64 ;; armv7l) carch=armv7 ;; *) die "No Docker Compose build for $ARCH." ;; esac
+  note "Docker Compose v2 isn't packaged here; installing Docker's own release of it (github.com/docker/compose)…"
+  url="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$carch"
+  tmpc="$(mktemp -d)"
+  curl -fsSL "$url" -o "$tmpc/docker-compose" && curl -fsSL "$url.sha256" -o "$tmpc/docker-compose.sha256" \
+    || die "Couldn't download Docker Compose from GitHub."
+  ( cd "$tmpc" && sed -i 's#  .*#  docker-compose#; s# \*.*#  docker-compose#' docker-compose.sha256 && sha256sum -c docker-compose.sha256 >/dev/null ) \
+    || die "The Docker Compose download didn't match its published checksum; nothing was installed."
+  sudo install -D -m 755 "$tmpc/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose
+  rm -rf "$tmpc"
+  record "COMPOSE_PLUGIN=/usr/local/lib/docker/cli-plugins/docker-compose"
+  docker compose version >/dev/null 2>&1 || sudo docker compose version >/dev/null 2>&1 || die "Docker Compose still doesn't run."
+  ok "Installed Docker Compose $(docker compose version --short 2>/dev/null || true)"
+fi
 
 if ! systemctl is-enabled docker >/dev/null 2>&1 || ! systemctl is-active docker >/dev/null 2>&1; then
   sudo systemctl enable --now docker >/dev/null 2>&1
@@ -172,13 +193,14 @@ set_env SANDBOX_ALLOW_SUDO "$ALLOW_SUDO"
 DGID="$(stat -c '%g' /var/run/docker.sock)"
 set_env DOCKER_GID "$DGID"
 # A changeover from another box: its options come along (initial_setup.sh copied them to .env.carryover), but not
-# what is this machine's own (the token, the docker group, the socket owner, the relay's address).
+# what is this machine's own (the token, the docker group, the socket owner, the relay's address, and whether it
+# runs Docker containers or Firecracker microVMs: that is asked for each box).
 if [ -f .env.carryover ]; then
   carried=0
   while IFS= read -r line; do
     [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
-    case "$key" in MANAGER_TOKEN|DOCKER_GID|MANAGER_SOCKET_UID|MANAGER_SOCKET_GID|MANAGER_SOCKET_HOST_DIR|RELAY_BIND|EGRESS_ADMIN_TOKEN|SECRETS_KEY) continue ;; esac
+    case "$key" in SANDBOX_BACKEND|COMPOSE_FILE|MANAGER_TOKEN|DOCKER_GID|MANAGER_SOCKET_UID|MANAGER_SOCKET_GID|MANAGER_SOCKET_HOST_DIR|RELAY_BIND|EGRESS_ADMIN_TOKEN|SECRETS_KEY) continue ;; esac
     set_env "$key" "$value"; carried=$((carried + 1))
   done < .env.carryover
   rm -f .env.carryover
@@ -212,6 +234,63 @@ if curl -fsS --unix-socket sandbox-manager-run/manager.sock http://localhost/hea
   ok "Sandbox manager is up"
 else
   note "The manager socket exists but /healthz didn't answer yet; it may still be starting."
+fi
+
+# --- Optional: the friends relay -------------------------------------------------------------------------
+if [ -n "$RELAY_BIND_ARG" ]; then
+  step "Setting up the friends relay"
+  RELAY_IP="${RELAY_BIND_ARG%%:*}"; RELAY_PORT_SET="8443"
+  [[ "$RELAY_BIND_ARG" == *:* ]] && RELAY_PORT_SET="${RELAY_BIND_ARG##*:}"
+  set_env RELAY_BIND "$RELAY_IP"
+  set_env RELAY_PORT "$RELAY_PORT_SET"
+  grep -q '^RELAY_REGISTRATION_TOKEN=.\+' .env || set_env RELAY_REGISTRATION_TOKEN "$(openssl rand -hex 16)"
+  if [ ! -f group-relay/certs/fullchain.pem ]; then
+    # Self-signed, for every name the box answers to; the app pins its fingerprint.
+    mkdir -p group-relay/certs
+    san="IP:$RELAY_IP"; hn="$(hostname)"; [ -n "$hn" ] && san="$san,DNS:$hn,DNS:$hn.local"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 825 \
+      -keyout group-relay/certs/privkey.pem -out group-relay/certs/fullchain.pem \
+      -subj "/CN=$RELAY_IP" -addext "subjectAltName=$san" >/dev/null 2>&1 || die "Couldn't create the relay's certificate."
+    # The relay runs as uid 10001 in its container: it alone may read the key.
+    sudo chown 10001:10001 group-relay/certs/privkey.pem group-relay/certs/fullchain.pem
+    sudo chmod 600 group-relay/certs/privkey.pem; sudo chmod 644 group-relay/certs/fullchain.pem
+    ok "Created the relay's certificate"
+  else
+    ok "Kept the relay's existing certificate"
+  fi
+  dkr docker compose --profile relay up -d --build group-relay >/dev/null
+  record "RELAY=1"
+  ok "Relay running on https://$RELAY_IP:$RELAY_PORT_SET"
+fi
+
+# --- Optional: outbound allowlist for the bots (experimental) --------------------------------------------
+if [ "$WITH_EGRESS" = "1" ] && [ "$WITH_FIRECRACKER" = "1" ]; then
+  # The proxy works on the Docker backend's networks; the microVMs have their own network policy instead.
+  note "Skipped the outbound allowlist: it applies to Docker containers only. The microVMs reach the public internet"
+  note "and nothing else (docs/FIRECRACKER.md › Network policy)."
+elif [ "$WITH_EGRESS" = "1" ]; then
+  step "Setting up the outbound allowlist (egress proxy)"
+  set_env SANDBOX_EGRESS_MODE allowlist
+  grep -q '^EGRESS_ADMIN_TOKEN=.\+' .env || set_env EGRESS_ADMIN_TOKEN "$(openssl rand -hex 32)"
+  set_env EGRESS_VNC_FORWARD "6100-6131"
+  gw="$(dkr docker network inspect shellhouse_default --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)"
+  [ -n "$gw" ] && set_env EGRESS_VNC_ALLOW_CIDRS "$gw/32"
+  dkr docker compose --profile egress up -d --build egress-proxy >/dev/null
+  # Without an allowlist everything is denied: start from the example (package mirrors, GitHub, PyPI…).
+  if ! dkr docker exec agent-egress-proxy test -f /data/allowlist.txt; then
+    dkr docker cp egress-proxy/allowlist.example.txt agent-egress-proxy:/data/allowlist.txt
+  fi
+  # The manager reads the mode at start.
+  dkr docker compose up -d --no-deps sandbox-manager >/dev/null
+  record "EGRESS=1"
+  ok "Bots' outbound traffic now goes through the allowlist (edit it in the egress_data volume: /data/allowlist.txt)"
+  note "Bot VMs that already exist keep open access until they're reset (Bot settings › Delete or reset › Reset sandbox)."
+fi
+
+# --- Firecracker: offered when the box can run it --------------------------------------------------------
+if [ -e /dev/kvm ] && [ "$WITH_FIRECRACKER" != "1" ]; then
+  note "This box supports KVM: initial_setup.sh --with-firecracker runs each bot's computer as its own microVM"
+  note "instead of a Docker container (docs/FIRECRACKER.md)."
 fi
 
 if [ "$WITH_SMOLAGENTS" = "1" ]; then

@@ -750,6 +750,10 @@ struct ContentView: View {
             try? await store.put(name: localName, value: value)
         }
         if let token = contents.secrets[managerTokenName] { RemoteSandboxManager.sharedToken.value = token }
+        // A relay set up (or its token changed) by the import: connect to it now.
+        if contents.app["relaySettings.v1"] != nil || contents.secrets["RELAY_REGISTRATION_TOKEN"] != nil {
+            Task { await FriendsManager.shared.reloadFromDefaults() }
+        }
         // The host key initial_setup.sh verified: from now on the app accepts only that key for the box.
         if !contents.knownHosts.isEmpty { try? AppSSHIdentity.shared.pin(contents.knownHosts) }
 

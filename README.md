@@ -74,13 +74,23 @@ You need an Apple Silicon Mac (macOS 14+) with Xcode, and a Linux box (Ubuntu/De
 ```bash
 git clone https://github.com/brandondavis12355/Shellhouse.git
 cd Shellhouse
-./initial_setup.sh      # sets up the Linux box over SSH
-./build.sh              # builds the app, installs it in /Applications and connects it to the box
+./initial_setup.sh
 ```
 
-Then add your first bot from the sidebar's **+** menu. Everything uses the default settings; change them in **Settings**, where every change applies right away.
+That's the whole install. It sets up three things, asking everything up front in macOS dialogs:
 
-### What `initial_setup.sh` does
+1. **This Mac:**
+   - Xcode: if it's missing, it opens the App Store page and waits while you install it, then finishes Xcode's one-time setup.
+   - Homebrew, XcodeGen and Ollama.
+   - Your Apple signing team: if you aren't signed in to Xcode yet, it opens Xcode and waits while you do.
+2. **The Linux box:** everything below.
+3. **The app:** it builds and installs it in /Applications, pulls the default models, starts it and connects it to the box.
+
+Then add your first bot from the sidebar's **+** menu. Everything uses the default settings; change them in **Settings**, where every change applies right away. Use `./build.sh` on its own to rebuild the app later.
+
+Two steps can't be scripted, because Apple requires them to be done by you: downloading Xcode from the App Store, and signing in to Xcode with your Apple ID (a free one works). The script opens the right place for each and waits.
+
+### What `initial_setup.sh` does on the Linux box
 
 It asks for the Linux box's IP address (or hostname) and your SSH user, then:
 
@@ -110,13 +120,30 @@ An interrupted changeover resumes when you run the script again with the same ne
 |---|---|
 | `--host ADDR` / `--user NAME` | Skip the questions |
 | `--with-smolagents` | Also allow the optional smolagents engine's model-proxy forward ([docs/SMOLAGENTS.md](docs/SMOLAGENTS.md)) |
+| `--with-relay` / `--with-egress` | Also set up the friends relay / the egress allowlist (see above) |
+| `--no-app` | Set up the box only: no Mac tools, no app build |
 | `--no-sudo-in-sandboxes` | Don't give bots sudo inside their own VMs. By default they have it, so they can `apt-get install` what a task needs |
 | `--host-fingerprint SHA256:…` | Verify the box's host key without asking |
 | `--rotate-token` | Only replace the manager token, on the box and in the app |
 | `--no-ui` | Ask in Terminal instead of dialogs |
 | `--yes` | Accept every default (a new box then needs `--host-fingerprint`) |
 
-The box's SSH port must be 22, since the app's tunnel uses it.
+The box's SSH port must be 22, since the app's tunnel uses it. If SSH isn't running on the box yet, the script shows the commands to run on the box's own screen (and copies them to your clipboard), then waits until it answers.
+
+**What it installs on the box**, each only if missing:
+- **Docker and Docker Compose:** from the distribution's packages. Where Compose v2 isn't packaged (Debian 12, for one), it installs Docker's own release of the plugin from github.com/docker/compose, after checking it against the published SHA-256.
+- **curl, openssl, rsync and CA certificates.**
+
+Everything the bots use (Python, Chromium, `gh` and the rest) is built into the sandbox image.
+
+**Optional parts,** asked about during setup or chosen with a flag:
+
+| Part | What you get | Flag |
+|---|---|---|
+| Friends relay | The box hosts the relay that lets friends' Shellhouse apps join your group chats. It gets a self-signed certificate, a registration token, and port 8443 on the address you choose. The app is connected to it, with the certificate's fingerprint pinned. A relay the box already runs is left as it is, and so are the app's own relay settings. | `--with-relay` |
+| Egress proxy (experimental) | The bots' outbound traffic goes through an allowlist, starting from `egress-proxy/allowlist.example.txt` (package mirrors, GitHub, PyPI…). Bot VMs that already exist keep open access until they're reset. See [docs/EGRESS.md](docs/EGRESS.md). | `--with-egress` |
+| smolagents engine (experimental) | The sshd setting the optional in-sandbox engine needs. See [docs/SMOLAGENTS.md](docs/SMOLAGENTS.md). | `--with-smolagents` |
+| Firecracker microVMs | Each bot's computer runs as its own microVM (its own kernel) instead of a Docker container. Offered only when the box has KVM; the first setup builds a guest kernel and disk image (about 10 minutes). A bot's Docker workspace is copied into its VM. Kept on later runs; `--no-firecracker` switches back. The egress proxy doesn't apply to VMs. See [docs/FIRECRACKER.md](docs/FIRECRACKER.md). | `--with-firecracker` |
 
 **Dialogs:** it asks everything in macOS dialogs: the address, the user, your SSH password, the sudo password (asked once, checked, and sent to the box over the SSH connection, never on a command line), and confirmations. Progress shows in Terminal. Add `--no-ui` to answer in Terminal instead.
 
@@ -130,7 +157,7 @@ The box's SSH port must be 22, since the app's tunnel uses it.
 | No password guessing | Once your own SSH key signs you in, it offers to turn off password sign-in for your user on the box. `uninstall.sh` turns it back on. |
 | A fresh token when you want one | `./initial_setup.sh --rotate-token` replaces the manager token on the box, restarts only the manager (bot VMs keep running) and hands the new token to the app. The old token stops working at once. |
 
-### What `build.sh` does
+### What `build.sh` does (step 3, or on its own to rebuild)
 
 1. Checks Xcode (license, first-launch components). If [Homebrew](https://brew.sh) is missing, it offers to install it with Homebrew's official installer (which asks for your Mac password). Then it installs [XcodeGen](https://github.com/yonaskolb/XcodeGen) with Homebrew if needed.
 2. Finds your Apple signing team, or asks for it, and saves it to `macos/Signing.local.xcconfig` (git-ignored).
@@ -142,9 +169,9 @@ The box's SSH port must be 22, since the app's tunnel uses it.
 
 Other options: `--debug`, `--team TEAMID`, `--no-launch`, `--yes`. The build log is in `~/.config/shellhouse/build.log`.
 
-### Before the first `build.sh`: one-time Xcode setup
+### If signing fails: one-time Xcode setup
 
-`xcodebuild` can't sign in to your Apple account by itself, so do this once in Xcode:
+`initial_setup.sh` and `build.sh` handle Xcode's setup, and Xcode creates the signing certificate itself once you're signed in. If a build still reports a signing or provisioning error, do this once in Xcode:
 
 1. **Install Xcode** from the App Store and open it once. Accept the license, and let it install its components.
 2. **Sign in:** Xcode › Settings › Accounts › **+** › Apple ID. A free personal team works. The team ID is the 10-character code shown for your team.

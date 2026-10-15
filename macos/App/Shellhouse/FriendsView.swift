@@ -57,6 +57,15 @@ final class FriendsManager {
 
     // MARK: Connection
 
+    /// A settings import (initial_setup.sh setting up a relay, say) replaced the saved settings: use them now.
+    func reloadFromDefaults() async {
+        if let data = UserDefaults.standard.data(forKey: Self.settingsKey),
+           let saved = try? JSONDecoder().decode(RelaySettings.self, from: data), saved != settings {
+            settings = saved
+        }
+        await connectIfConfigured()
+    }
+
     func connectIfConfigured() async {
         tokenIsSet = ((try? await SecretStore().resolveOne(name: Self.tokenSecretName)) ?? nil) != nil
         guard settings.isComplete else { return }

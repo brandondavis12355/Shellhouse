@@ -125,6 +125,11 @@ else
   note "Setup didn't install any packages"
 fi
 
+compose_plugin="$(recorded COMPOSE_PLUGIN)"
+if [ -n "$compose_plugin" ] && [ "$KEEP_PACKAGES" = "0" ] && [ -f "$compose_plugin" ]; then
+  sudo rm -f "$compose_plugin"; ok "Removed the Docker Compose plugin setup installed"
+fi
+
 rm -f "$STATE"
 step "The host is back to how it was before Shellhouse"
 rm -f "$0" 2>/dev/null || true
