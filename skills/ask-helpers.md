@@ -26,8 +26,8 @@ the same time and returns all the answers together.
 - Don't use it for anything that needs your computer, the web, or a
   decision your user should make. And don't use it for something you can
   answer in one step yourself.
-- Check what comes back before you rely on it. Helpers are fast, not
-  infallible.
+- Check what comes back before you rely on it. A helper's answer is never
+  evidence for a goal step or a fact you report: it ran nothing.
 
 ## Writing a task
 "Summarize the following meeting notes in three bullet points, each under

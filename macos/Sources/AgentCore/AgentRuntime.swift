@@ -229,7 +229,7 @@ public actor AgentRuntime {
     /// recent images for the same reason. Older ones are replaced with a
     /// text placeholder rather than dropped silently, so the model knows
     /// why that context disappeared instead of being confused by a gap.
-    private static let maxRetainedImages = 3
+    private static let maxRetainedImages = 2
 
     /// The only way `loop()` will ever end a run — see `finishTaskSchema`.
     /// "The model returned no tool_calls" is deliberately NOT treated as
@@ -1257,9 +1257,10 @@ public actor AgentRuntime {
             + "Tools you can call: " + toolNames.sorted().prefix(30).joined(separator: ", ") + "."
         let lowered = narration.lowercased()
         if lowered.contains("screenshot") || lowered.contains("picture") || lowered.contains("capture") {
-            text += " To show a web page you are serving: run_shell `chromium --headless --no-sandbox --disable-gpu --hide-scrollbars "
-                + "--window-size=1280,800 --screenshot=/workspace/shot.png http://localhost:PORT` (PORT is the one the server prints), "
-                + "then post_screenshot with path \"/workspace/shot.png\"."
+            text += " To show a web page headlessly: run_shell `chromium --headless --no-sandbox --disable-gpu --hide-scrollbars "
+                + "--window-size=1280,800 --screenshot=/workspace/shot.png URL` (URL is the live site, or http://localhost:PORT for a server "
+                + "you are running), then post_screenshot with path \"/workspace/shot.png\". If a browser is already open on the desktop, "
+                + "call screenshot instead."
         }
         return text
     }

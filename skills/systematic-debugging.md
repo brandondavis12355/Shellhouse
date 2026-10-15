@@ -12,42 +12,42 @@ second bug waiting.
 
 ## 1. Investigate
 - **Read the whole error**: the last line of a traceback names the cause;
-  note the file, line and values.
-- **Reproduce it** with one command you can run again. If you can't
-  reproduce it, gather more data instead of guessing.
+  note the file, line and values. Open that file with `read_file`.
+- **Reproduce it** with one command you can run again. If you can't,
+  gather more data instead of guessing.
 - **Check what changed**: `git diff`, `git log --oneline -5`, new files,
   new dependencies.
-- **Find where good data turns bad.** Print the values at each step or
-  boundary (input → function → output) and run once to see which step is
-  wrong. Trace backwards to where the bad value starts.
+- **Find where good data turns bad.** Print the values at each step
+  (input → function → output) and run once to see which step is wrong.
 
 ## 2. Compare
-- Find similar code that works and list every difference, however small.
-- If you're following an example or documentation, read all of it.
-- Check your assumptions about the inputs: is the test's expected value
-  actually right? (Work it out by hand.)
+- Find similar code that works (`search_files`) and list every
+  difference.
+- Following an example or documentation? Read all of it.
+- Is the test's expected value actually right? Work it out by hand.
 
 ## 3. One hypothesis at a time
-- Say it: "I think X is the cause because Y."
-- Make the smallest change that tests it. One change, then run.
+- Say it: "I think X is the cause because Y." Then make the smallest
+  change that tests it (`edit_file`), and run.
 - Wrong? Undo it and form a new hypothesis. Don't stack fixes.
 
 ## 4. Fix
-- Write a test that reproduces the bug first (test-driven-development
-  skill), then the single fix at the source, then run the whole suite.
+- Write a test that reproduces the bug (test-driven-development skill),
+  then the single fix at the source, then run the whole suite.
 - No bundled refactoring or "while I'm here" changes.
 
 ## When to stop and report
-- If three fixes haven't worked, stop: the problem is probably the
-  approach, not the details. Tell your user (or the group) what you found,
-  what you tried, and what you think needs to change.
-- If you don't understand something, say so plainly instead of guessing.
-- Don't loop on the same check: re-running an unchanged command gives the
-  same answer.
+- Three fixes failed? The approach is probably wrong. Stop and report what
+  you found, what you tried, and what you think must change. Before
+  `finish_task` with outcome `blocked`, check there's no different
+  approach you haven't tried.
+- Don't understand something? Say so plainly instead of guessing.
+- Don't loop: an unchanged command gives the same answer.
 
 ## Red flags
 "Just try X and see"; several changes before one run; a fix you can't
-explain; "one more attempt" after two have failed.
+explain; `|| true` to make an error go away; "one more attempt" after two
+have failed.
 
 ---
 Adapted from obra/superpowers (systematic-debugging) and

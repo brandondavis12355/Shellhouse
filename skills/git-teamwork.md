@@ -8,44 +8,41 @@ description: >-
 # Git teamwork
 
 Every bot has its own VM and its own clone. You only see a teammate's work
-after they **push** and you **pull**. "It's done on my VM" means nobody
-else has it yet.
-
-For the exact commands, connection setup and error fixes, load
-`git-essentials`.
+after they **push** and you **fetch or pull**. "Done on my VM" means nobody
+else has it yet. For exact commands and error fixes, load `git-essentials`.
 
 ## Branches and commits
-- Work on your own branch: `git checkout -b <your-name>/<task>` (e.g.
-  `prism/tests`). Push that branch, not `main`, unless your user says so.
-- Small commits, one change each, with a message that says what and why:
-  `fix: check_draw ignores full boards with a winner`.
-- Commit only what you meant to: `git status` first; don't commit caches
-  (`__pycache__/`, `*.pyc`, `node_modules/`). Add them to `.gitignore`.
-- Your git name and email are already set on every VM.
+- Work on your own branch: `git switch -c <your-name>/<task>` (e.g.
+  `prism/tests`). Push that branch, never `main`, unless your user says so.
+- Small commits, one change each: `fix: check_draw ignores full boards
+  with a winner`.
+- `git status` before committing; add files by name. Never commit caches,
+  `.venv/`, `node_modules/` or secrets.
 
-## Sharing work (token: use_secrets ["GITHUB_TOKEN"])
-1. Before starting, and before pushing: `git pull origin main` (or rebase
-   your branch on it) so you build on the latest code.
-2. Run the tests after pulling.
-3. Push your branch: `git push -u origin <branch>`.
-4. Tell the group what you pushed: branch, commit hash, what it contains,
-   how you tested it.
+## Sharing work (use_secrets ["GITHUB_TOKEN"])
+1. Before starting and before pushing: `git fetch origin`, then
+   `git merge origin/main`, and run the tests.
+2. Push your branch: `git push -u origin <branch>`. Read the output.
+3. Tell the group: branch, commit hash (`git log -1 --oneline`), what it
+   contains, and the test command with its result.
 
 ## Using a teammate's work
-- `git fetch origin` then `git checkout <their-branch>` (or merge it into
-  yours) and run the tests on your VM before relying on it.
+- `git fetch origin`, then `git log -1 --oneline origin/<their-branch>`
+  and check it's the commit they announced. Name it in your reply.
+- `git switch <their-branch>` and run the tests on your VM before relying
+  on it. Their message saying it works is not evidence.
 
 ## Merging into main (usually the goal owner)
 - Members open a pull request from their branch (see `code-projects` ›
-  Finishing work); the goal owner reviews and merges them:
-  `gh pr view <n>`, check out the branch and run the tests, then
-  `gh pr merge <n> --merge` (with `use_secrets: ["GITHUB_TOKEN"]`). Say
-  what you merged and the tests you ran.
-- Merge one branch at a time, run the full suite after each, then push.
-- **Conflicts**: open the conflicted files, keep both sides' intent, remove
-  the `<<<<<<<`/`>>>>>>>` markers, run the tests, then commit. If you can't
-  tell which side is right, ask the author.
-- Never `push --force` to a shared branch or rewrite pushed history.
+  Finishing work). The owner reviews: `gh pr view <n>`, check out the
+  branch, run the tests, then `gh pr merge <n> --merge` (with
+  `use_secrets: ["GITHUB_TOKEN"]`). Say what you merged and what you ran.
+- Merge one branch at a time and run the full suite after each.
+- **Conflicts**: keep both sides' intent, remove the `<<<<<<<`/`>>>>>>>`
+  markers, run the tests, commit. Unsure which side is right? Ask the
+  author.
+- Never `push --force` or rewrite pushed history. A tangle is fixed with a
+  new branch and a new PR.
 
 ---
 Adapted from addyosmani/agent-skills (git-workflow-and-versioning), MIT.

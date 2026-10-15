@@ -351,7 +351,7 @@ public struct ToolRegistry: Sendable {
                 + "command), written as a rule for next time. It's shown "
                 + "to the user in this bot's settings and resent at the start of every future conversation "
                 + "with it. Don't use this for task-specific facts that only matter to what you're doing right "
-                + "now — those belong in your own reasoning, not here. Capped at the 60 most recent — check "
+                + "now — those belong in your own reasoning, not here. Up to 200 notes are kept (the least important are dropped first) — check "
                 + "recall_memory first so you don't save a near-duplicate of something you already have.",
             parameters: [
                 "type": "object",

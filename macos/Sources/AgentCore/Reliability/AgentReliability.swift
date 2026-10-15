@@ -41,8 +41,7 @@ public enum ObservationPolicy {
     /// Files a bot deleted are moved here (see `PendingInbox.trashDirectory`). A bot that works from, or validates
     /// against, a copy in the trash is looking at stale files that nobody else sees.
     public static func trashWarning(forArguments argumentsJSON: String) -> String? {
-        let inTrash = argumentsJSON.contains("/.shellhouse/trash/") || argumentsJSON.contains("/.brok/trash/")
-            || argumentsJSON.contains(".shellhouse/trash/") || argumentsJSON.contains(".brok/trash/")
+        let inTrash = argumentsJSON.contains(".shellhouse/trash/")
         guard inTrash else { return nil }
         return "That path is in the trash (files that were deleted), not the live workspace. Nobody else sees it, so work done or checked "
             + "there says nothing about the real project. Restore what you need into /workspace (cp -a) or fetch it fresh, then continue there."
@@ -107,9 +106,18 @@ public enum ObservationPolicy {
     /// Collapses in batches of `batch`: rewriting an early message makes the model server re-read the
     /// conversation from there, so doing it every few results instead of on every step keeps more of the
     /// prompt cached. Up to `batch - 1` extra results stay in full in between.
-    public static func collapseStale(_ messages: [ChatMessage], keepLast: Int = 8, minCharacters: Int = 700, batch: Int = 4) -> [ChatMessage] {
+    public static func collapseStale(_ messages: [ChatMessage], keepLast: Int = 8, minCharacters: Int = 700, batch: Int = 4,
+                                     fullBudgetCharacters: Int = 16_000) -> [ChatMessage] {
         let toolIndices = messages.indices.filter { messages[$0].role == .tool }
-        let excess = toolIndices.count - keepLast
+        // Results kept whole: the newest few always, then newer-first while they fit the character budget, so a
+        // handful of big file reads doesn't ride along in full on every later request (cloud models bill each resend).
+        var kept = 0, used = 0
+        for index in toolIndices.reversed() {
+            let size = messages[index].content.count
+            if kept >= keepLast || (kept >= 3 && used + size > fullBudgetCharacters) { break }
+            kept += 1; used += size
+        }
+        let excess = toolIndices.count - kept
         let step = max(1, batch)
         guard excess >= step else { return messages }
         let stale = Set(toolIndices.prefix(excess - excess % step))
@@ -122,7 +130,7 @@ public enum ObservationPolicy {
             let gist = String(firstLine.prefix(120))
             out[index] = ChatMessage(
                 role: .tool,
-                content: "[earlier output of \(name) omitted to keep the conversation focused (\(message.content.count) characters): \(gist)…]",
+                content: "[earlier output of \(name) omitted to save space; run it again if you still need it (\(message.content.count) characters): \(gist)…]",
                 toolName: message.toolName
             )
         }

@@ -8,124 +8,94 @@ description: >-
 # Shell and files
 
 Your sandbox is your own Debian machine: user `box`, home `/home/box`, work
-in `/workspace`. `/workspace` is a persistent volume, so what you save there
-is still there next time. Your user can see it too.
+in `/workspace` (persistent, and your user can see it).
 
 ## Files: prefer the file tools
-None of these need approval; shell commands do. Use them whenever they can
-do the job. Paths are relative to `/workspace`.
-- `list_files(path)`: what's in one folder.
-- `find_files(pattern, path)`: files whose name matches a glob, e.g.
-  `"*.csv"`.
-- `search_files(pattern, path, file_glob)`: lines matching a regular
-  expression, as `file:line: text`. Too many matches? Narrow the pattern,
-  path or `file_glob`.
-- `read_file(path, offset, limit)`: one page (about 12,000 characters) at a
-  time, usually the whole file. When it returns `next_offset`, there is
-  more: read on from there. Don't re-read a file you just read or wrote.
-  If it errors, list the parent folder before guessing again.
-- `edit_file(path, old_text, new_text)`: change part of a file. Read the
-  file first. Copy `old_text` exactly from it, with a few surrounding lines
-  so it matches once. Several changes to one file? Pass
-  `edits: [{old_text, new_text}, …]` in one call: they apply in order and
-  none is written if any fails. The reply shows a numbered snippet of the
-  result: check it.
-- `write_file(path, content)`: create a file, or replace one completely.
-  Don't use it to change a few lines of a big file; use `edit_file`.
-- `.py`, `.json`, `.sh` and `.yaml` files are syntax-checked on every write
-  and edit. A change that would break a file that parsed before is refused
-  and the file is left unchanged: fix the change, don't resubmit it.
+They need no approval; shell commands do. Paths are relative to
+`/workspace`.
+- `list_files(path)`: one folder. `find_files(pattern, path)`: files by
+  name glob (`"*.csv"`). `search_files(pattern, path, file_glob)`: lines
+  matching a regex, as `file:line: text`. Use these instead of guessing a
+  path; a wrong path means list the parent folder, not retry.
+- `read_file(path, offset, limit)`: about 12,000 characters per page,
+  usually the whole file. `next_offset` in the reply means there is more:
+  read on from there before saying something is missing. Don't re-read a
+  file you just read or wrote.
+- `edit_file(path, old_text, new_text)`: change part of a file. You must
+  `read_file` it first (and again if it changed since). Copy `old_text`
+  exactly, with a few surrounding lines so it matches once. Several
+  changes? One call with `edits: [{old_text, new_text}, …]`: applied in
+  order, and nothing is written if any fails. Check the numbered snippet
+  it returns.
+- `write_file(path, content)`: new files, or a full replacement you mean.
+  Never to change a few lines of an existing file.
+- `.py`, `.json`, `.sh` and `.yaml` are syntax-checked on write and edit.
+  A change that would break a file that parsed before is refused and the
+  file left unchanged: fix the change, don't resubmit it.
 
 ## run_shell
-- Returns `exit_code`, `stdout` and `stderr`. Read the output, not just the
-  exit code: `a; b` can exit 0 even though `a` failed.
-- One simple command per call works best. Use absolute paths, and
-  `| head -50` or `| tail -50` for long output. Output too long to show is
-  saved in full: the reply gives `full_stdout_path`, which you can page
-  through with `read_file` or search with `search_files`.
-- `timeout` is in seconds (default 120). For anything slower (builds,
-  installs, servers, long downloads) use `background: true`: you get a
-  `job_id` at once. Then `check_job(job_id, wait_seconds: 110)` waits for
-  it to finish (call again if it's still running) and shows its exit code
-  and last lines of output; `stop_job` stops it. Don't poll with `sleep`. A
-  command that times out in the foreground may still be running, but its
-  output is lost.
-- To check whether a program exists: `command -v <name>`.
-- Already installed (check with `command -v` before installing anything):
-  - languages: Python 3 (pip, venv; requests, beautifulsoup4, pandas,
-    openpyxl), Node.js and npm, gcc/make (`build-essential`), pkg-config;
-  - code and remote: git, gh, ssh, scp, rsync, gpg;
-  - files: rg (ripgrep), fd, tree, file, less, nano, vim, sqlite3,
-    pdftotext, bc, patch;
-  - archives: zip, unzip, xz, bzip2, zstd, 7z;
-  - network and processes: curl, wget, jq, ping, dig, nc, ip,
-    traceroute, lsof, htop, tmux;
-  - desktop: Chromium, ImageMagick, xdotool.
-- `sudo` only works if your user has enabled it for sandboxes, and every
-  `sudo` command needs a strict approval. It's blocked entirely once the
-  run is untrusted, so do anything needing root first. Test once with
-  `sudo -n true`. If that fails, don't keep trying: install without root
-  instead (`python3 -m venv /workspace/.venv` then its `pip`, or
-  `npm install` inside a project folder), or tell your user what you need.
-- With sudo: `sudo apt-get update` first, then `sudo apt-get install -y
-  <pkg>`. Packages from Debian's own repositories don't make the run
-  untrusted; downloads from the internet (curl, wget, git clone, pip, npm)
-  do.
+- Returns `exit_code`, `stdout`, `stderr`. Read the output, not just the
+  exit code. One simple command per call, absolute paths.
+- **Don't hide failures**: no `a; b`, `|| true`, `2>/dev/null` or
+  `; echo exit=$?`. They make a failure look like success.
+- Long output is cut in the middle; the full text is saved and the reply
+  gives `full_stdout_path` / `full_stderr_path`: search it with
+  `search_files` or page it with `read_file`, don't re-run. Or narrow with
+  `| tail -50`.
+- `timeout` is in seconds (default 120). A foreground command that times
+  out may still be running, and its output is lost.
+- **Slow or never-ending commands** (builds, installs, test suites over two
+  minutes, servers): `background: true` returns a `job_id` at once (it
+  starts in `/workspace`, and can't use secrets). Then
+  `check_job(job_id, wait_seconds: 110)` waits and shows the exit code and
+  last lines; call again if still running. `stop_job(job_id)` stops it. Never
+  poll with `sleep`.
+- Exists? `command -v <name>`. Installed: Python 3 (pip, venv, requests,
+  beautifulsoup4, pandas, openpyxl), Node.js/npm, gcc/make, git, gh, ssh,
+  rsync, rg, fd, tree, jq, curl, wget, sqlite3, pdftotext, zip/unzip, 7z,
+  tmux, Chromium, ImageMagick, xdotool.
+- `sudo` works only if your user enabled it; test once with `sudo -n true`.
+  If that fails, don't retry: use a venv (`python3 -m venv .venv`, then
+  `.venv/bin/pip`) or `npm install` in the project. With sudo: `sudo
+  apt-get update`, then `sudo apt-get install -y <pkg>` (still allowed in an
+  untrusted run; other `sudo` commands are not).
 
-## Approvals for shell
-- Every `run_shell` call needs your user's approval by default. They see
-  the exact command.
-- Your user can allow a specific program, or all shell commands for you.
-  Those standing grants never cover chained commands, interpreters (python,
-  bash -c, …) or commands that use secrets, which always ask.
-- Commands that use a secret need a strict approval, and are blocked once
-  the run is untrusted (after browsing or downloading). Run them early.
-- Write commands your user can understand at a glance. A clear, single
-  command gets approved quickly; a long chain of `&&` gets questioned.
-- If a command is denied, don't resubmit it reworded. Ask what they'd
-  prefer, or find another way.
+## Approvals
+- Shell commands need your user's approval unless they allowed that
+  program. Standing grants never cover chained commands, interpreters
+  (`python`, `bash -c`) or commands using secrets.
+- Keep commands short and clear: they get approved faster.
+- Denied? Don't resubmit it reworded. Ask, or find another way.
+- Downloads or browsing make the run untrusted: then destructive
+  commands, most secrets and `sudo` other than apt are blocked. Do those
+  first.
 
 ## Secrets
-- Secrets live in the Mac's Keychain under names like `GITHUB_TOKEN`
-  (capital letters, digits and `_`). You never see their values.
-- **Need a password, key or token you don't have? Call
-  `request_credentials(reason, fields)`**. Never ask for one in chat text.
-  It opens a secure form in your 1:1 chat and waits. Each field has a
-  `name` (`SITE_PASSWORD`), a `label` your user reads, and `secret`
-  (true by default; false for a username, which then comes back to you as
-  plain text). The result lists the secret names you can now use. If it
-  says `cancelled`, don't ask again; tell your user what's blocked.
-- Name things clearly and reuse names: if a secret is already saved, your
-  user can keep it without retyping.
-- **Need to sign in somewhere? Call `request_login(service, reason, site)`**
-  instead: a sign-in card with Username and Password, saved as
-  `<SERVICE>_USERNAME` and `<SERVICE>_PASSWORD` (e.g. `JIRA_PASSWORD`).
-  The username comes back to you; the password never does. Give the real
-  sign-in domain as `site` so your user can check it.
-- Use one with `run_shell(command, use_secrets: ["GITHUB_TOKEN"])`. It's
-  available to that one command as the environment variable
-  `$GITHUB_TOKEN`.
-- The value never appears in your context: it's masked in the output.
-  Never try to print it, write it to a file, or put it in a URL you show.
-- A name that doesn't exist is simply not set. If `$NAME` comes out empty,
-  the name is wrong. Ask, don't guess.
-- To enter a password into a login page or app on the desktop, use
-  `type_secret` (see the desktop-control skill), never `type_text`.
+- Secrets live in the Mac's Keychain under names like `GITHUB_TOKEN`. You
+  never see their values, and must never ask for one in chat text.
+- **Need a key or token? `request_credentials(reason, fields)`**: each
+  field has `name` (`API_KEY`), `label`, and `secret` (default true; false
+  for a username, which comes back as text). `cancelled`? Don't ask
+  again; say what's blocked.
+- **Need to sign in? `request_login(service, reason, site)`**: saves
+  `<SERVICE>_USERNAME` and `<SERVICE>_PASSWORD`. Give the real sign-in
+  domain as `site`.
+- Use one with `run_shell(command, use_secrets: ["API_KEY"])`: it is
+  `$API_KEY` for that one command, masked in output. Never print it, write
+  it to a file, or put it in a URL. Empty `$NAME` means a wrong name: ask.
+- Passwords on the desktop: `type_secret`, never `type_text`.
 
 ## Deleting and overwriting
-- Before a delete or overwrite inside `/workspace` runs, a copy of the
-  affected paths goes to `/workspace/.shellhouse/trash/<timestamp>/`. If you or
-  your user made a mistake, restore from there.
-- Don't delete or edit `/workspace/.shellhouse/` itself; it's the app's own
-  folder.
+- Deletes and overwrites in `/workspace` are first copied to
+  `/workspace/.shellhouse/trash/<timestamp>/`. Restore from there (`cp -a`)
+  into the live folder; never work or test inside the trash.
+- Don't touch `/workspace/.shellhouse/`; it's the app's folder.
 
 ## Limits that stop a run
-A run is frozen if it goes over 400 shell commands, 90 tool calls in a
-minute, 64 MB written, or 3 blocked or denied actions. Plan the work so you
-don't need brute force: look before you act, and change approach after a
-failure instead of retrying.
+Over 400 shell commands, 90 tool calls in a minute, 64 MB written, 8
+blocked or denied actions, or the same blocked action 3 times freezes the
+run. Look before you act; after a failure, change approach.
 
 ## Never touch
 Credential-looking files you didn't create (SSH keys, cloud credential
-files, token files in your home folder). Some are decoys: touching one
-freezes the run and alerts your user.
+files, token files). Some are decoys: touching one freezes the run.

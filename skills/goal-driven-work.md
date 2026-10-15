@@ -8,87 +8,82 @@ description: >-
 # Goal-driven work in a group
 
 A group can have one shared **goal** with a checklist. Your turn shows it as
-"CURRENT GROUP GOAL", with step ids. The point is convergence: everyone works
-toward the same finish line, and talking without progress gets the group paused.
+"CURRENT GROUP GOAL" with step numbers and ids. Marks: `[ ]` open, `[~]` in
+progress, `[?]` submitted, `[!]` blocked, `[x]` done, `[⏸]` waiting.
 
 ## Everyone has their own machine
-Each member works on its **own separate Linux VM**. Installing a package or
-saving a file affects only your VM. If every member needs something, the plan
-needs one step per member (name the VM's owner); to share a result, post it in
-the chat. Never write "the shared sandbox".
+Each member works on its **own separate Linux VM**. What you install or save
+is only on yours. Never write "the shared sandbox"; to share a result, post
+it in the chat or push it.
+- Your checkout can be behind a teammate's. Before you say their work is
+  missing, broken or fixed: `git fetch`, check out the branch being discussed
+  (`origin/<branch>`), run `git log -1 --oneline`, and name that commit.
 
 ## What counts as progress
-Only a step marked **done with evidence from this turn's tool results**.
-Chatter, agreement, and plans do not count. Every bot message with no verified
-progress moves the group toward an automatic pause.
+Only a step validated **done with evidence from this turn's tool results**.
+Chatter, agreement and plans don't count. Each bot message without verified
+progress moves the goal toward an automatic pause (the "Progress" line shows
+the count). Your user's next message resumes a paused goal.
 
 ## Each turn
-1. `get_goal` if you need the current ids.
-2. Pick an **open** step that's yours (or unblock someone). Claim it:
-   `update_goal_step(step_id, "inProgress")`.
-3. Do the work with tools (`run_shell`, files, etc.).
-4. Verify it, then `update_goal_step(step_id, "done", evidence)` — evidence is
-   what you ran or checked and what it showed ("`gh --version` → 2.101.0"),
-   not "it works". **If you are not the goal owner, this only submits the step
-   for validation** (it shows as `[?]`). The owner re-checks it with their own
-   tools and is the only one who can mark it done. `@mention` the owner after
-   submitting; don't resubmit.
-5. If you can't proceed: `update_goal_step(step_id, "blocked", evidence)` with
-   the reason, and say who or what you need.
-6. `@mention` the one member who should act next. Don't reply just to
-   acknowledge; if nothing is needed from you, stay silent.
+1. Pick an open step that's **yours** (assigned to you, or its text starts
+   "YourName: …"). `get_goal` if you need fresh ids.
+2. Claim it: `update_goal_step(step_id, "inProgress")`.
+3. Do the work with tools. Don't describe what you're about to do: call it.
+4. `update_goal_step(step_id, "done", evidence)`. Evidence quotes real output
+   you got this turn ("`pytest` → 12 passed", "`gh --version` → 2.62.0"), not
+   "it works". Evidence that matches nothing your tools returned is not
+   counted. Unless you validate, this only **submits** the step (`[?]`).
+   `@mention` the validator once with what to check; don't resubmit.
+5. Can't go on? First try another approach. If truly stuck:
+   `update_goal_step(step_id, "blocked", evidence)` with the reason and what
+   you need.
+6. End with one `@mention` of the member who should act next, or stay silent
+   (`finish_task` outcome `silent`). Never reply just to acknowledge or agree.
 
-## Steps that wait on other steps
-A step marked `[⏸] WAITING on step N` can't start until step N is done.
-- Don't work on it, and don't build stand-ins (stubs, mocks, placeholder
-  files) for what it needs: that work gets thrown away or conflicts.
-- If all your steps are waiting, say so in one line and stop, or offer to
-  help with the step everyone is waiting on.
-- `update_goal_step` refuses to start or finish a waiting step.
+## Don'ts
+- Don't update someone else's step: it's refused. Send them your evidence.
+- Don't re-record a status that hasn't changed: it's refused.
+- Waiting on someone? Say so once and end your turn. Don't re-check the same
+  files, and don't call a teammate stuck or re-brief them while their run is
+  going. If you must ask again, ask something new.
+- No open step for you and nobody asked you? Stay silent. No side
+  investigations.
+- `[⏸] WAITING on step N`: don't start it and don't build stand-ins (stubs,
+  mocks, placeholders). `update_goal_step` refuses it. Help step N instead.
+- A step whose text names two or more members, or says "each member" or
+  "everyone", must be checked in by every named member on their own VM.
+  Nobody can check in for someone else.
 
-## If a validator is named
-The goal line may say "validated by: <name>". Then that member, not the
-owner, checks `[?]` steps and marks them done; submit to them and
-`@mention` them. If that's you, validate each submission with your own
-tools, as described for the owner below. If you're the owner, you
-coordinate: don't run tests or re-check work yourself. Name a validator
-with `propose_goal(validator: ...)` when your role is to coordinate only.
+## Who validates
+The goal line says "owner: X" and maybe "validated by: Y". The validator (Y,
+else the owner) is the only one who can mark a `[?]` step done. If an owner
+is set not to check work itself, the app picks a tester-like member.
+**If you validate:** for each `[?]` step, fetch the submitter's branch and
+commit, run the check yourself this turn, then `update_goal_step(step_id,
+"done", evidence)` with what *you* saw and the commit. If it fails, set it
+back to `inProgress` and say what's missing. A "done" on a `[?]` step with no
+tool run this turn is refused. Check what the step asked, not the whole repo.
 
 ## If you are the owner
-- When a member asks you to decide (which approach, whether the code or
-  the test is wrong), decide in your next message: one line with the
-  decision and who does what. A member left waiting on you stalls the
-  whole goal. Don't re-record a step's status that hasn't changed.
-- You'll get a **goal review turn** whenever a member submits a step,
-  checks in or reports a block, and again every few minutes while
-  something is waiting. In it: pull the work onto your VM, run the check
-  yourself, then mark the step done (quoting what you saw) or send it
-  back with what's missing. Unblock blocked steps or ask the user. When
-  every step is done, call `propose_goal_complete`. If nothing needs you,
-  finish silently.
-- Mark which steps need others with `depends_on` (by step number), e.g.
-  tests and the CLI both need the game logic in step 2:
-  `depends_on: [{"step": 3, "after": [2]}, {"step": 4, "after": [2]}]`.
-  `add_goal_step` takes `after: [2]` the same way.
-- On an actionable request with no goal, call `propose_goal(title, steps)` — 2-8
-  concrete steps, each checkable — then post the plan briefly and `@mention`
-  who should start. Questions and small talk are not goals.
-- Adjust the plan with `add_goal_step` and `edit_goal_step` (reword, reassign,
-  change what a step waits on, reopen, remove). Members can add steps; only
-  the owner edits them. Your user can also edit the plan from the goal card;
-  those changes show up as messages.
-- You are the **only** one who can mark a step done. Steps shown as `[?]` were
-  submitted by a member: validate each yourself (re-run the check, read the
-  file, test the result) in this turn, then `update_goal_step(step_id, "done",
-  evidence)` with what *you* saw. If it doesn't hold up, set it back to
-  `inProgress` and say what's wrong. Never accept a submission on trust — a
-  "done" on a `[?]` step without a tool run this turn is rejected.
-- When every step is done (or blocked with a reason), call
-  `propose_goal_complete(summary)`. The **user** confirms; don't declare it
-  finished in chat before they do.
-- Use `update_user` at milestones so the user hears about it in their 1:1 chat
-  (see where-to-post).
-
-## When the goal is paused or awaiting confirmation
-Paused: stop. Only the user's message resumes it. Awaiting confirmation: don't
-start new work unless asked.
+- **Intake:** on an actionable request with no goal, your FIRST tool call is
+  `propose_goal(title, steps, depends_on?, validator?)`: 2-8 concrete,
+  checkable steps, each starting with its member ("Bugbot: make the 6 failing
+  tests pass"). Word steps by outcome, not a guessed cause. Then post the plan
+  in a few lines and `@mention` who starts. Questions and small talk aren't
+  goals.
+- Mark waits by step number: `depends_on: [{"step": 3, "after": [2]}]`.
+  `add_goal_step(text, after: [2])` works the same way.
+- New work mid-goal: `add_goal_step` once per piece. Change the plan with
+  `edit_goal_step` (text, assignee, after, reopen, remove); only you can.
+- **Coordinate; don't take over.** Leave assigned steps to their members.
+  With a validator named, don't re-run their checks: your "done" only submits.
+- A member asks you to decide? Decide in your next message: one line with the
+  decision and who does what.
+- You get a turn when work is submitted or blocked, and when the group goes
+  quiet. Find what's stuck (a step nobody is on, an unanswered question), act
+  or `@mention` who should move. If all is in hand, finish silently.
+- The goal closes by itself when the last step is validated done. If some
+  steps end blocked, call `propose_goal_complete(summary)`; the user confirms.
+  While it awaits confirmation, start nothing new unless asked.
+- `update_user` at milestones (see where-to-post).

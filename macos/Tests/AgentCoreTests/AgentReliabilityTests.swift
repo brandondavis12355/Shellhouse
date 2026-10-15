@@ -292,7 +292,7 @@ final class ToolCallRecoveryTests: XCTestCase {
 
     func testTrashPathsGetAWarning() {
         XCTAssertNotNil(ObservationPolicy.trashWarning(forArguments: #"{"command":"cd /workspace/.shellhouse/trash/2026-10-15T17-48-56Z/workspace/Repo && ls"}"#))
-        XCTAssertNotNil(ObservationPolicy.trashWarning(forArguments: #"{"path":"/workspace/.brok/trash/x/y.py"}"#))
+        XCTAssertNotNil(ObservationPolicy.trashWarning(forArguments: #"{"path":"/workspace/.shellhouse/trash/x/y.py"}"#))
         XCTAssertNil(ObservationPolicy.trashWarning(forArguments: #"{"command":"cd /workspace/Repo && ls"}"#))
     }
 
@@ -675,5 +675,16 @@ final class NarrationNudgeTests: XCTestCase {
         XCTAssertTrue(nudge.contains("chromium --headless") && nudge.contains("--screenshot="))
         let plain = AgentRuntime.escalatedNarrationNudge(narration: "Let me read the file.", toolNames: ["read_file"])
         XCTAssertFalse(plain.contains("chromium"))
+    }
+}
+
+final class StaleBudgetTests: XCTestCase {
+    func testBigOldResultsCollapseEvenWithinTheCount() {
+        var messages: [ChatMessage] = []
+        for i in 0..<8 { messages.append(ChatMessage(role: .tool, content: "result \(i) " + String(repeating: "x", count: 6_000), toolName: "read_file")) }
+        let out = ObservationPolicy.collapseStale(messages, batch: 1).filter { $0.role == .tool }
+        XCTAssertTrue(out[0].content.hasPrefix("[earlier output"), "oldest is collapsed: 8 x 6k exceeds the budget")
+        XCTAssertFalse(out[7].content.hasPrefix("[earlier output"))
+        XCTAssertFalse(out[5].content.hasPrefix("[earlier output"), "the newest three always stay whole")
     }
 }

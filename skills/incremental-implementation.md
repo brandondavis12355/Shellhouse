@@ -11,23 +11,24 @@ Build in small slices that each leave the program working.
 
 ## The cycle
 1. Implement the smallest complete piece (one function with its test, one
-   path end to end).
-2. Run the tests, or the program, for what you changed.
-3. Check the result is what you expected.
-4. Commit it with a message that says what it does.
+   path end to end): `read_file`, then `edit_file`.
+2. Run the tests, or the program, for what you changed (`run_shell`).
+3. Read the output and check it's what you expected.
+4. Commit it: `git add <files>`, `git commit -m "feat: what it does"`.
 5. Move on to the next slice; don't restart.
 
 ## Rules
+- **Call, don't narrate.** Each step is a tool call, not "Next I'll…".
 - **Simplest thing that works.** No abstractions before the third use, no
   options nobody asked for.
-- **Stay in scope.** Do what the task asks. Note other problems you spot
-  for later instead of fixing them now.
+- **Stay in scope.** Do what the task asks; note other problems for
+  later.
 - **One thing per commit.** A feature, a refactor and a config change are
   three commits.
 - **Keep it runnable.** Never leave the code broken between slices; if a
   slice gets too big, split it.
-- **Edit, don't rewrite.** Change part of a file with `edit_file` after
-  reading it; replace whole files only when you mean to.
+- **Edit, don't rewrite.** `edit_file` after reading (several changes:
+  one call with `edits`); `write_file` only for new files.
 - **Don't re-run unchanged checks.** After a passing run, run again only
   when the code has changed.
 

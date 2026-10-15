@@ -7,137 +7,104 @@ description: >-
 ---
 # Code projects
 
-You do code work yourself, on your own computer. Python 3 (with venv),
-Node.js and npm, and git are installed. Work in `/workspace/<project>/`.
+You do code work yourself, on your own VM, by calling tools. Python 3 (with
+venv), Node.js and npm, git and gh are installed. Work in
+`/workspace/<project>/`.
 
-## Plan the work in two runs
-Downloads (cloning, `pip install`, `npm install`) make a run untrusted.
-In an untrusted run, pushing, opening pull requests, anything that uses a
-secret, and `sudo` are all blocked. So split repository work:
-1. **Setup run:** get the code and install dependencies.
-2. **Work run** (your user sends a new message, such as "go ahead"):
-   edit, test, commit, push and open the pull request. Don't download
-   anything in this run.
-Tell your user when setup is done and that the next message starts the
-work.
+## Rules that prevent most failures
+- **Do, don't announce.** "I'll run the tests" is not a step; the
+  `run_shell` call is. Every reply in a task either calls a tool or calls
+  `finish_task`. Plain text never ends a task.
+- **Look, don't guess.** Find files with `list_files` / `find_files` and
+  code with `search_files` before naming a path. Check a program exists
+  with `command -v <name>`. Never invent commands, flags, versions or
+  file names: read `--help`, the README or the code.
+- **Read before you edit; edit, don't rewrite.** `read_file`, then
+  `edit_file` (several changes in one call with `edits`). `write_file` only
+  for new files.
+- **Once is enough.** Don't re-read a file you just read or re-run an
+  unchanged command: the answer won't change.
+- **Prove it.** Never say done, fixed or passing without running the check
+  in this turn and quoting its result (`verification-before-completion`).
+- **Blocked is the last answer.** A blocked or failed action usually has
+  another route (the message often names it). Try that, or finish the
+  parts you can, before `finish_task` with outcome `blocked`.
+
+## Untrusted runs
+Downloading (`pip install`, `npm install`, `curl`, cloning an untrusted
+repo) or browsing makes the run untrusted. After that, `gh pr create`,
+pushing to `main`, secrets other than `GITHUB_TOKEN`, and most `sudo`
+commands are blocked; pushing your own branch needs a strict approval. So
+clone and install first, and if the PR is blocked, push the branch, then
+ask your user for a new message to open the PR from a fresh run.
 
 ## Getting the code
-- New project: `mkdir -p /workspace/<name> && cd /workspace/<name> && git init`.
-- Public repository: `git clone <url> /workspace/<name>`.
-- Private repository (or a clone that fails with "could not read
-  Username", "Authentication failed" or "Permission denied (publickey)"):
-  1. Don't retry it, and don't switch to ssh: the VM has no keys. It
-     needs a token.
-  2. No `GITHUB_TOKEN` saved yet? Call `request_credentials` with a
+- New project: `mkdir -p /workspace/<name>`, then `git init` in it.
+- Already cloned? Don't clone again: `git -C /workspace/<repo> pull`.
+- Clone with an https URL: `git clone https://github.com/owner/repo.git
+  /workspace/repo`. Git already asks gh for GitHub sign-in, so a saved
+  `GITHUB_TOKEN` is used.
+- Private repo, or "could not read Username" / "Authentication failed":
+  1. Don't retry, and don't switch to ssh: the VM has no keys.
+  2. No `GITHUB_TOKEN` saved? Call `request_credentials` with a
      `GITHUB_TOKEN` field ("GitHub personal access token").
-  3. Once per VM: `run_shell("gh auth setup-git", use_secrets:
-     ["GITHUB_TOKEN"])`. Git then asks gh for GitHub sign-in, and gh reads
-     the token from the environment of each command. Nothing is stored.
-  4. Then plain git, with the token for that one command:
-     `run_shell("git clone https://github.com/owner/repo.git /workspace/repo",
-     use_secrets: ["GITHUB_TOKEN"])`; the same for `git pull`, `git fetch`
-     and `git push origin <your-branch>`.
-  **Never put a token in a URL** (`https://x-access-token:$GITHUB_TOKEN@...`):
-  git saves the URL, token included, in `.git/config`. It's blocked.
-  Do this before browsing or downloading anything else in the run, because
-  secret commands are blocked once a run is untrusted.
+  3. Run the plain git command alone with
+     `use_secrets: ["GITHUB_TOKEN"]`. Still failing? Run
+     `gh auth setup-git` once with the same secret, then retry.
+- **Never put a token in a URL** (`https://x-access-token:...@`), a file or
+  a commit, and never print it. It's blocked.
 - In a group, only the member doing the clone asks for the token; the
-  others wait for its result instead of trying the same clone.
-- Never put a token in a URL, a file or a commit, and never print it.
+  others wait for its result.
 
-## Python projects
-- Install packages into the project's virtual environment, never the system
-  Python (it refuses: PEP 668): `python3 -m venv .venv` once, then
-  `.venv/bin/pip install …`.
-- Run everything with `.venv/bin/python` (tests, servers, scripts). Each
-  run_shell starts a fresh shell, so `source .venv/bin/activate` only lasts
-  for that one command.
-- To try a server you started, `curl http://127.0.0.1:<port>/…` on your own
-  VM; start it with `run_shell` `background: true` and check its log with
-  `check_job` if it doesn't answer.
+## Python and Node
+- Never install into system Python (PEP 668 refuses): `python3 -m venv
+  .venv` once in the project, then `.venv/bin/pip install -r
+  requirements.txt`, and run with `.venv/bin/python`. Each `run_shell` is a
+  fresh shell, so `source .venv/bin/activate` doesn't carry over.
+- Node: `npm install` in the project folder.
+- Install only what the task needs. Add `.venv/`, `node_modules/`,
+  `__pycache__/` to `.gitignore`; never commit them.
+- Servers never run in the foreground (the call would hang): start with
+  `run_shell(..., background: true)`, test with `curl
+  http://127.0.0.1:<port>/`, read errors with `check_job`, and `stop_job`
+  when done.
 
-## Doing the work well
-For anything beyond a one-line fix, load the skill for the stage you're in:
-- `planning-code-work`: read first, decide files and interfaces, break the
-  work into small checked tasks (and goal steps in a group).
-- `incremental-implementation`: build in small working slices, commit each.
-- `test-driven-development`: failing test first; check the test's own
-  expectation before calling something a bug.
-- `systematic-debugging`: root cause before fixes, one hypothesis at a time.
-- `verification-before-completion`: run and quote the check before saying
-  it's done.
-- `code-review`: reviewing a teammate's change, or answering review.
-- `clean-and-secure-code`: readable code, untrusted input, secrets.
-- `git-essentials`: how to connect to GitHub, exact git commands, and what
-  git errors mean.
-- `git-teamwork`: branches, pull before push, merging with other bots.
+## The loop
+For several steps, keep a plan with `update_plan` (in a group goal, the
+goal steps are your plan); `finish_task` "done" is refused while steps are
+open.
+1. Read first: the README, how it's built and tested, the code you'll
+   touch (`git log --oneline -10`, `search_files`).
+2. Change one thing: `read_file`, then `edit_file`.
+3. Run the project's own test command (`pytest`, `npm test`, a Makefile
+   target) and read the output. Fix what broke before moving on.
 
-## Work in small, checked steps
-For anything with several steps, keep a plan with `update_plan` and mark
-each step done as you go; you can't finish while steps are still open.
-
-1. Read before changing: the README, how the project is built and tested,
-   and the code around what you're touching (`ls`, `git log --oneline -10`,
-   `grep -rn`).
-2. Change one thing at a time: `read_file`, then `edit_file` with the
-   exact lines to replace. Use `search_files` / `find_files` to locate code.
-   `write_file` is for new files or complete rewrites.
-3. Run it. Use the project's own test command (`pytest`, `npm test`, a
-   Makefile target) after every meaningful change. Read the output.
-4. Fix what broke before moving on.
-
-## Dependencies
-- Python: `python3 -m venv .venv` inside the project, then
-  `.venv/bin/pip install -r requirements.txt`.
-- Node: `npm install` inside the project folder.
-- Both are downloads, so they make the run untrusted. Don't install
-  anything the task doesn't need.
-
-## Branches and commits
-- Make a branch for the work: `git checkout -b <short-name>` (or
-  `git switch -c <short-name>`).
-- `git add` the specific files you changed, then `git commit -m "<what
-  and why, in one line>"`. Check `git status` and `git diff --staged`
-  first, so you don't commit stray files, build output or anything
-  secret.
-- Set a name and email only if your user tells you which to use.
-
-## Pushing and pull requests
-- `git push -u origin <branch>` always asks your user, with a strict
-  approval. Push your branch and open a pull request
-  (`gh pr create --fill`, with `use_secrets: ["GITHUB_TOKEN"]`); don't push
-  to `main` unless they say so.
-- Both are blocked in an untrusted run. If you hit that, the work is still
-  committed locally: tell your user and ask for a new message to push from
-  a fresh run.
-- Force-pushes, `git reset --hard`, `git clean -f`, deleting branches and
-  discarding changes are destructive. Avoid them, and say why if one is
-  truly needed.
+For bigger work, load the skill for the stage: `planning-code-work`,
+`incremental-implementation`, `test-driven-development`,
+`systematic-debugging`, `verification-before-completion`, `code-review`,
+`clean-and-secure-code`, `git-essentials` (commands and errors),
+`git-teamwork` (several bots on one repo).
 
 ## Finishing work
-Code isn't finished until it is committed, pushed and open for review. When
-the change works and its checks pass:
-1. **New branch, never main.** If you aren't already on one:
-   `git switch -c <your-name>/<short-task>` (for example `prism/ui-fixes`).
-   Commit there, in small commits with a message that says what and why.
-2. **Last check.** `git status` (nothing stray: caches, `.venv`, build output,
+Code isn't finished until it's committed, pushed and open for review.
+1. **New branch, never main**: `git switch -c <your-name>/<short-task>`.
+   Commit there in small commits: `git add <files by name>`, check `git
+   diff --staged`, `git commit -m "fix: what and why"`.
+2. **Last check**: `git status` (no caches, `.venv`, build output or
    secrets), then run the tests once more and read the result.
-3. **Pull request.** `git push -u origin <branch>` (a push always asks your
-   user), then open the PR into the project's main branch so the goal owner
-   can merge it:
-   `gh pr create --base main --head <branch> --title "<what>" --body "<what
-   changed, how you tested it (command and result), anything to check>"`
-   with `use_secrets: ["GITHUB_TOKEN"]`.
-4. **Hand it over.** In a group goal, @mention the goal owner with the PR
-   link, the branch and the commit hash, and submit your step with that as
-   evidence. The owner reviews and merges; don't merge your own PR unless
-   your user or the owner tells you to. Working alone, give your user the
-   link and let them merge.
-5. **If the push or PR is blocked** (an untrusted run, no token): the work is
-   still committed locally. Say so plainly, give the branch and commit
-   hash, and ask your user for a new message to push from a fresh run. Don't
-   say the work is "shipped" or "merged" until the PR link exists.
+3. **Push and PR**: `git push -u origin <branch>`, then `gh pr create
+   --base main --head <branch> --title "<what>" --body "<what changed, how
+   you tested it (command and result)>"`, each with
+   `use_secrets: ["GITHUB_TOKEN"]`. Both ask your user.
+4. **Hand over**: in a group goal, @mention the goal owner with the PR
+   link, branch and commit hash, and submit your step with that as
+   evidence. Don't merge your own PR unless told to. Alone, give your user
+   the link.
+5. **Never** `git push --force`, `git reset --hard` or `git clean -f` to get
+   past a problem: use a new branch instead.
+6. Blocked push or PR? The work is still committed locally. Say so, give
+   the branch and commit hash. Never say "pushed" or "merged" without the
+   push output or PR link.
 
-Then report what you changed (files and a one-line summary each), how you
-verified it (the test command and its result), and where it is: the branch,
-the commit hash and the pull-request link.
+Then `finish_task` with: files changed (one line each), the test command
+and its result, the branch, commit hash and PR link.
