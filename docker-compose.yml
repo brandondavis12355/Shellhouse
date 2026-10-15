@@ -209,6 +209,7 @@ services:
       # as a nested mapping by this compose version (compose-go), which fails
       # the whole file with "environment.[0]: unexpected type map[string]interface {}".
       - "MANAGER_TOKEN=${MANAGER_TOKEN:?MANAGER_TOKEN must be set in .env - generate with: openssl rand -hex 32}"
+      - "MANAGER_EXTRA_TOKENS=${MANAGER_EXTRA_TOKENS:-}"
       # 1 = per-bot sandboxes allow passwordless sudo for `box` (drops
       # no-new-privileges, adds back caps root needs for apt). Default off.
       - SANDBOX_ALLOW_SUDO=${SANDBOX_ALLOW_SUDO:-0}

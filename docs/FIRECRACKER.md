@@ -95,7 +95,7 @@ To boot one VM by hand while debugging, [`sandbox/firecracker/config/vm-template
 
 ## Settings (`~/shellhouse/.env`, applied by re-running setup)
 
-`FIRECRACKER_VCPUS` (2), `FIRECRACKER_MEM_MIB` (2048), `FIRECRACKER_BOOT_TIMEOUT` (90), `FIRECRACKER_USE_JAILER`
+`FIRECRACKER_VCPUS` (2), `FIRECRACKER_MEM_MIB` (2048), `FIRECRACKER_BOOT_TIMEOUT` (90), `FIRECRACKER_PARALLEL_BOOTS` (2: VMs booting at once, the rest queue), `FIRECRACKER_USE_JAILER`
 (true; false only for debugging), `FIRECRACKER_DNS` (1.1.1.1), `FIRECRACKER_IMPORT_DOCKER_WORKSPACES` (1),
 `SANDBOX_ALLOW_SUDO`, `SANDBOX_PORT_BASE`/`SANDBOX_PORT_COUNT`. A 2 GB VM per bot means RAM, not CPU, is usually the
 limit.

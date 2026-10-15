@@ -161,6 +161,7 @@ In the app, **Settings › Linux host** shows the connection. A bot's computer p
 | A signing or provisioning error building the app | [If signing fails](#if-signing-fails-one-time-xcode-setup), below. |
 | "The app didn't hand over its SSH key" | In the app: Settings › Linux host › Copy authorize command, and run it on the box. |
 | The app says **`401 Unauthorized`** when it creates a bot's computer (and the tunnel prints lots of `channel N: open failed`) | The app's manager token doesn't match the box's. Run `./initial_setup.sh --rotate-token`: it generates a new token, updates the box, checks that the manager accepts it, and updates the app. If it reports that the manager rejects the new token, the box's service settings are out of step: follow the log hint it prints, then run the installer again. |
+| The app says **`sandbox-manager /v1/create failed (500)`** for some bots | The text after it says why (for example: not enough free disk space or memory for another VM, or a VM that didn't boot in time). Fix that, then use the bot again. Each microVM needs its own copy of the guest disk and `FIRECRACKER_MEM_MIB` of memory (default 2 GB), and at most `FIRECRACKER_PARALLEL_BOOTS` (default 2) boot at once. The manager's log has the full detail: `journalctl -u agent-sandbox-manager -n 50` on the box (`docker logs agent-sandbox-manager` with containers). |
 | "The app didn't confirm the import" | Open `~/.config/shellhouse/pending-setup.shellhousesettings` with Shellhouse, or delete it and paste the token in Settings › Sandbox manager token. |
 
 ### The Linux box in detail
@@ -231,6 +232,7 @@ Everything the bots use (Python, Chromium, `gh` and the rest) is built into the 
 | Only you can reach the manager | `~/shellhouse`, its `.env` (the manager token) and the manager's socket are readable only by your user on the box. |
 | No password guessing | Once your own SSH key signs you in, it offers to turn off password sign-in for your user on the box. `uninstall.sh` turns it back on. |
 | A fresh token when you want one | `./initial_setup.sh --rotate-token` generates a new token on the box, writes it everywhere the manager reads it (`.env`, and with microVMs the service's own settings), restarts only the manager and then **checks** that the manager accepts the new token and refuses the old one. Only then does it hand the new token to the app. The old token stops working at once. Docker bots keep running; with microVMs the restart stops the VMs, and each boots again, with its files, the next time it's used. |
+| More than one key on the same box | Put extra keys in the box's `.env` as `MANAGER_EXTRA_TOKENS=key1,key2` (each from `openssl rand -hex 32`), then run the installer again (Docker: `docker compose up -d`). The manager accepts `MANAGER_TOKEN` and every extra key, so each Mac can have its own and you can drop one without touching the others. `--rotate-token` only changes `MANAGER_TOKEN`. |
 
 ### What `build.sh` does (step 7, or on its own to rebuild)
 
@@ -303,6 +305,7 @@ The helper keeps an existing `.env` (and its token) and creates minimal `box/` a
 ```bash
 cd macos && swift test                                          # app core: agent loop, guardrails, groups, relay
 cd egress-proxy && python -m pytest                             # egress proxy
+cd sandbox-manager && python -m pytest                          # sandbox manager: readable errors, VM resource checks
 cd group-relay && python -m pytest                              # friends relay
 cd sandbox/agent-runner && PYTHONPATH=src python -m pytest      # in-sandbox agent runner
 python evals/run_evals.py --all --model qwen2.5:7b-instruct     # end-to-end evals (reference stack running)

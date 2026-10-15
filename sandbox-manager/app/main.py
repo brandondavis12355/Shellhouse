@@ -39,6 +39,7 @@ service. What this service guarantees is that `exec` can only ever land
 bounded output.
 """
 import asyncio
+import contextlib
 import hashlib
 import hmac
 from collections import OrderedDict
@@ -58,6 +59,9 @@ from providers.base import SandboxHandle
 
 LOG_PATH = os.environ.get("MANAGER_AUDIT_LOG", "/var/log/sandbox-manager/audit.log")
 AUTH_TOKEN = os.environ.get("MANAGER_TOKEN", "")
+# More keys that work alongside MANAGER_TOKEN (comma-separated), one per Mac or person, so each can be rotated or
+# revoked on its own. MANAGER_TOKEN stays the one the stack's own services use.
+EXTRA_TOKENS = tuple(t for t in (x.strip() for x in os.environ.get("MANAGER_EXTRA_TOKENS", "").split(",")) if t)
 MAX_COMMAND_LEN = 16_384
 MAX_WRITE_BYTES = 8 * 1024 * 1024
 MAX_EXEC_TIMEOUT = 900
@@ -124,7 +128,12 @@ def require_auth(token: Optional[str]) -> None:
     Constant-time shared-secret check. If MANAGER_TOKEN is unset the service
     refuses to start (see startup), so this is never a no-op in practice.
     """
-    if not token or not hmac.compare_digest(token, AUTH_TOKEN):
+    # Compare against every key, without stopping at the first match, so timing doesn't say which one matched.
+    ok = False
+    if token:
+        for known in (AUTH_TOKEN, *EXTRA_TOKENS):
+            ok |= hmac.compare_digest(token.encode(), known.encode())
+    if not ok:
         audit("auth", "refused", reason="bad_or_missing_token")
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -292,11 +301,28 @@ async def healthz():
 # Operations
 # ---------------------------------------------------------------------------
 
+@contextlib.asynccontextmanager
+async def backend_errors(op: str, sandbox_id: str = ""):
+    """A backend failure (a VM that wouldn't boot, no disk space, a Docker error) becomes a 500 that SAYS WHY,
+    instead of FastAPI's bare "Internal Server Error", which hides the reason from the app and the user. The full
+    traceback goes to the service log; the message is redacted like everything else that is logged."""
+    try:
+        yield
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("%s failed", op)
+        reason = redact(f"{type(exc).__name__}: {exc}")[:500]
+        audit(op, "error", sandbox_id=sandbox_id, error=reason)
+        raise HTTPException(status_code=500, detail=f"{op} failed: {reason}") from exc
+
+
 @app.post("/v1/create")
 async def create(req: CreateRequest, x_manager_token: str = Header(default="")):
     require_auth(x_manager_token)
     backend = get_backend()
-    handle = await backend.create(req.task_id, persistent=req.persistent)
+    async with backend_errors("create", req.task_id):
+        handle = await backend.create(req.task_id, persistent=req.persistent)
     _registry[handle.id] = handle
     audit("create", "ok", sandbox_id=handle.id, task_id=req.task_id,
           persistent=req.persistent, backend=backend.name)
@@ -307,7 +333,8 @@ async def create(req: CreateRequest, x_manager_token: str = Header(default="")):
 async def start(req: SandboxIdRequest, x_manager_token: str = Header(default="")):
     require_auth(x_manager_token)
     resolve(req.sandbox_id)
-    handle = await get_backend().start(req.sandbox_id)
+    async with backend_errors("start", req.sandbox_id):
+        handle = await get_backend().start(req.sandbox_id)
     _registry[handle.id] = handle
     audit("start", "ok", sandbox_id=handle.id)
     return handle.to_dict()
@@ -319,9 +346,10 @@ async def execute(req: ExecRequest, x_manager_token: str = Header(default="")):
     resolve(req.sandbox_id)
     if req.request_id:
         return await _execute_once(req)
-    result = await get_backend().exec(
-        req.sandbox_id, req.command, timeout=req.timeout, env=req.env or None
-    )
+    async with backend_errors("exec", req.sandbox_id):
+        result = await get_backend().exec(
+            req.sandbox_id, req.command, timeout=req.timeout, env=req.env or None
+        )
     # Log the command: on a single-user box this is the record of what the
     # agent actually did, and it is the thing you want when something breaks.
     #
@@ -353,9 +381,10 @@ async def _execute_once(req: ExecRequest) -> dict:
 
     async def run() -> dict:
         try:
-            result = await get_backend().exec(
-                req.sandbox_id, req.command, timeout=req.timeout, env=req.env or None
-            )
+            async with backend_errors("exec", req.sandbox_id):
+                result = await get_backend().exec(
+                    req.sandbox_id, req.command, timeout=req.timeout, env=req.env or None
+                )
             audit("exec", "ok", sandbox_id=req.sandbox_id, request_id=key,
                   command=req.command[:2000], exit_code=result.exit_code,
                   injected_env=sorted(req.env.keys()) if req.env else [])
@@ -375,7 +404,8 @@ async def read_file(req: PathRequest, x_manager_token: str = Header(default=""))
     require_auth(x_manager_token)
     resolve(req.sandbox_id)
     import base64
-    data = await get_backend().read_file(req.sandbox_id, req.path, max_bytes=req.max_bytes)
+    async with backend_errors("read_file", req.sandbox_id):
+        data = await get_backend().read_file(req.sandbox_id, req.path, max_bytes=req.max_bytes)
     audit("read_file", "ok", sandbox_id=req.sandbox_id, path=req.path, bytes=len(data))
     return {"content_b64": base64.b64encode(data).decode()}
 
@@ -393,7 +423,8 @@ async def write_file(req: WriteRequest, x_manager_token: str = Header(default=""
     if len(content) > MAX_WRITE_BYTES:
         audit("write_file", "refused", sandbox_id=req.sandbox_id, reason="too_large")
         raise HTTPException(status_code=413, detail="File too large")
-    await get_backend().write_file(req.sandbox_id, req.path, content)
+    async with backend_errors("write_file", req.sandbox_id):
+        await get_backend().write_file(req.sandbox_id, req.path, content)
     audit("write_file", "ok", sandbox_id=req.sandbox_id, path=req.path, bytes=len(content))
     return {"ok": True, "bytes": len(content)}
 
@@ -402,7 +433,8 @@ async def write_file(req: WriteRequest, x_manager_token: str = Header(default=""
 async def pause(req: SandboxIdRequest, x_manager_token: str = Header(default="")):
     require_auth(x_manager_token)
     resolve(req.sandbox_id)
-    await get_backend().pause(req.sandbox_id)
+    async with backend_errors("pause", req.sandbox_id):
+        await get_backend().pause(req.sandbox_id)
     audit("pause", "ok", sandbox_id=req.sandbox_id)
     return {"ok": True}
 
@@ -411,7 +443,8 @@ async def pause(req: SandboxIdRequest, x_manager_token: str = Header(default="")
 async def resume(req: SandboxIdRequest, x_manager_token: str = Header(default="")):
     require_auth(x_manager_token)
     resolve(req.sandbox_id)
-    await get_backend().resume(req.sandbox_id)
+    async with backend_errors("resume", req.sandbox_id):
+        await get_backend().resume(req.sandbox_id)
     audit("resume", "ok", sandbox_id=req.sandbox_id)
     return {"ok": True}
 
@@ -420,7 +453,8 @@ async def resume(req: SandboxIdRequest, x_manager_token: str = Header(default=""
 async def destroy(req: DestroyRequest, x_manager_token: str = Header(default="")):
     require_auth(x_manager_token)
     handle = resolve(req.sandbox_id)
-    await get_backend().destroy(req.sandbox_id, force=req.force)
+    async with backend_errors("destroy", req.sandbox_id):
+        await get_backend().destroy(req.sandbox_id, force=req.force)
     # A persistent sandbox survives a routine destroy, so it stays addressable (a later force-delete must find it).
     if req.force or not handle.persistent:
         _registry.pop(req.sandbox_id, None)
@@ -491,7 +525,8 @@ async def egress_decide(req: EgressDecideRequest, x_manager_token: str = Header(
 async def list_sandboxes(x_manager_token: str = Header(default="")):
     """Sandboxes currently running, for the UI's computer picker."""
     require_auth(x_manager_token)
-    handles = await get_backend().list_sandboxes()
+    async with backend_errors("list"):
+        handles = await get_backend().list_sandboxes()
     # Merge in anything this process created, so a sandbox is listed even if
     # the backend's discovery misses it.
     known = {h.id: h for h in handles}
@@ -504,5 +539,6 @@ async def list_sandboxes(x_manager_token: str = Header(default="")):
 async def health(req: SandboxIdRequest, x_manager_token: str = Header(default="")):
     require_auth(x_manager_token)
     resolve(req.sandbox_id)
-    ok = await get_backend().health(req.sandbox_id)
+    async with backend_errors("health", req.sandbox_id):
+        ok = await get_backend().health(req.sandbox_id)
     return {"ok": ok}

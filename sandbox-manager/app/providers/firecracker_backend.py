@@ -66,6 +66,52 @@ FC_DNS = os.environ.get("FIRECRACKER_DNS", "1.1.1.1")
 FC_VCPUS = int(os.environ.get("FIRECRACKER_VCPUS", "2"))
 FC_MEM_MIB = int(os.environ.get("FIRECRACKER_MEM_MIB", "2048"))
 FC_BOOT_TIMEOUT = int(os.environ.get("FIRECRACKER_BOOT_TIMEOUT", "90"))
+# VMs booting at once. Each new VM copies the base disk image, so many at once is a burst of heavy disk work
+# that slows every boot past its timeout; the rest queue and boot one after another.
+FC_PARALLEL_BOOTS = max(1, int(os.environ.get("FIRECRACKER_PARALLEL_BOOTS", "2")))
+MEM_HEADROOM_MIB = 512        # what the host keeps for itself beyond a VM's own memory
+DISK_HEADROOM_BYTES = 1 << 30
+
+
+def _free_disk_bytes(path: str) -> int:
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize
+
+
+def _available_mem_mib() -> Optional[int]:
+    """MemAvailable from /proc/meminfo, or None where that isn't readable."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def check_resources(*, new_disk: bool, state_dir: str, base_image: str, mem_mib: int,
+                    free_disk=_free_disk_bytes, available_mem=_available_mem_mib) -> None:
+    """Refuses, with the numbers, to start a VM the host has no room for, instead of failing half way through the
+    boot with an error nobody can read. A new disk is a copy of the base image, so it needs the image's used space
+    (a copy-on-write filesystem needs less, but the check stays conservative) plus headroom."""
+    if new_disk:
+        try:
+            need = os.stat(base_image).st_blocks * 512 + DISK_HEADROOM_BYTES
+        except OSError:
+            need = DISK_HEADROOM_BYTES
+        free = free_disk(state_dir)
+        if free < need:
+            raise RuntimeError(
+                f"Not enough free disk space for another VM: it needs about {need / 2**30:.1f} GiB in {state_dir} "
+                f"and {free / 2**30:.1f} GiB is free. Free some space, or remove VMs you no longer use."
+            )
+    avail = available_mem()
+    if avail is not None and avail < mem_mib + MEM_HEADROOM_MIB:
+        raise RuntimeError(
+            f"Not enough free memory for another VM: it needs {mem_mib} MiB plus about {MEM_HEADROOM_MIB} MiB for "
+            f"the host, and {avail} MiB is available. Stop another VM, or lower FIRECRACKER_MEM_MIB."
+        )
 
 SANDBOX_USER = os.environ.get("SANDBOX_USER", "box")
 ALLOW_SUDO = os.environ.get("SANDBOX_ALLOW_SUDO", "0").lower() in ("1", "true", "yes")
@@ -177,6 +223,7 @@ class FirecrackerBackend:
         self._lock = asyncio.Lock()
         self._vm_locks: dict[str, asyncio.Lock] = {}
         self._booting: dict[str, asyncio.Future] = {}   # task_id -> boot in progress
+        self._boot_slots = asyncio.Semaphore(FC_PARALLEL_BOOTS)
 
     def _vm_lock(self, key: str) -> asyncio.Lock:
         return self._vm_locks.setdefault(key, asyncio.Lock())
@@ -256,14 +303,17 @@ class FirecrackerBackend:
         try:
             for d in (FC_STATE_DIR, FC_RUN_DIR, FC_LOG_DIR):
                 os.makedirs(d, mode=0o700, exist_ok=True)
-            await self._setup_tap(slot)
-            await self._prepare_disk(slot, new_disk)
-            await self._spawn_firecracker(slot)
-            await self._configure_vm(slot)
-            await self._api(slot, "PUT", "/actions", {"action_type": "InstanceStart"})
-            await self._wait_for_ssh(slot)
-            await self._start_ssh_master(slot)
-            await self._start_forwarder(slot)
+            async with self._boot_slots:
+                # Checked once it's this VM's turn: what's free now is what it will really get.
+                check_resources(new_disk=new_disk, state_dir=FC_STATE_DIR, base_image=FC_ROOTFS, mem_mib=FC_MEM_MIB)
+                await self._setup_tap(slot)
+                await self._prepare_disk(slot, new_disk)
+                await self._spawn_firecracker(slot)
+                await self._configure_vm(slot)
+                await self._api(slot, "PUT", "/actions", {"action_type": "InstanceStart"})
+                await self._wait_for_ssh(slot)
+                await self._start_ssh_master(slot)
+                await self._start_forwarder(slot)
             if persistent and new_disk:
                 await self._import_docker_workspace(slot)
         except BaseException:
@@ -492,18 +542,26 @@ class FirecrackerBackend:
 
     async def _ssh_raw(self, slot: _Slot, remote: str, stdin: bytes = b"",
                        timeout: int = 120) -> tuple[int, bytes, bytes]:
+        # Nothing to send: don't open a stdin pipe at all, so there is nothing to write to a process that has
+        # already exited (while a VM is still booting, ssh fails and exits at once).
         proc = await asyncio.create_subprocess_exec(
             *self._ssh_base(slot), remote,
-            stdin=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE if stdin else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout + 10)
+            out, err = await asyncio.wait_for(proc.communicate(stdin or None), timeout=timeout + 10)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
             return 124, b"", f"Timed out after {timeout}s".encode()
+        except (RuntimeError, BrokenPipeError, ConnectionResetError):
+            # ssh exited before it took its input. uvloop (which the manager runs on) reports a write to the closed
+            # pipe as a RuntimeError, not a BrokenPipeError. What matters is how ssh ended, and its output.
+            await proc.wait()
+            out = await proc.stdout.read() if proc.stdout else b""
+            err = await proc.stderr.read() if proc.stderr else b""
         return proc.returncode, out, err
 
     async def exec(

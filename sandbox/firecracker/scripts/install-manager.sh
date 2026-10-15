@@ -86,6 +86,9 @@ write_env() {
     {
       echo "# Written by install-manager.sh from $DOTENV; edit that file and re-run setup instead."
       echo "MANAGER_TOKEN=$token"
+      local extra; extra="$(dotenv MANAGER_EXTRA_TOKENS)"
+      if [[ "$extra" =~ ^[A-Za-z0-9]{32,128}(,[A-Za-z0-9]{32,128})*$ ]]; then echo "MANAGER_EXTRA_TOKENS=$extra"
+      elif [ -n "$extra" ]; then echo "MANAGER_EXTRA_TOKENS in $DOTENV is malformed; ignoring it" >&2; fi
       echo "SANDBOX_BACKEND=firecracker"
       echo "MANAGER_AUDIT_LOG=/var/log/sandbox-manager/audit.log"
       echo "SANDBOX_USER=box"
@@ -94,6 +97,7 @@ write_env() {
       pick FIRECRACKER_VCPUS 2 '[1-9][0-9]?'
       pick FIRECRACKER_MEM_MIB 2048 '[1-9][0-9]{2,5}'
       pick FIRECRACKER_BOOT_TIMEOUT 90 '[1-9][0-9]{1,3}'
+      pick FIRECRACKER_PARALLEL_BOOTS 2 '[1-9][0-9]?'
       pick FIRECRACKER_USE_JAILER true 'true|false'
       pick FIRECRACKER_DNS 1.1.1.1 '[0-9]{1,3}(\.[0-9]{1,3}){3}'
       pick FIRECRACKER_IMPORT_DOCKER_WORKSPACES 1 '0|1'
