@@ -115,3 +115,22 @@ final class ContextBudgetTests: XCTestCase {
         XCTAssertLessThan(results[1].content.count, 600)
     }
 }
+
+final class RepetitionGuardTests: XCTestCase {
+    func testALoopedPassageTripsAndCollapsesToOneCopy() {
+        let guardian = RepetitionGuard()
+        let intro = "Starting. "
+        let loop = "I've been going in circles. Let me take decisive action. "
+        var tripped = false
+        for chunk in [intro] + Array(repeating: loop, count: 6) { tripped = guardian.feed(chunk) || tripped }
+        XCTAssertTrue(tripped)
+        let text = intro + String(repeating: loop, count: 6)
+        XCTAssertEqual(RepetitionGuard.collapsed(text), intro + loop)
+    }
+
+    func testOrdinaryTextAndShortRepeatsDoNotTrip() {
+        let guardian = RepetitionGuard()
+        XCTAssertFalse(guardian.feed("I will read the file, then edit it, then run the tests and report what they say. ok ok ok ok ok ok"))
+        XCTAssertFalse(RepetitionGuard().feed(String(repeating: "-", count: 200)))
+    }
+}

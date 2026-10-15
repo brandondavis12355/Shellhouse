@@ -635,3 +635,63 @@ public enum ModelConnection {
         "\(unreachablePrefix) (Ollama). Check that it's running, then send your message again.)"
     }
 }
+
+// MARK: - Runaway repetition inside one reply
+
+/// Watches a reply as it streams and says when the model has fallen into a loop (the same passage again and
+/// again), so the runtime can cut the generation off instead of waiting for hundreds of copies.
+public final class RepetitionGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recent = ""
+    private let repeats: Int
+    private let minUnit: Int
+    private var tripped = false
+
+    public init(repeats: Int = 4, minUnit: Int = 24) { self.repeats = repeats; self.minUnit = minUnit }
+
+    /// Adds streamed text; true once the tail is one passage of at least `minUnit` characters repeated `repeats` times.
+    @discardableResult
+    public func feed(_ delta: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if tripped { return true }
+        recent += delta
+        if recent.count > 4_000 { recent = String(recent.suffix(4_000)) }
+        tripped = Self.unitLength(endingLoop: Array(recent), repeats: repeats, minUnit: minUnit) != nil
+        return tripped
+    }
+
+    public var isTripped: Bool { lock.lock(); defer { lock.unlock() }; return tripped }
+
+    /// Length of the passage the text ends in a loop of, if any (≥ minUnit, ≤ 600 characters).
+    static func unitLength(endingLoop chars: [Character], repeats: Int, minUnit: Int) -> Int? {
+        let maxUnit = min(600, chars.count / repeats)
+        guard maxUnit >= minUnit else { return nil }
+        let end = chars.count
+        for unit in minUnit...maxUnit {
+            var ok = true
+            for i in 1...(unit * (repeats - 1)) where chars[end - i] != chars[end - i - unit] { ok = false; break }
+            if ok, Set(chars[(end - unit)..<end]).count >= 6 { return unit }   // a rule of dashes is not a loop
+        }
+        return nil
+    }
+
+    /// The reply with the loop cut to one copy of the repeated passage.
+    public static func collapsed(_ text: String, repeats: Int = 4, minUnit: Int = 24) -> String {
+        let chars = Array(text)
+        guard let unit = unitLength(endingLoop: chars, repeats: repeats, minUnit: minUnit) else { return text }
+        var end = chars.count
+        while end - 2 * unit >= 0, chars[(end - 2 * unit)..<(end - unit)] == chars[(end - unit)..<end] { end -= unit }
+        return String(chars[0..<end])
+    }
+}
+
+/// The text a streaming call has produced so far, readable after the call is cut off.
+final class StreamedText: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = ""
+    private var stop: (@Sendable () -> Void)?
+    func append(_ delta: String) { lock.lock(); buffer += delta; lock.unlock() }
+    func onStop(_ action: @escaping @Sendable () -> Void) { lock.lock(); stop = action; lock.unlock() }
+    func cancelStream() { lock.lock(); let action = stop; lock.unlock(); action?() }
+    var text: String { lock.lock(); defer { lock.unlock() }; return buffer }
+}

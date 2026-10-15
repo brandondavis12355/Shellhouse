@@ -501,13 +501,36 @@ public actor AgentRuntime {
             onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
 
             var reply: ModelReply
+            var loopBroken = false
             var attempt = 0
             while true {
                 do {
-                    reply = try await model.chatStream(
-                        messages: messages, tools: toolSchemas, model: modelName, temperature: 0.2,
-                        onDelta: { [onEvent] delta in onEvent(.messageDelta(delta)) }
-                    )
+                    let loopGuard = RepetitionGuard()
+                    let streamed = StreamedText()
+                    let backend = model
+                    let schemas = toolSchemas
+                    let history = messages
+                    let name = modelName
+                    let work = Task { [onEvent] in
+                        try await backend.chatStream(
+                            messages: history, tools: schemas, model: name, temperature: 0.2,
+                            onDelta: { delta in
+                                streamed.append(delta)
+                                onEvent(.messageDelta(delta))
+                                if loopGuard.feed(delta) { streamed.cancelStream() }
+                            }
+                        )
+                    }
+                    streamed.onStop { work.cancel() }
+                    do {
+                        reply = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+                    } catch where loopGuard.isTripped && !Task.isCancelled {
+                        // One reply fell into a loop. Keep the passage once and tell the model.
+                        let once = RepetitionGuard.collapsed(streamed.text)
+                        onEvent(.contextTrimmed(detail: "reply cut off: the model was repeating itself (\(streamed.text.count) characters)"))
+                        reply = ModelReply(message: ChatMessage(role: .assistant, content: once), usage: nil)
+                        loopBroken = true
+                    }
                     break
                 } catch {
                     // The model server restarting or briefly unreachable: wait for it and try the same step again
@@ -523,6 +546,13 @@ public actor AgentRuntime {
                 }
             }
             chargeUsage(reply.usage)
+            if loopBroken {
+                messages.append(reply.message)
+                onEvent(.message(reply.message))
+                messages.append(ChatMessage(role: .user, content: "Your last reply repeated the same passage over and over and was cut off. "
+                    + "Do not write it again. Call the one tool for your next real step now, or if you are blocked call finish_task with outcome blocked and say why."))
+                continue
+            }
             if Reliability.isOn(.callChecks), (reply.message.toolCalls ?? []).isEmpty,
                let recovered = ToolCallRecovery.extract(from: reply.message.content, toolNames: Set(tools.names()), schemas: tools.schemas) {
                 // The model wrote its tool call as text. Treat it as the call it meant to make.
