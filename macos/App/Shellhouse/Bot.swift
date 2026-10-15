@@ -575,6 +575,10 @@ final class Bot: Identifiable, @unchecked Sendable {
             let typed = keyName == fallbackAPIKeySecretName ? fallbackAPIKeyInput : (keyName == remoteAPIKeySecretName ? remoteAPIKeyInput : "")
             let apiKey = typed.isEmpty ? ((try? await SecretStore().resolveOne(name: keyName)) ?? nil) : typed
             let url = URL(string: baseURL) ?? URL(string: "https://api.openai.com/v1")!
+            // An Ollama server on another machine: use its native API, which applies the context window setting.
+            if (apiKey ?? "").isEmpty, let root = ModelTiers.ollamaRoot(url) {
+                return OllamaBackend(baseURL: root, defaultModel: model, visionOverrides: vision ? [model] : [])
+            }
             return OpenAICompatibleBackend(baseURL: url, apiKey: apiKey ?? "", defaultModel: model, visionOverrides: vision ? [model] : [])
         }
     }
@@ -2026,6 +2030,9 @@ final class Bot: Identifiable, @unchecked Sendable {
         guard await ModelTiers.remoteReachable(url) else { return nil }
         let key = (try? await SecretStore().resolveOne(name: ModelTiers.fastRemoteAPIKeySecretName)) ?? nil
         let model = ModelTiers.fastRemoteModel
+        if (key ?? "").isEmpty, let root = ModelTiers.ollamaRoot(url) {
+            return (OllamaBackend(baseURL: root, defaultModel: model, timeout: timeout), model)
+        }
         return (OpenAICompatibleBackend(baseURL: url, apiKey: key ?? "", defaultModel: model, timeout: timeout,
                                         reasoningEffort: ModelTiers.looksLikeOllama(url) ? "none" : nil), model)
     }

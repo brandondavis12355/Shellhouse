@@ -144,6 +144,15 @@ public enum ModelTiers {
         url.port == 11434 || (url.scheme == "http" && url.host.map(isPrivateHost) == true)
     }
 
+    /// The address of an Ollama server given as an OpenAI-style URL (`http://host:11434/v1`): its root, so the app can
+    /// talk to it natively. Ollama's OpenAI-compatible endpoint ignores the app's context window (the server's own
+    /// default applies, often smaller) and can't switch thinking off the same way; the native API honors both.
+    public static func ollamaRoot(_ url: URL) -> URL? {
+        guard url.port == 11434, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        parts.path = ""; parts.query = nil
+        return parts.url
+    }
+
     private static let probeLock = NSLock()
     nonisolated(unsafe) private static var probeCache: [String: (at: Date, ok: Bool)] = [:]
 
