@@ -21,12 +21,15 @@ do the job. Paths are relative to `/workspace`.
   expression, as `file:line: text`. Too many matches? Narrow the pattern,
   path or `file_glob`.
 - `read_file(path, offset, limit)`: one page (about 12,000 characters) at a
-  time. When it returns `next_offset`, there is more: read on from there.
+  time, usually the whole file. When it returns `next_offset`, there is
+  more: read on from there. Don't re-read a file you just read or wrote.
   If it errors, list the parent folder before guessing again.
 - `edit_file(path, old_text, new_text)`: change part of a file. Read the
   file first. Copy `old_text` exactly from it, with a few surrounding lines
-  so it matches once. The reply shows a numbered snippet of the result:
-  check it.
+  so it matches once. Several changes to one file? Pass
+  `edits: [{old_text, new_text}, …]` in one call: they apply in order and
+  none is written if any fails. The reply shows a numbered snippet of the
+  result: check it.
 - `write_file(path, content)`: create a file, or replace one completely.
   Don't use it to change a few lines of a big file; use `edit_file`.
 - `.py`, `.json`, `.sh` and `.yaml` files are syntax-checked on every write
