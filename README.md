@@ -160,6 +160,7 @@ In the app, **Settings › Linux host** shows the connection. A bot's computer p
 | The manager "didn't create its socket" | On the box: `docker logs agent-sandbox-manager` (with microVMs: `journalctl -u agent-sandbox-manager`). |
 | A signing or provisioning error building the app | [If signing fails](#if-signing-fails-one-time-xcode-setup), below. |
 | "The app didn't hand over its SSH key" | In the app: Settings › Linux host › Copy authorize command, and run it on the box. |
+| The app says **`401 Unauthorized`** when it creates a bot's computer (and the tunnel prints lots of `channel N: open failed`) | The app's manager token doesn't match the box's. Run `./initial_setup.sh --rotate-token`: it generates a new token, updates the box, checks that the manager accepts it, and updates the app. If it reports that the manager rejects the new token, the box's service settings are out of step: follow the log hint it prints, then run the installer again. |
 | "The app didn't confirm the import" | Open `~/.config/shellhouse/pending-setup.shellhousesettings` with Shellhouse, or delete it and paste the token in Settings › Sandbox manager token. |
 
 ### The Linux box in detail
@@ -229,7 +230,7 @@ Everything the bots use (Python, Chromium, `gh` and the rest) is built into the 
 | The app's key can't open a shell | The app's own SSH key is authorized with `restrict` plus port forwarding. It gets no shell, no pty, and no agent or X11 forwarding, and the only commands it may run are its connection test and resource stats ([`scripts/app-ssh-command.sh`](scripts/app-ssh-command.sh)). A stolen copy of it can't open a shell on the box. It can still forward connections from the box, which the tunnel needs: OpenSSH applies a port allowlist (`permitopen`) to socket forwards too, so the manager's socket can't be allowed alone. |
 | Only you can reach the manager | `~/shellhouse`, its `.env` (the manager token) and the manager's socket are readable only by your user on the box. |
 | No password guessing | Once your own SSH key signs you in, it offers to turn off password sign-in for your user on the box. `uninstall.sh` turns it back on. |
-| A fresh token when you want one | `./initial_setup.sh --rotate-token` replaces the manager token on the box, restarts only the manager and hands the new token to the app. The old token stops working at once. Docker bots keep running; with Firecracker the restart stops the VMs, and each boots again, with its files, the next time it's used. |
+| A fresh token when you want one | `./initial_setup.sh --rotate-token` generates a new token on the box, writes it everywhere the manager reads it (`.env`, and with microVMs the service's own settings), restarts only the manager and then **checks** that the manager accepts the new token and refuses the old one. Only then does it hand the new token to the app. The old token stops working at once. Docker bots keep running; with microVMs the restart stops the VMs, and each boots again, with its files, the next time it's used. |
 
 ### What `build.sh` does (step 7, or on its own to rebuild)
 
