@@ -448,7 +448,7 @@ struct BotSettingsTab: View {
                         if !bot.memories.isEmpty {
                             let model = ModelTiers.embeddingModel
                             Text(model.isEmpty
-                                 ? "Search is by keywords. Pick an embedding model in Settings › Fast model to also search by meaning."
+                                 ? "Search is by keywords. Pick an embedding model in Settings › Memory embeddings to also search by meaning."
                                  : "\(bot.memoriesIndexed) of \(bot.memories.count) notes indexed for meaning (\(model)).")
                                 .font(.system(size: 12)).foregroundStyle(.tertiary)
                         }

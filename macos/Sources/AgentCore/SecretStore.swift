@@ -197,7 +197,7 @@ public actor SecretStore {
     /// every VM), the friends relay token, and model API keys (a bot's remote key, the fast model's key).
     public static func isAppInternal(_ name: String) -> Bool {
         let upper = name.uppercased()
-        return ["SANDBOX_MANAGER_TOKEN", "RELAY_REGISTRATION_TOKEN", "RELAY_IDENTITY_KEY_V1", "FAST_MODEL_API_KEY"].contains(upper)
+        return ["SANDBOX_MANAGER_TOKEN", "RELAY_REGISTRATION_TOKEN", "RELAY_IDENTITY_KEY_V1", "FAST_MODEL_API_KEY", "EMBEDDING_API_KEY"].contains(upper)
             || upper.hasPrefix("REMOTE_API_KEY_")
     }
 

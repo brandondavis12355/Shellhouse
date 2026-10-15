@@ -4,7 +4,6 @@ import AgentCore
 /// Settings › Fast model: the cheap tier for reply checks, small talk and parallel helpers.
 struct ModelTiersSettingsSection: View {
     @State private var fastModel = ModelTiers.fastModel
-    @State private var embeddingModel = ModelTiers.embeddingModel
     @State private var installed: [String] = []
     @AppStorage(ModelTiers.fastProviderKey) private var provider = "ollama"
     @AppStorage(ModelTiers.fastRemoteBaseURLKey) private var remoteBaseURL = ""
@@ -44,19 +43,6 @@ struct ModelTiersSettingsSection: View {
                         }
                     }
                     }
-                    HStack {
-                        Text("Memory embeddings").font(.system(size: 13)).foregroundStyle(.secondary)
-                        Picker("Memory embedding model", selection: $embeddingModel) {
-                            Text("None (keywords only)").tag("")
-                            ForEach(ModelTiers.embeddingModels(from: installed), id: \.self) { Text($0).tag($0) }
-                            if !embeddingModel.isEmpty && !installed.contains(embeddingModel) { Text(embeddingModel).tag(embeddingModel) }
-                        }
-                        .labelsHidden()
-                        .onChange(of: embeddingModel) { _, new in ModelTiers.embeddingModel = new }
-                    }
-                    Text("Lets bots find notes by meaning (\"the github tool\" finds the note about gh). Notes are indexed in the background; "
-                        + "the model stays loaded only for a few minutes after use.")
-                        .font(.system(size: 12)).foregroundStyle(.tertiary)
                 }
                 .padding(16)
             }
@@ -66,8 +52,6 @@ struct ModelTiersSettingsSection: View {
             installed = ((try? await OllamaBackend().availableModels()) ?? []).sorted()
             await ModelTiers.autoConfigure()
             fastModel = ModelTiers.fastModel
-            embeddingModel = ModelTiers.embeddingModel
-            if embeddingModel.isEmpty, let pick = await ModelTiers.resolveEmbeddingModel() { embeddingModel = pick }
         }
     }
 }
@@ -114,6 +98,112 @@ extension ModelTiersSettingsSection {
             do {
                 try await SecretStore().put(name: ModelTiers.fastRemoteAPIKeySecretName, value: key, notes: "Fast model API key")
                 apiKeyInput = ""; keySaved = true; keyError = nil
+            } catch {
+                keyError = "Couldn't save the key to the Keychain: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+/// Settings › Memory embeddings: the model that lets bots find notes by meaning, local (Ollama) or remote.
+struct EmbeddingsSettingsSection: View {
+    @State private var embeddingModel = ModelTiers.embeddingModel
+    @State private var installed: [String] = []
+    @AppStorage(ModelTiers.embeddingProviderKey) private var provider = "ollama"
+    @AppStorage(ModelTiers.embeddingRemoteBaseURLKey) private var remoteBaseURL = ""
+    @AppStorage(ModelTiers.embeddingRemoteModelKey) private var remoteModel = ""
+    @State private var apiKeyInput = ""
+    @State private var keySaved = false
+    @State private var keyError: String?
+
+    private var summary: String {
+        if provider == "remote" { return ModelTiers.embeddingUsesRemote ? "remote · \(remoteModel)" : "remote · not set up" }
+        return embeddingModel.isEmpty ? "keywords only" : embeddingModel
+    }
+
+    var body: some View {
+        CollapsibleSection("Memory embeddings", summary: summary, symbol: "brain", storageKey: "embeddings") {
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Lets bots find notes by meaning (\"the github tool\" finds the note about gh) instead of only by shared words. "
+                        + "Notes are indexed in the background; without a model, memory search is by keywords.")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                    Picker("Runs on", selection: $provider) {
+                        Text("Local (Ollama)").tag("ollama")
+                        Text("Remote (OpenAI-compatible)").tag("remote")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: provider) { _, _ in ModelTiers.embeddingSettingsChanged() }
+                    if provider == "remote" {
+                        remoteFields
+                    } else {
+                        Picker("Embedding model", selection: $embeddingModel) {
+                            Text("None (keywords only)").tag("")
+                            ForEach(ModelTiers.embeddingModels(from: installed), id: \.self) { Text($0).tag($0) }
+                            if !embeddingModel.isEmpty && !installed.contains(embeddingModel) { Text(embeddingModel).tag(embeddingModel) }
+                        }
+                        .labelsHidden()
+                        .onChange(of: embeddingModel) { _, new in
+                            guard new != ModelTiers.embeddingModel else { return }
+                            ModelTiers.embeddingModel = new
+                            ModelTiers.embeddingSettingsChanged()
+                        }
+                        Text("The model stays loaded in Ollama only for a few minutes after use.")
+                            .font(.system(size: 12)).foregroundStyle(.tertiary)
+                    }
+                    Text("Notes are indexed per model. After you switch, older notes are found by keywords until they are indexed again.")
+                        .font(.system(size: 12)).foregroundStyle(.tertiary)
+                }
+                .padding(16)
+            }
+        }
+        .task {
+            keySaved = ((try? await SecretStore().list()) ?? []).contains { $0.name == ModelTiers.embeddingAPIKeySecretName }
+            installed = ((try? await OllamaBackend().availableModels()) ?? []).sorted()
+            await ModelTiers.autoConfigure()
+            embeddingModel = ModelTiers.embeddingModel
+            if provider != "remote", embeddingModel.isEmpty, let pick = await ModelTiers.resolveEmbeddingModel() { embeddingModel = pick }
+        }
+    }
+
+    @ViewBuilder
+    private var remoteFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Presets").font(.caption).foregroundStyle(.secondary)
+                Button("OpenAI") {
+                    remoteBaseURL = "https://api.openai.com/v1"
+                    if remoteModel.isEmpty { remoteModel = "text-embedding-3-small" }
+                }
+                Button("Google Gemini") { remoteBaseURL = OpenAICompatibleBackend.geminiBaseURL }
+                Spacer()
+            }
+            TextField("Base URL (https://…)", text: $remoteBaseURL).themedField()
+            TextField("Embedding model id", text: $remoteModel).themedField()
+                .onSubmit { ModelTiers.embeddingSettingsChanged() }
+            HStack {
+                SecureField(keySaved ? "API key saved — type a new one to replace it" : "API key", text: $apiKeyInput)
+                    .themedField()
+                    .onSubmit(saveKey)
+                Button("Save key", action: saveKey).disabled(apiKeyInput.isEmpty)
+            }
+            if let keyError { Text(keyError).font(.caption).foregroundStyle(.red) }
+            Text(ModelTiers.embeddingUsesRemote
+                 ? "The text of each memory note, and each search query, is sent to this provider. Nothing else is."
+                 : "Needs an https base URL and a model id. Until then, memory search uses the local setting.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func saveKey() {
+        let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        Task {
+            do {
+                try await SecretStore().put(name: ModelTiers.embeddingAPIKeySecretName, value: key, notes: "Memory embeddings API key")
+                apiKeyInput = ""; keySaved = true; keyError = nil
+                ModelTiers.embeddingSettingsChanged()   // a key fixes a paused indexing run
             } catch {
                 keyError = "Couldn't save the key to the Keychain: \(error.localizedDescription)"
             }

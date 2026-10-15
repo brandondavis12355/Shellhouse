@@ -112,3 +112,54 @@ public struct OllamaEmbedder: MemoryEmbedder {
         return vectors
     }
 }
+
+
+/// An OpenAI-compatible `/embeddings` endpoint (OpenAI itself, Gemini's compatibility layer, a self-hosted server).
+/// Note the text of memories is sent to that endpoint.
+public struct OpenAIEmbedder: MemoryEmbedder {
+    public let baseURL: URL
+    public let modelName: String
+    private let apiKey: String?
+    private let session: URLSession
+
+    public init(baseURL: URL, model: String, apiKey: String?, timeout: TimeInterval = 20) {
+        self.baseURL = baseURL
+        self.modelName = model
+        self.apiKey = apiKey
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        self.session = URLSession(configuration: configuration)
+    }
+
+    static func requestBody(model: String, inputs: [String]) -> [String: Any] {
+        ["model": model, "input": inputs]
+    }
+
+    /// `{"data":[{"index":0,"embedding":[...]}, ...]}` in index order, each vector normalized.
+    static func parse(_ data: Data) throws -> [[Float]] {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = object["data"] as? [[String: Any]] else { throw OllamaEmbedder.EmbedError.badResponse }
+        let ordered = items.enumerated().sorted { (($0.element["index"] as? Int) ?? $0.offset) < (($1.element["index"] as? Int) ?? $1.offset) }
+        return try ordered.map { entry in
+            guard let raw = entry.element["embedding"] as? [Double] else { throw OllamaEmbedder.EmbedError.badResponse }
+            return VectorMath.normalized(raw.map { Float($0) })
+        }
+    }
+
+    public func embed(_ texts: [String], isQuery: Bool) async throws -> [[Float]] {
+        guard !texts.isEmpty else { return [] }
+        var request = URLRequest(url: baseURL.appendingPathComponent("embeddings"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let apiKey, !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        let inputs = texts.map { OllamaEmbedder.prefixed($0, model: modelName, isQuery: isQuery) }
+        request.httpBody = try JSONSerialization.data(withJSONObject: Self.requestBody(model: modelName, inputs: inputs))
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw OllamaEmbedder.EmbedError.http((response as? HTTPURLResponse)?.statusCode ?? -1, String(data: data, encoding: .utf8) ?? "")
+        }
+        let vectors = try Self.parse(data)
+        guard vectors.count == texts.count else { throw OllamaEmbedder.EmbedError.badResponse }
+        return vectors
+    }
+}

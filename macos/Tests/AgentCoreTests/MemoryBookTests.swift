@@ -332,3 +332,44 @@ final class LiveSemanticMemoryTests: XCTestCase {
                       "an unrelated question must not drag notes in")
     }
 }
+
+
+final class OpenAIEmbedderTests: XCTestCase {
+    func testParsesVectorsInIndexOrderAndNormalizes() throws {
+        let json = #"{"data":[{"index":1,"embedding":[0,2]},{"index":0,"embedding":[3,4]}]}"#
+        let vectors = try OpenAIEmbedder.parse(Data(json.utf8))
+        XCTAssertEqual(vectors.count, 2)
+        XCTAssertEqual(vectors[0][0], 0.6, accuracy: 0.0001)   // index 0 first: [3,4] -> [0.6, 0.8]
+        XCTAssertEqual(vectors[1][1], 1, accuracy: 0.0001)
+        XCTAssertThrowsError(try OpenAIEmbedder.parse(Data(#"{"error":{"message":"bad key"}}"#.utf8)))
+    }
+
+    func testRequestBodyCarriesModelAndInputs() {
+        let body = OpenAIEmbedder.requestBody(model: "text-embedding-3-small", inputs: ["a", "b"])
+        XCTAssertEqual(body["model"] as? String, "text-embedding-3-small")
+        XCTAssertEqual(body["input"] as? [String], ["a", "b"])
+    }
+
+    func testRemoteVectorsAreKeptApartFromLocalOnes() async {
+        let defaults = UserDefaults.standard
+        let keys = [ModelTiers.embeddingProviderKey, ModelTiers.embeddingRemoteBaseURLKey, ModelTiers.embeddingRemoteModelKey]
+        let saved = keys.map { defaults.string(forKey: $0) }
+        defer { for (key, value) in zip(keys, saved) { defaults.set(value, forKey: key) } }
+        defaults.set("remote", forKey: ModelTiers.embeddingProviderKey)
+        defaults.set("https://example.invalid/v1", forKey: ModelTiers.embeddingRemoteBaseURLKey)
+        defaults.set("embed-small", forKey: ModelTiers.embeddingRemoteModelKey)
+        let identity = await ModelTiers.resolveEmbeddingModel()
+        XCTAssertEqual(identity, "remote:embed-small")
+        let embedder = await ModelTiers.embedder(for: identity ?? "")
+        XCTAssertTrue(embedder is OpenAIEmbedder)
+        defaults.set("http://example.invalid/v1", forKey: ModelTiers.embeddingRemoteBaseURLKey)   // plain http off this Mac: not usable
+        XCTAssertFalse(ModelTiers.embeddingUsesRemote)
+    }
+
+    func testNotesNeedReindexingWhenTheModelChanges() {
+        var book = MemoryBook()
+        _ = book.add("the gh tool is installed", embedding: [1, 0], embeddingModel: "qwen3-embedding:8b")
+        XCTAssertTrue(book.entriesNeedingEmbedding(model: "qwen3-embedding:8b").isEmpty)
+        XCTAssertEqual(book.entriesNeedingEmbedding(model: "remote:text-embedding-3-small").count, 1)
+    }
+}

@@ -141,6 +141,7 @@ struct AppSettingsView: View {
                 SettingsGroupHeader(title: "Models", symbol: "cpu", detail: "The local models, and how bots share them")
                 OllamaSettingsSection()
                 ModelTiersSettingsSection()
+                EmbeddingsSettingsSection()
                 ContextWindowSettingsSection()
                 ModelSchedulingSettingsSection()
                 AgentEngineSettingsSection()

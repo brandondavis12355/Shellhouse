@@ -20,7 +20,8 @@ enum SettingsBundle {
             "guardrails.autoReview", GuardrailConfig.yoloKey, GuardrailConfig.trustedGitHubOwnersKey,
             GuardrailConfig.autoAllowReadOnlyShellKey,
             ModelTiers.fastModelKey, ModelTiers.fastProviderKey, ModelTiers.fastRemoteBaseURLKey, ModelTiers.fastRemoteModelKey,
-            ModelTiers.embeddingModelKey, OllamaBackend.contextWindowKey, ModelScheduler.slotsKey,
+            ModelTiers.embeddingModelKey, ModelTiers.embeddingProviderKey, ModelTiers.embeddingRemoteBaseURLKey, ModelTiers.embeddingRemoteModelKey,
+            OllamaBackend.contextWindowKey, ModelScheduler.slotsKey,
             "ai.compute.agent.runShellAlwaysAllow", "ai.compute.agent.runShellAllowAllBots",
         ] + Reliability.Feature.allCases.map { "reliability.\($0.rawValue)" } + Array(jsonBlobKeys)
     }

@@ -65,6 +65,55 @@ public enum ModelTiers {
 
     public static let embeddingModelKey = "embeddingModel"
 
+    // MARK: Remote embeddings (an OpenAI-compatible /embeddings endpoint instead of Ollama)
+
+    public static let embeddingProviderKey = "embedding.provider"          // "ollama" (default) or "remote"
+    public static let embeddingRemoteBaseURLKey = "embedding.remoteBaseURL"
+    public static let embeddingRemoteModelKey = "embedding.remoteModel"
+    /// Keychain entry for the remote embedding endpoint's API key (never in UserDefaults).
+    public static let embeddingAPIKeySecretName = "EMBEDDING_API_KEY"
+    /// Prefix on the model name stored with each memory vector when the vectors come from the remote endpoint, so
+    /// they are never compared with local vectors that happen to share a model name.
+    static let remoteIdentityPrefix = "remote:"
+
+    /// https only (plain http just for this Mac), same rule as the remote fast model.
+    static func usableBaseURL(_ text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let host = url.host else { return nil }
+        let local = ["localhost", "127.0.0.1", "::1"].contains(host)
+        return url.scheme == "https" || (url.scheme == "http" && local) ? url : nil
+    }
+
+    /// Posted when the embedding model or where it runs changes, so every bot re-indexes its notes for the new model.
+    public static let embeddingChangedNotification = Notification.Name("shellhouse.embeddingSettingsChanged")
+    public static func embeddingSettingsChanged() {
+        NotificationCenter.default.post(name: embeddingChangedNotification, object: nil)
+    }
+
+    public static var embeddingRemoteBaseURL: URL? {
+        usableBaseURL(UserDefaults.standard.string(forKey: embeddingRemoteBaseURLKey) ?? "")
+    }
+
+    public static var embeddingRemoteModel: String {
+        (UserDefaults.standard.string(forKey: embeddingRemoteModelKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Memory search runs on a remote endpoint: chosen, with a usable URL and a model id.
+    public static var embeddingUsesRemote: Bool {
+        UserDefaults.standard.string(forKey: embeddingProviderKey) == "remote" && embeddingRemoteBaseURL != nil && !embeddingRemoteModel.isEmpty
+    }
+
+    /// The embedder for a model name returned by `resolveEmbeddingModel()`: the remote endpoint (with its Keychain
+    /// key) for a remote identity, Ollama otherwise.
+    public static func embedder(for model: String, timeout: TimeInterval = 20) async -> MemoryEmbedder? {
+        if model.hasPrefix(remoteIdentityPrefix) {
+            guard let base = embeddingRemoteBaseURL else { return nil }
+            let key = (try? await SecretStore().resolveOne(name: embeddingAPIKeySecretName)) ?? nil
+            return OpenAIEmbedder(baseURL: base, model: String(model.dropFirst(remoteIdentityPrefix.count)), apiKey: key, timeout: timeout)
+        }
+        return OllamaEmbedder(model: model, timeout: timeout)
+    }
+
     /// Empty means "not chosen yet": the first use auto-selects an installed embedding model, if there is one.
     public static var embeddingModel: String {
         get { UserDefaults.standard.string(forKey: embeddingModelKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
@@ -88,6 +137,7 @@ public enum ModelTiers {
     /// The embedding model to use right now, or nil if none is configured or installed. The first call with
     /// nothing configured looks at what Ollama has installed and remembers a good match (visible in Settings).
     public static func resolveEmbeddingModel() async -> String? {
+        if embeddingUsesRemote { return remoteIdentityPrefix + embeddingRemoteModel }
         let configured = embeddingModel
         if !configured.isEmpty { return configured }
         resolveLock.lock()

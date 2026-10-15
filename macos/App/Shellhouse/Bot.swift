@@ -309,6 +309,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     var memoryBook = MemoryBook()
     private var lastConsolidation = Date.distantPast
     private var embeddingInFlight = false
+    private var embeddingRerunRequested = false
+    private var embeddingChangeObserver: NSObjectProtocol?
     private var embeddingBackoffUntil = Date.distantPast
     /// How many notes have a meaning vector, for the settings screen.
     var memoriesIndexed: Int { memoryBook.embeddedCount }
@@ -647,6 +649,10 @@ final class Bot: Identifiable, @unchecked Sendable {
         memories = memoryBook.texts
         consolidateMemories(force: false)
         Task { @MainActor [weak self] in await self?.embedPendingMemories() }
+        // A different embedding model (or a switch between local and remote): re-index every note for it.
+        embeddingChangeObserver = NotificationCenter.default.addObserver(forName: ModelTiers.embeddingChangedNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.embeddingModelChanged() }
+        }
         routines = RoutineStore.load(id: id)
         for routine in routines { scheduleTimer(for: routine) }
         contextSummary = ContextSummaryStore.load(id: id)
@@ -911,13 +917,28 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// Gives every note a meaning vector from the selected embedding model, in the background. Safe to call often:
     /// one pass at a time, a failure (Ollama busy or the model missing) pauses retries for five minutes, and the
     /// bot keeps working on keyword search meanwhile.
+    /// The embedding model changed: forget any pause, and index again for the new model (after the current pass, if one is running).
+    func embeddingModelChanged() {
+        embeddingBackoffUntil = .distantPast
+        if embeddingInFlight { embeddingRerunRequested = true; return }
+        Task { @MainActor [weak self] in await self?.embedPendingMemories() }
+    }
+
     func embedPendingMemories() async {
         guard !embeddingInFlight, Date() >= embeddingBackoffUntil, !memoryBook.entries.isEmpty,
               let model = await ModelTiers.resolveEmbeddingModel() else { return }
         embeddingInFlight = true
-        defer { embeddingInFlight = false }
-        let embedder = OllamaEmbedder(model: model)
+        defer {
+            embeddingInFlight = false
+            if embeddingRerunRequested {
+                embeddingRerunRequested = false
+                Task { @MainActor [weak self] in await self?.embedPendingMemories() }
+            }
+        }
+        guard let embedder = await ModelTiers.embedder(for: model) else { return }
         while true {
+            // The setting changed while indexing: stop, the re-run starts with the new model.
+            if embeddingRerunRequested { return }
             let pending = Array(memoryBook.entriesNeedingEmbedding(model: model).prefix(16))
             guard !pending.isEmpty else { return }
             do {
@@ -939,8 +960,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// The vector for a search, or nil when nothing is indexed yet / the embedder is unavailable (keyword search then).
     private func memoryQueryVector(_ text: String) async -> (vector: [Float], model: String)? {
         guard memoryBook.embeddedCount > 0, Date() >= embeddingBackoffUntil, let model = await ModelTiers.resolveEmbeddingModel() else { return nil }
-        let embedder = OllamaEmbedder(model: model, timeout: 3)
-        guard let vector = try? await embedder.embed([String(text.suffix(1_500))], isQuery: true).first else { return nil }
+        guard let embedder = await ModelTiers.embedder(for: model, timeout: 3),
+              let vector = try? await embedder.embed([String(text.suffix(1_500))], isQuery: true).first else { return nil }
         return (vector, model)
     }
 
