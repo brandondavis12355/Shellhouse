@@ -11,7 +11,7 @@ local Ollama server.
 | Layer | This repo | Full design |
 |---|---|---|
 | Model gateway | Ollama only, one class | Router across Ollama/vLLM/multiple local backends by task type/cost |
-| Sandbox | Both backends implemented behind `SandboxProvider`, inside the privileged manager: Docker container (default) and Firecracker microVM (`SANDBOX_BACKEND=firecracker`) | Same, plus pre-warmed VM pools, snapshot-restore fleet, image signing, multi-host scheduling |
+| Sandbox | Both backends implemented behind `SandboxProvider`, inside the privileged manager: Docker container (default) and Firecracker microVM (`initial_setup.sh --with-firecracker`; the manager then runs as a host service) | Same, plus pre-warmed VM pools, snapshot-restore fleet, image signing, multi-host scheduling |
 | Memory | All four tiers implemented: working (task row), conversation (messages + compaction), user (explicit `remember`), knowledge (Qdrant) with structured evidence | Same, plus graph relationships between evidence and document ingestion pipelines |
 | Tools | 17 built-in (files, shell, web, desktop/GUI, memory, secrets) + MCP client for external servers | + productivity tools (spreadsheet/doc/slides), more integrations |
 | Multi-tenancy | None (single local user), but privilege is already split |

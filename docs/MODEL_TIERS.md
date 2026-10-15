@@ -8,6 +8,12 @@ Reasoning models (qwen3.x, deepseek-r1, …) "think" before answering. On `qwen3
 greeting took ~99 s with thinking on (≈1,400 hidden tokens) and ~1.2 s with it off. The app now sends
 `think: false` on every Ollama request (`OllamaBackend(thinking: false)` by default).
 
+Some models still reason aloud in their reply, whatever the flag says. None of it should reach a chat
+(`ReasoningText`): `<think>…</think>` blocks are cut out of every reply, and in group turns a reply that is
+the model talking itself round in circles ("Actually, wait, let me re-read the instructions…", or the same
+paragraph repeated) is never posted. The picker chooses the longest reply, so without this a long monologue
+would beat a short real answer.
+
 ## 2. Two model tiers
 
 * **Bot model** – the model chosen per bot; does the real work (agent turns, tools).

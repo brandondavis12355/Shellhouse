@@ -43,10 +43,11 @@ The full tour of the app is in **[macos/README.md](macos/README.md)**.
  │   ├─ bots, groups, memory, routines       │  tunnel    │   (unix socket)    creates and drives sandboxes │
  │   ├─ guardrails + approvals + audit log  ─┼───────────▶│        │                                        │
  │   └─ Ollama (local models, Metal)         │            │        ▼                                        │
- │                                           │            │  one Debian desktop container per bot           │
- └───────────────────────────────────────────┘            │  (shell, Chromium, files, own workspace volume) │
+ │                                           │            │  one Debian desktop per bot: a container, or    │
+ └───────────────────────────────────────────┘            │  with KVM a Firecracker microVM (own kernel)    │
                                                           └─────────────────────────────────────────────────┘
           optional:  group-relay (share groups with friends) · egress-proxy (per-sandbox outbound allowlist)
+                     · Firecracker microVMs instead of containers (--with-firecracker, needs KVM on the box)
 ```
 
 The repo also contains the **Docker/Python reference stack** the app grew out of: a single-agent loop with a web UI (`api/`, `web/`), durable task queue, vector memory, MCP client and deterministic evals. It runs entirely in Docker and is still the design reference for features the Mac app hasn't adopted.
@@ -58,8 +59,8 @@ The repo also contains the **Docker/Python reference stack** the app grew out of
 | [`macos/`](macos/) | The Shellhouse Mac app: SwiftUI app, `AgentCore` (agent loop, tools, guardrails, model backends), tests |
 | [`skills/`](skills/) | Playbooks bundled into the app; a bot loads one only when a task calls for it |
 | [`avatars/`](avatars/) | The 64 animated bot avatars (8 shapes × 8 colors) |
-| [`sandbox/`](sandbox/) | The Debian desktop image every bot runs in, the in-sandbox agent runner, Firecracker scripts |
-| [`sandbox-manager/`](sandbox-manager/) | The privileged service that creates, runs and tears down sandboxes |
+| [`sandbox/`](sandbox/) | The Debian desktop image every bot runs in, the in-sandbox agent runner, and the Firecracker microVM scripts and guest image |
+| [`sandbox-manager/`](sandbox-manager/) | The privileged service that creates, runs and tears down sandboxes: a container by default, a host systemd service with Firecracker |
 | [`egress-proxy/`](egress-proxy/) | Optional outbound-traffic allowlist for sandboxes (compose profile `egress`) |
 | [`group-relay/`](group-relay/) | Optional server for sharing group chats with friends (compose profile `relay`) |
 | [`api/`](api/), [`web/`](web/), [`evals/`](evals/) | The Docker/Python reference stack and its evaluation suites |
@@ -121,6 +122,7 @@ An interrupted changeover resumes when you run the script again with the same ne
 | `--host ADDR` / `--user NAME` | Skip the questions |
 | `--with-smolagents` | Also allow the optional smolagents engine's model-proxy forward ([docs/SMOLAGENTS.md](docs/SMOLAGENTS.md)) |
 | `--with-relay` / `--with-egress` | Also set up the friends relay / the egress allowlist (see above) |
+| `--with-firecracker` / `--no-firecracker` | Run each bot's computer as a Firecracker microVM instead of a Docker container (needs KVM on the box), or switch back to Docker. Kept on later runs. See [docs/FIRECRACKER.md](docs/FIRECRACKER.md) |
 | `--no-app` | Set up the box only: no Mac tools, no app build |
 | `--no-sudo-in-sandboxes` | Don't give bots sudo inside their own VMs. By default they have it, so they can `apt-get install` what a task needs |
 | `--host-fingerprint SHA256:…` | Verify the box's host key without asking |
@@ -133,6 +135,7 @@ The box's SSH port must be 22, since the app's tunnel uses it. If SSH isn't runn
 **What it installs on the box**, each only if missing:
 - **Docker and Docker Compose:** from the distribution's packages. Where Compose v2 isn't packaged (Debian 12, for one), it installs Docker's own release of the plugin from github.com/docker/compose, after checking it against the published SHA-256.
 - **curl, openssl, rsync and CA certificates.**
+- **With `--with-firecracker`:** the Firecracker and jailer binaries (a pinned release, checked against its SHA-256), the packages to build the guest kernel (a pinned Linux release from kernel.org, also checked against its SHA-256), and the manager's Python packages from PyPI. Each is recorded, and uninstall removes it.
 
 Everything the bots use (Python, Chromium, `gh` and the rest) is built into the sandbox image.
 
@@ -155,7 +158,7 @@ Everything the bots use (Python, Chromium, `gh` and the rest) is built into the 
 | The app's key can't open a shell | The app's own SSH key is authorized with `restrict` plus port forwarding. It gets no shell, no pty, and no agent or X11 forwarding, and the only commands it may run are its connection test and resource stats ([`scripts/app-ssh-command.sh`](scripts/app-ssh-command.sh)). A stolen copy of it can't open a shell on the box. It can still forward connections from the box, which the tunnel needs: OpenSSH applies a port allowlist (`permitopen`) to socket forwards too, so the manager's socket can't be allowed alone. |
 | Only you can reach the manager | `~/shellhouse`, its `.env` (the manager token) and the manager's socket are readable only by your user on the box. |
 | No password guessing | Once your own SSH key signs you in, it offers to turn off password sign-in for your user on the box. `uninstall.sh` turns it back on. |
-| A fresh token when you want one | `./initial_setup.sh --rotate-token` replaces the manager token on the box, restarts only the manager (bot VMs keep running) and hands the new token to the app. The old token stops working at once. |
+| A fresh token when you want one | `./initial_setup.sh --rotate-token` replaces the manager token on the box, restarts only the manager and hands the new token to the app. The old token stops working at once. Docker bots keep running; with Firecracker the restart stops the VMs, and each boots again, with its files, the next time it's used. |
 
 ### What `build.sh` does (step 3, or on its own to rebuild)
 
@@ -193,6 +196,7 @@ After that, `./build.sh` handles everything from the command line. If it reports
 
 It asks you to type the box's address to confirm. It removes:
 - every container, volume, network and image the stack or the sandbox manager created;
+- with Firecracker: its service, every VM and disk, the binaries, the network policy and the guest images;
 - `~/shellhouse`;
 - the app's SSH key;
 - the sshd changes;
@@ -236,7 +240,7 @@ Install `pytest` plus the component's own `requirements.txt` first. The egress p
 
 The design assumes the model will eventually read something hostile. The short version:
 
-- **Privilege split.** Only `sandbox-manager` touches Docker. The app and the agent loop reach it through an authenticated unix socket and can only act on sandboxes it created.
+- **Privilege split.** Only `sandbox-manager` touches Docker (or, with Firecracker, `/dev/kvm`: it then runs as a confined host service, since the jailer has to start as root). The app and the agent loop reach it through an authenticated unix socket and can only act on sandboxes it created.
 - **Approval gates.** Arbitrary shell commands and new bots always need your approval. Once a friend's message is in the conversation, file writes, web access and GUI input ask first too.
 - **Loopback only.** The Docker stack binds every port to `127.0.0.1`, and the reference API has no authentication, so don't expose it.
 - **Secrets stay out of prompts.** Secrets are injected into the sandbox environment at run time, never into model context.

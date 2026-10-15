@@ -77,12 +77,16 @@ created*, as an unprivileged user, with a timeout and bounded output.
 **Require Firecracker for local use.** It needs `/dev/kvm`, a custom kernel
 build, and a rootfs pipeline, and it adds VM boot latency to every task. For
 a single-user local box it defends mainly against threats you don't have
-(other tenants). It's fully implemented and one env var away
-(`SANDBOX_BACKEND=firecracker`, see `docs/FIRECRACKER.md`) — just not the
-default, because the honest cost/benefit for local use doesn't support it.
+(other tenants). It's implemented and tested end to end, and one setup flag
+away (`initial_setup.sh --with-firecracker`, see `docs/FIRECRACKER.md`) — just
+not the default, because the honest cost/benefit for local use doesn't
+support it.
 
-**Run the manager as root.** It reads the Docker socket through
-`group_add: DOCKER_GID` instead. `setup.sh` detects the right GID.
+**Run the manager as root.** With the Docker backend it reads the Docker
+socket through `group_add: DOCKER_GID` instead. `setup.sh` detects the right
+GID. (The Firecracker backend is the exception: the jailer must start as root
+to drop every capability when it switches to its unprivileged user, so that
+manager is a confined host service. `docs/FIRECRACKER.md` has the details.)
 
 **Sandbox the sandbox harder.** It keeps `seccomp:unconfined` because
 Chromium genuinely needs it. What it gets instead: `cap_drop: ALL`, only

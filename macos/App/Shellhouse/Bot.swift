@@ -2694,7 +2694,10 @@ final class Bot: Identifiable, @unchecked Sendable {
                         draftText += delta
                         if Date().timeIntervalSince(lastDraftFlush) > 0.08 {
                             lastDraftFlush = Date()
-                            publishDraft(draftText)
+                            // Not the model's thinking: tagged blocks are hidden, and so is a draft that has
+                            // turned into the model talking itself round in circles.
+                            let shown = ReasoningText.visible(draftText)
+                            publishDraft(shown.isEmpty || ReasoningText.looksLikeDeliberation(shown) ? nil : shown)
                         }
                     case .status(.aborted("silent")):
                         isSilent = true
@@ -3471,9 +3474,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                 displayMessages[index].text = ""
                 pendingReuseClear = false
             }
-            displayMessages[index].text += delta
+            displayMessages[index].text = ReasoningText.visible(displayMessages[index].text + delta)
         } else {
-            displayMessages.append(DisplayMessage(role: .assistant, text: delta))
+            displayMessages.append(DisplayMessage(role: .assistant, text: ReasoningText.visible(delta)))
             streamingIndex = displayMessages.count - 1
         }
     }

@@ -128,7 +128,7 @@ public actor OpenAICompatibleBackend: ModelBackend {
         }
         let usage = decoded.usage.map { TokenUsage(promptTokens: $0.prompt_tokens, completionTokens: $0.completion_tokens) }
         return ModelReply(
-            message: ChatMessage(role: .assistant, content: choice.message.content ?? "", toolCalls: toolCalls),
+            message: ChatMessage(role: .assistant, content: ReasoningText.strip(choice.message.content ?? ""), toolCalls: toolCalls),
             usage: usage
         )
     }

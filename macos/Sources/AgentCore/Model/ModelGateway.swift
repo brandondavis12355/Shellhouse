@@ -234,7 +234,7 @@ public actor OllamaBackend: ModelBackend {
         return ModelReply(
             message: ChatMessage(
                 role: .assistant,
-                content: decoded.message?.content ?? "",
+                content: ReasoningText.strip(decoded.message?.content ?? ""),
                 toolCalls: decoded.message?.tool_calls?.map {
                     ToolCall(name: $0.function.name, arguments: $0.function.arguments)
                 }
@@ -269,7 +269,7 @@ public actor OllamaBackend: ModelBackend {
         }
         let decoded = try JSONDecoder().decode(OllamaChatResponse.self, from: data)
         Self.record(decoded, model: model ?? defaultModel, since: started)
-        return decoded.message?.content ?? ""
+        return ReasoningText.strip(decoded.message?.content ?? "")
     }
 
     private static func record(_ response: OllamaChatResponse, model: String, since started: Date) {
@@ -336,7 +336,7 @@ public actor OllamaBackend: ModelBackend {
         if let lastChunk { Self.record(lastChunk, model: model ?? defaultModel, since: streamStarted) }
 
         return ModelReply(
-            message: ChatMessage(role: .assistant, content: content, toolCalls: toolCalls),
+            message: ChatMessage(role: .assistant, content: ReasoningText.strip(content), toolCalls: toolCalls),
             usage: TokenUsage(promptTokens: promptTokens, completionTokens: completionTokens)
         )
     }
