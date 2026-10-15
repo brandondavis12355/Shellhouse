@@ -98,7 +98,8 @@ final class GroupTurnTests: XCTestCase {
             XCTAssertTrue(analyze(text).isConversational, text)
         }
         for text in ["Install nginx on the server", "Please fix the build", "check https://example.com", "look at /etc/hosts", "write a script to rename files", "thanks",
-                     "Everyone doublecheck your vms for the \"gh\" cli binary.", "Is gh installed on your machine?", "tell me the version of node", "Standup in five", "who has the latest build"] {
+                     "Everyone doublecheck your vms for the \"gh\" cli binary.", "Is gh installed on your machine?", "tell me the version of node", "Standup in five", "who has the latest build",
+                     "Where is that screenshot Tai Lung?", "did you send the picture?", "where is the result?"] {
             XCTAssertFalse(analyze(text).isConversational, text)
         }
         XCTAssertFalse(analyze(String(repeating: "chat ", count: 40)).isConversational, "long messages get the full agent")

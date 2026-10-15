@@ -141,6 +141,9 @@ public enum AddressingAnalyzer {
         "summarise", "research", "find", "open", "read", "list", "schedule", "remind", "routine", "task", "goal", "plan",
         "report", "compile", "scan", "monitor", "vm", "vms", "machine", "machines", "binary", "cli", "version",
         "package", "packages", "sudo", "apt", "please", "tell", "show", "look", "status", "double", "validate",
+        // Asking after a deliverable ("where is that screenshot?") is a request for the work, not small talk.
+        "screenshot", "screenshots", "screen", "picture", "pictures", "image", "images", "photo", "pic", "capture",
+        "result", "results", "output", "link", "demo", "send", "share", "attach",
     ]
 
     /// Small talk = a greeting, or a SHORT QUESTION with no work in it. Statements and commands (even

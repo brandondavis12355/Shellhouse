@@ -665,3 +665,15 @@ final class SummaryDisplayTests: XCTestCase {
         XCTAssertTrue(SummaryDisplay.collapses(summary: reply, shownThisTurn: [reply]))
     }
 }
+
+
+final class NarrationNudgeTests: XCTestCase {
+    func testEscalatedNudgeListsToolsAndGivesTheScreenshotRoute() {
+        let nudge = AgentRuntime.escalatedNarrationNudge(narration: "Let me take a screenshot of the page.",
+                                                         toolNames: ["run_shell", "post_screenshot", "list_files"])
+        XCTAssertTrue(nudge.contains("post_screenshot") && nudge.contains("run_shell") && nudge.contains("list_files"))
+        XCTAssertTrue(nudge.contains("chromium --headless") && nudge.contains("--screenshot="))
+        let plain = AgentRuntime.escalatedNarrationNudge(narration: "Let me read the file.", toolNames: ["read_file"])
+        XCTAssertFalse(plain.contains("chromium"))
+    }
+}

@@ -198,6 +198,8 @@ public actor AgentRuntime {
     private var abortForStuck: String?
     /// The text of a reply that announced a step without taking it (see the loop's narration nudge).
     private var lastNarration: String?
+    /// Consecutive replies that only announced a step (reset when a tool is called).
+    private var narrationStreak = 0
     /// Results this bot already saw, in this run or a recent one (shared across its runs). A run getting back
     /// nothing but already-seen results is waiting or polling, whatever the commands look like, and side
     /// effects (a `git fetch`, a checkout) don't reset it the way they reset the other loop guards.
@@ -526,6 +528,7 @@ public actor AgentRuntime {
                 // The model wrote its tool call as text. Treat it as the call it meant to make.
                 reply = ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [recovered]), usage: reply.usage)
             }
+            if !(reply.message.toolCalls ?? []).isEmpty { narrationStreak = 0 }
             messages.append(reply.message)
             // After "I'll do X" with no tool call, the model usually repeats that sentence alongside the call:
             // show it once, not twice.
@@ -569,7 +572,10 @@ public actor AgentRuntime {
                     // out and ask only for the action.
                     lastNarration = plain
                     messages.removeLast()
-                    let nudge = "Make the tool call for your next step now. No sentence about it first: just the call."
+                    narrationStreak += 1
+                    let nudge = narrationStreak >= 2
+                        ? Self.escalatedNarrationNudge(narration: plain, toolNames: Array(tools.names()))
+                        : "Make the tool call for your next step now. No sentence about it first: just the call."
                     if messages.last?.content != nudge { messages.append(ChatMessage(role: .user, content: nudge)) }
                     continue
                 }
@@ -1212,6 +1218,20 @@ public actor AgentRuntime {
         let message = ChatMessage(role: .tool, content: jsonString(observation), toolName: name)
         messages.append(message)
         onEvent(.message(message))
+    }
+
+    /// When a bot keeps announcing the next step instead of doing it, say which tools exist, and for a screenshot the
+    /// exact route (the first nudge alone often just gets the same sentence again).
+    static func escalatedNarrationNudge(narration: String, toolNames: [String]) -> String {
+        var text = "You have described the next step \(2) times without calling a tool. Do not write another sentence: reply with ONLY a tool call. "
+            + "Tools you can call: " + toolNames.sorted().prefix(30).joined(separator: ", ") + "."
+        let lowered = narration.lowercased()
+        if lowered.contains("screenshot") || lowered.contains("picture") || lowered.contains("capture") {
+            text += " To show a web page you are serving: run_shell `chromium --headless --no-sandbox --disable-gpu --hide-scrollbars "
+                + "--window-size=1280,800 --screenshot=/workspace/shot.png http://localhost:PORT` (PORT is the one the server prints), "
+                + "then post_screenshot with path \"/workspace/shot.png\"."
+        }
+        return text
     }
 
     private func jsonString(_ dict: [String: Any]) -> String {
