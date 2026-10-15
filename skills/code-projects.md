@@ -114,7 +114,30 @@ each step done as you go; you can't finish while steps are still open.
   discarding changes are destructive. Avoid them, and say why if one is
   truly needed.
 
-## Finishing
-Report what you changed (files and a one-line summary each), how you
-verified it (the test command and its result), and where it is: the path,
-the branch, or the pull-request link.
+## Finishing work
+Code isn't finished until it is committed, pushed and open for review. When
+the change works and its checks pass:
+1. **New branch, never main.** If you aren't already on one:
+   `git switch -c <your-name>/<short-task>` (for example `prism/ui-fixes`).
+   Commit there, in small commits with a message that says what and why.
+2. **Last check.** `git status` (nothing stray: caches, `.venv`, build output,
+   secrets), then run the tests once more and read the result.
+3. **Pull request.** `git push -u origin <branch>` (a push always asks your
+   user), then open the PR into the project's main branch so the goal owner
+   can merge it:
+   `gh pr create --base main --head <branch> --title "<what>" --body "<what
+   changed, how you tested it (command and result), anything to check>"`
+   with `use_secrets: ["GITHUB_TOKEN"]`.
+4. **Hand it over.** In a group goal, @mention the goal owner with the PR
+   link, the branch and the commit hash, and submit your step with that as
+   evidence. The owner reviews and merges; don't merge your own PR unless
+   your user or the owner tells you to. Working alone, give your user the
+   link and let them merge.
+5. **If the push or PR is blocked** (an untrusted run, no token): the work is
+   still committed locally. Say so plainly, give the branch and commit
+   hash, and ask your user for a new message to push from a fresh run. Don't
+   say the work is "shipped" or "merged" until the PR link exists.
+
+Then report what you changed (files and a one-line summary each), how you
+verified it (the test command and its result), and where it is: the branch,
+the commit hash and the pull-request link.

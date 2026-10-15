@@ -36,6 +36,11 @@ For the exact commands, connection setup and error fixes, load
   yours) and run the tests on your VM before relying on it.
 
 ## Merging into main (usually the goal owner)
+- Members open a pull request from their branch (see `code-projects` ›
+  Finishing work); the goal owner reviews and merges them:
+  `gh pr view <n>`, check out the branch and run the tests, then
+  `gh pr merge <n> --merge` (with `use_secrets: ["GITHUB_TOKEN"]`). Say
+  what you merged and the tests you ran.
 - Merge one branch at a time, run the full suite after each, then push.
 - **Conflicts**: open the conflicted files, keep both sides' intent, remove
   the `<<<<<<<`/`>>>>>>>` markers, run the tests, then commit. If you can't
