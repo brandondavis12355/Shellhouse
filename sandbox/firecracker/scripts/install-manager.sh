@@ -10,7 +10,8 @@
 #   sudo ./install-manager.sh --user NAME --repo DIR --name SVC   # a second instance, for testing side by side
 #   sudo ./install-manager.sh --remove
 #
-# Python packages come from PyPI, pinned in sandbox-manager/requirements.txt.
+# Python packages come from PyPI, pinned in sandbox-manager/requirements.txt, as prebuilt wheels only: nothing is
+# compiled on the host, and no build toolchain is downloaded as root.
 #
 # Drafted with AI assistance (Claude Code); read it before you run it.
 set -euo pipefail
@@ -64,7 +65,11 @@ find "$OPT" -name __pycache__ -prune -exec rm -rf {} +
 [[ -x "$OPT/.venv/bin/python" ]] || python3 -m venv "$OPT/.venv"
 # The Docker SDK is only for the Docker backend.
 grep -v '^docker==' "$SRC/sandbox-manager/requirements.txt" > "$OPT/requirements.txt"
-"$OPT/.venv/bin/pip" install -q --disable-pip-version-check -r "$OPT/requirements.txt"
+"$OPT/.venv/bin/pip" install -q --disable-pip-version-check --only-binary=:all: -r "$OPT/requirements.txt" || {
+  echo "A package has no prebuilt wheel for this host's Python ($("$OPT/.venv/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])'), $(uname -m))." >&2
+  echo "Use a Python between 3.11 and 3.14 (python3 -m venv uses python3 by default), or update the pins in sandbox-manager/requirements.txt." >&2
+  exit 1
+}
 chmod -R go-w "$OPT"
 
 # Settings from the stack's .env, each checked before it goes into a root service's environment.
