@@ -43,10 +43,11 @@ htmlcov/
 # Node (web/ tooling, if used)
 node_modules/
 
-# Editors and OS
+# Editors, assistants and OS: local to one machine, never part of the project
 .DS_Store
 .idea/
 .vscode/
+.claude/
 *.swp
 
 # Local run output

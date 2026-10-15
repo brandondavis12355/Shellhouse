@@ -264,6 +264,7 @@ rsync -az --delete \
   --exclude '.git/' --exclude 'macos/' --exclude 'avatars/' --exclude 'evals/' --exclude 'docs/' \
   --exclude '.env' --exclude 'box/' --exclude 'workspace/' --exclude 'sandbox-manager-run/' \
   --exclude 'node_modules/' --exclude '__pycache__/' --exclude '.pytest_cache/' --exclude '.venv/' --exclude '.DS_Store' \
+  --exclude '.claude/' --exclude '.idea/' --exclude '.vscode/' \
   -e "ssh ${SSH_OPTS[*]}" "$REPO/" "$SSH_TARGET:$SHELLHOUSE_REMOTE_DIR/"
 ok "Copied"
 

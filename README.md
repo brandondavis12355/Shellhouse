@@ -316,7 +316,7 @@ Details, and commands to verify each claim: [docs/SECURITY.md](docs/SECURITY.md)
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The app icon and the bot avatars are original artwork by the project author, released under the same license. Skills adapted from other projects keep their own notices in [skills/THIRD-PARTY-NOTICES.txt](skills/THIRD-PARTY-NOTICES.txt).
 
 ---
 
