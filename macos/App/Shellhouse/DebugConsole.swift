@@ -147,8 +147,10 @@ final class DebugLog {
     }
 
     private static func cap(_ text: String) -> String {
-        guard text.count > maxEntryLength else { return text }
-        return text.prefix(maxEntryLength) + "… (\(text.count - maxEntryLength) more chars truncated)"
+        // A compaction summary is what the bot remembers afterwards: worth reading whole.
+        let limit = text.hasPrefix("context compacted") ? 8_000 : maxEntryLength
+        guard text.count > limit else { return text }
+        return text.prefix(limit) + "… (\(text.count - limit) more chars truncated)"
     }
 
     private func trim() {

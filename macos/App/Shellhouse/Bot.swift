@@ -3597,7 +3597,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             ownChatLessonTrail.completed(name, resultJSON: resultJSON)
             status = "Finished \(name)"
             lastOwnChatToolOutput = String((lastOwnChatToolOutput + "\n" + name + ": " + resultJSON).suffix(8_000))
-        case .approvalNeeded, .guardrailDecision:
+        case .approvalNeeded, .guardrailDecision, .contextTrimmed:
             break  // surfaced via the card / the debug console, not here
         case .contextCompacted(let summary):
             // Only this bot's own chat persists a cache — a delegation
@@ -3704,7 +3704,9 @@ final class Bot: Identifiable, @unchecked Sendable {
             DebugLog.shared.log(bot: name, colorHex: colorHex, kind: outcome.hasPrefix("blocked") || outcome.hasPrefix("denied") ? .error : .status,
                                 context: context, text: "approval decision: \(tool) — \(Self.decisionLabel(outcome))" + (detail.isEmpty ? "" : " · \(detail)"))
         case .contextCompacted(let summary):
-            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: context, text: "context compacted: \(summary)")
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: context, text: "context compacted — what the bot now remembers of the earlier conversation:\n\(summary)")
+        case .contextTrimmed(let detail):
+            DebugLog.shared.log(bot: name, colorHex: colorHex, kind: .status, context: context, text: "context compacted: \(detail)")
         }
     }
 

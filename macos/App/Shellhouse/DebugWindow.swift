@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 /// What a debug entry is about, for color, filtering and layout. Derived from the raw entry (its kind, where it
 /// came from, and how its text starts), so every caller of `DebugLog` gets it for free.
 enum DebugCategory: String, CaseIterable, Identifiable {
-    case you, reply, interBot, toolCall, toolResult, approval, error, progress, status, model, connection, system
+    case you, reply, interBot, toolCall, toolResult, approval, error, progress, status, compaction, model, connection, system
 
     var id: String { rawValue }
 
@@ -23,6 +23,7 @@ enum DebugCategory: String, CaseIterable, Identifiable {
         case .error: return "Error"
         case .progress: return "Progress"
         case .status: return "Status"
+        case .compaction: return "Compaction"
         case .model: return "Model"
         case .connection: return "Connection"
         case .system: return "System"
@@ -40,6 +41,7 @@ enum DebugCategory: String, CaseIterable, Identifiable {
         case .error: return "exclamationmark.octagon.fill"
         case .progress: return "ellipsis.circle"
         case .status: return "info.circle"
+        case .compaction: return "arrow.down.right.and.arrow.up.left"
         case .model: return "cpu"
         case .connection: return "network"
         case .system: return "gearshape"
@@ -57,6 +59,7 @@ enum DebugCategory: String, CaseIterable, Identifiable {
         case .error: return Color(hex: "#FF453A")
         case .progress: return Color(hex: "#8E8E93")
         case .status: return Color(hex: "#AC8E68")
+        case .compaction: return Color(hex: "#FF6482")
         case .model: return Color(hex: "#5E5CE6")
         case .connection: return Color(hex: "#66D4CF")
         case .system: return Color(hex: "#98989D")
@@ -68,7 +71,7 @@ enum DebugCategory: String, CaseIterable, Identifiable {
         ("Conversation", [.you, .reply, .interBot]),
         ("Tools", [.toolCall, .toolResult]),
         ("Supervision", [.approval, .error]),
-        ("Background", [.status, .progress, .model, .connection, .system]),
+        ("Background", [.status, .compaction, .progress, .model, .connection, .system]),
     ]
 }
 
@@ -89,6 +92,7 @@ extension DebugLogEntry {
         }
         if kind == .message { return ctx.hasPrefix("delegated from") ? .interBot : .reply }
         // status
+        if text.hasPrefix("context compacted") { return .compaction }
         if text.hasPrefix("approval ") || ctx == "guardrails" || text.hasPrefix("reviewer ") { return .approval }
         if text.hasPrefix("Working…") || text == "Thinking…" || text == "Done" || text.hasPrefix("Waiting for your approval") { return .progress }
         return .status

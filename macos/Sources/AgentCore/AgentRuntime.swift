@@ -73,6 +73,8 @@ public actor AgentRuntime {
         /// see `ContextSummaryStore`) can cache this instead of paying
         /// for the same summarization round trip on every reseed.
         case contextCompacted(summary: String)
+        /// Older context was shrunk (old tool output collapsed, or earlier turns summarized): what was done and the sizes, for the debug console.
+        case contextTrimmed(detail: String)
     }
 
     private enum RuntimeError: Error, CustomStringConvertible {
@@ -934,14 +936,21 @@ public actor AgentRuntime {
         let reported = lastPromptTokens - schemaTokens
         guard max(estimatedTotal, reported) > threshold else { return }
         // Old tool output is usually most of it: dropping that first is free, a summary costs a model call.
+        let before = max(estimatedTotal, reported)
         let collapsed = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
-        if collapsed.reduce(0, { $0 + estimatedTokens(for: $1) }) < Int(Double(threshold) * 0.7) {
+        let collapsedTokens = collapsed.reduce(0) { $0 + estimatedTokens(for: $1) }
+        if collapsedTokens < Int(Double(threshold) * 0.7) {
             messages = collapsed
             lastPromptTokens = 0
             chargedThrough = messages.count
+            onEvent(.contextTrimmed(detail: "collapsed old tool output (no summary needed): ~\(before) → ~\(collapsedTokens) tokens, limit \(threshold), \(messages.count) messages kept"))
             return
         }
+        let countBefore = messages.count
         await compact()
+        if messages.count == countBefore {
+            onEvent(.contextTrimmed(detail: "over the limit (~\(before) tokens, limit \(threshold)) but nothing could be summarized yet (too little old history, or the summary call failed); shrinking recent tool output instead"))
+        }
         // Aim well under the threshold so the next compaction isn't a few calls away.
         if messages.reduce(0, { $0 + estimatedTokens(for: $1) }) > Int(Double(threshold) * 0.7) {
             messages = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
@@ -950,6 +959,8 @@ public actor AgentRuntime {
         if messages.reduce(0, { $0 + estimatedTokens(for: $1) }) > threshold {
             messages = ObservationPolicy.collapseStale(messages, keepLast: 3, minCharacters: 400, batch: 1)
         }
+        let after = messages.reduce(0) { $0 + estimatedTokens(for: $1) }
+        onEvent(.contextTrimmed(detail: "after compaction: ~\(before) → ~\(after) tokens, limit \(threshold), \(countBefore) → \(messages.count) messages"))
         lastPromptTokens = 0
         chargedThrough = messages.count
     }
@@ -1036,7 +1047,7 @@ public actor AgentRuntime {
         // would just be noise there), but `logToDebugConsole` sees
         // every event regardless of role — so this shows up in the
         // debug console without cluttering the actual conversation.
-        onEvent(.message(ChatMessage(role: .system, content: "Context compacted: summarized \(droppedCount) earlier messages into one.")))
+        onEvent(.contextTrimmed(detail: "summarized \(droppedCount) earlier messages into one"))
     }
 
     private func checkBudgets() throws {
