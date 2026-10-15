@@ -1,59 +1,63 @@
-# Run the Sandbox Manager as a host service instead of a container.
+# The Sandbox Manager as a host service, for SANDBOX_BACKEND=firecracker. A TEMPLATE: install-manager.sh fills in
+# @SOCKET_DIR@ (the SSH user's ~/shellhouse/sandbox-manager-run, where the Mac app's tunnel expects the socket),
+# @OPT@ (/opt/agent-sandbox-manager) and @ENV_FILE@ (/etc/agent-sandbox-manager.env), and installs it as
+# /etc/systemd/system/agent-sandbox-manager.service.
 #
-# Use this when SANDBOX_BACKEND=firecracker. The Firecracker backend needs
-# /dev/kvm, loop mounts, and tap device creation — capabilities that would make
-# the manager container roughly equivalent to host root, defeating the point of
-# the split. As a host unit it can be confined properly with systemd's own
-# sandboxing directives below.
+# It runs as root on purpose. The jailer has to start as root: it builds each VM's chroot and device nodes, then
+# switches to the unprivileged shellhouse-fc user, and that switch drops every capability only because it starts
+# from uid 0. Launched from a non-root user with ambient capabilities, Firecracker would keep them.
+# What confines the manager itself is below: a capability bounding set, a read-only system, an empty /home except
+# the socket folder, and a device allowlist.
 #
-# Install:
-#   sudo cp agent-sandbox-manager.service /etc/systemd/system/
-#   sudo systemctl daemon-reload
-#   sudo systemctl enable --now agent-sandbox-manager
-#
-# Then in .env set MANAGER_SOCKET=/run/sandbox-manager/manager.sock and
-# bind-mount /run/sandbox-manager into the api container in place of the
-# manager_socket volume.
+# The socket is reachable by the SSH user only: its folder is theirs, mode 0700 (host-setup.sh).
 
 [Unit]
-Description=Agent Sandbox Manager (privileged sandbox lifecycle service)
-After=network-online.target docker.service
+Description=Shellhouse sandbox manager (Firecracker microVMs)
+After=network-online.target shellhouse-vm-net.service
 Wants=network-online.target
+Requires=shellhouse-vm-net.service
 
 [Service]
 Type=exec
-WorkingDirectory=/opt/agent-sandbox-manager
-EnvironmentFile=/etc/agent-sandbox-manager.env
-ExecStart=/opt/agent-sandbox-manager/.venv/bin/uvicorn main:app \
-          --uds /run/sandbox-manager/manager.sock --no-access-log --log-level warning
-# uvicorn has no socket-permission flag, so the umask decides: 0117 -> 0660.
-UMask=0117
-RuntimeDirectory=sandbox-manager
-RuntimeDirectoryMode=0750
-LogsDirectory=sandbox-manager
+# Root, by leaving User= unset: an explicit User=root together with NoNewPrivileges= makes systemd drop
+# CAP_SETUID, and the jailer then can't switch to shellhouse-fc.
+WorkingDirectory=@OPT@
+EnvironmentFile=@ENV_FILE@
+ExecStart=@OPT@/.venv/bin/uvicorn main:app \
+          --uds @SOCKET_DIR@/manager.sock --no-access-log --log-level warning
+UMask=0077
+LogsDirectory=sandbox-manager agent-vm
+LogsDirectoryMode=0750
 Restart=on-failure
 RestartSec=2
+# Stopping the manager stops its VMs (they're in its cgroup); persistent disks stay and boot again on next use.
+TimeoutStopSec=30
 
 # --- confinement -----------------------------------------------------------
-# Firecracker needs tap devices (NET_ADMIN) and loop mounts (SYS_ADMIN).
-# Everything else is denied.
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_DAC_OVERRIDE
-AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN
+# Taps (NET_ADMIN); the jailer's chroot, namespaces, device nodes and uid switch (SYS_ADMIN, SYS_CHROOT, MKNOD,
+# CHOWN, FOWNER, DAC_*, SETUID, SETGID); stopping VMs that run as shellhouse-fc (KILL). Nothing else.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_MKNOD CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID CAP_KILL CAP_SYS_RESOURCE
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
-ProtectKernelLogs=yes
-ProtectClock=yes
+ReadWritePaths=/var/lib/agent-vm
+ProtectHome=tmpfs
+BindPaths=@SOCKET_DIR@
 PrivateTmp=yes
-ReadWritePaths=/var/lib/agent-vm /run/sandbox-manager /var/log/sandbox-manager
-DeviceAllow=/dev/kvm rw
-DeviceAllow=/dev/net/tun rw
-# AF_UNIX for its own socket, AF_INET for SSH into guests, AF_NETLINK for `ip`.
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectClock=yes
+ProtectHostname=yes
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rwm
+DeviceAllow=/dev/net/tun rwm
+DeviceAllow=/dev/userfaultfd rwm
+# AF_UNIX for its socket and Firecracker's, AF_INET for SSH into guests and the noVNC forward, AF_NETLINK for `ip`.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
-SystemCallFilter=@system-service @mount
-SystemCallErrorNumber=EPERM
-LockPersonality=yes
+RestrictNamespaces=mnt pid
+RestrictRealtime=yes
 RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

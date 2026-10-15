@@ -2,7 +2,8 @@
 # Runs ON the Linux host (uninstall.sh copies it to /tmp and runs it). Removes everything Shellhouse put there:
 # every container, volume, network and image the stack or the sandbox manager created, ~/shellhouse, the app's
 # SSH key in ~/.ssh/authorized_keys, and the sshd drop-ins. Then reverts what host-setup.sh recorded in
-# ~/.shellhouse-install-state: packages it installed, the docker group membership, the docker service.
+# ~/.shellhouse-install-state: packages it installed, the docker group membership, the docker service, and the
+# Firecracker backend (--with-firecracker: its host service, VMs, binaries and network policy).
 # Anything that was already on the host before setup (Docker, for one) stays.
 #
 #   bash /tmp/shellhouse-host-uninstall.sh [--keep-packages] [--yes]
@@ -31,6 +32,14 @@ recorded() { [ -f "$STATE" ] && sed -n "s/^$1=//p" "$STATE"; }
 
 step "Checking sudo"
 sudo -v
+
+if [ -n "$(recorded FIRECRACKER)" ]; then
+  step "Removing the Firecracker backend"
+  # Its own copy outside ~/shellhouse is used if the repo is already gone.
+  helper="$REPO/scripts/host-firecracker.sh"
+  [ -f "$helper" ] || helper=/usr/local/lib/shellhouse-firecracker/host-firecracker.sh
+  if [ -f "$helper" ]; then bash "$helper" remove; else note "Its scripts are gone; nothing removed."; fi
+fi
 
 if command -v docker >/dev/null 2>&1; then
   if docker info >/dev/null 2>&1; then D=(docker); else D=(sudo docker); fi

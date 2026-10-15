@@ -1,109 +1,66 @@
 #!/usr/bin/env bash
-# Build the Firecracker guest rootfs (ext4) from the SAME desktop image used
-# by the Docker provider, so the agent's computer looks and behaves identically
-# whichever sandbox backend is active.
+# Builds the Firecracker guest's disk image (ext4) from the SAME desktop image the Docker backend runs, so a bot's
+# computer looks and behaves the same whichever backend is in use.
 #
 #   sudo ./build-rootfs.sh [size_mb]
 #
-# Output: /var/lib/agent-vm/rootfs.ext4  (immutable base; VMs get CoW copies)
+# Output: /var/lib/agent-vm/rootfs.ext4 (the immutable base; each VM boots from its own copy). The image is built
+# with `mkfs.ext4 -d` from the exported container filesystem, so nothing is loop-mounted.
+#
+# Drafted with AI assistance (Claude Code); read it before you run it.
 set -euo pipefail
 
-SIZE_MB="${1:-6144}"
+SIZE_MB="${1:-${ROOTFS_SIZE_MB:-8192}}"
 OUT_DIR="${OUT_DIR:-/var/lib/agent-vm}"
 ROOTFS="$OUT_DIR/rootfs.ext4"
-MNT="$(mktemp -d)"
-IMAGE_TAG="agent-desktop:vm"
-SANDBOX_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
+KEY="$OUT_DIR/id_ed25519"
 
-command -v docker >/dev/null || { echo "docker is required to export the rootfs"; exit 1; }
-[[ $EUID -eq 0 ]] || { echo "must run as root (mount/losetup)"; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "Run as root (sudo): it reads the exported image as root to keep file ownership." >&2; exit 1; }
+command -v docker >/dev/null || { echo "docker is required to build the image" >&2; exit 1; }
+command -v mkfs.ext4 >/dev/null || { echo "mkfs.ext4 (e2fsprogs) is required" >&2; exit 1; }
+[[ -d "$REPO/box" && -d "$REPO/workspace" ]] || { echo "Run ./setup.sh in $REPO first (it creates the box/ and workspace/ seeds)." >&2; exit 1; }
 
-mkdir -p "$OUT_DIR"
-
-echo "==> Building the desktop image"
-docker build -t "$IMAGE_TAG" "$SANDBOX_DIR"
-
-echo "==> Creating ${SIZE_MB}MB ext4 image"
-rm -f "$ROOTFS"
-truncate -s "${SIZE_MB}M" "$ROOTFS"
-mkfs.ext4 -q -F "$ROOTFS"
-mount -o loop "$ROOTFS" "$MNT"
-
-cleanup() { umount "$MNT" 2>/dev/null || true; rmdir "$MNT" 2>/dev/null || true; }
-trap cleanup EXIT
-
-echo "==> Exporting the container filesystem into the image"
-CID="$(docker create "$IMAGE_TAG")"
-docker export "$CID" | tar -x -C "$MNT"
-docker rm -f "$CID" >/dev/null
-
-echo "==> Installing guest-only pieces (init, sshd, agent network unit)"
-# A container image has no init or sshd; a VM needs both.
-chroot "$MNT" /bin/bash -eux <<'CHROOT'
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends \
-    systemd systemd-sysv udev dbus \
-    openssh-server iproute2 iputils-ping
-# sshd is how the host runs commands in the guest. Key-only, no passwords,
-# no root login — the ephemeral key is injected per-VM at create() time.
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
-systemctl enable ssh systemd-networkd
-apt-get clean
-rm -rf /var/lib/apt/lists/*
-CHROOT
-
-echo "==> Installing the desktop as a systemd service"
-cat > "$MNT/etc/systemd/system/agent-desktop.service" <<'UNIT'
-[Unit]
-Description=Agent desktop (Xvfb + openbox + noVNC)
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/supervisord -n -c /etc/agent-desktop/supervisord.conf
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-chroot "$MNT" systemctl enable agent-desktop
-
-# /workspace is a virtio-fs share from the host, mounted at boot.
-mkdir -p "$MNT/workspace"
-cat > "$MNT/etc/systemd/system/workspace.mount" <<'UNIT'
-[Unit]
-Description=Agent workspace (virtio-fs share from host)
-Before=agent-desktop.service
-
-[Mount]
-What=workspace
-Where=/workspace
-Type=virtiofs
-Options=rw,nofail
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-chroot "$MNT" systemctl enable workspace.mount
-
-echo "==> Generating the host SSH keypair (if missing)"
-if [[ ! -f "$OUT_DIR/id_ed25519" ]]; then
-  ssh-keygen -t ed25519 -N "" -f "$OUT_DIR/id_ed25519" -C "agent-sandbox-host"
-  chmod 600 "$OUT_DIR/id_ed25519"
+install -d -m 0700 "$OUT_DIR"
+if [[ ! -f "$KEY" ]]; then
+  ssh-keygen -q -t ed25519 -N "" -f "$KEY" -C "shellhouse-sandbox-manager"
 fi
 
-# Record a checksum so you can verify which image a VM booted (image
-# signing/versioning is on the production readiness checklist).
-sync
+# The repo root is the build context, as in docker-compose.yml: sandbox/Dockerfile copies box/, workspace/ and sandbox/.
+echo "==> Building the desktop image"
+docker build -f "$REPO/sandbox/Dockerfile" -t agent-desktop:vm-base "$REPO"
+echo "==> Adding init and sshd for the VM"
+docker build -f "$REPO/sandbox/firecracker/Dockerfile.vm" --build-arg BASE=agent-desktop:vm-base -t agent-desktop:vm "$REPO"
+
+WORK="$(mktemp -d /var/tmp/agent-rootfs.XXXXXX)"
+CID=""
+cleanup() { [[ -n "$CID" ]] && docker rm -f "$CID" >/dev/null 2>&1; rm -rf "$WORK"; }
+trap cleanup EXIT
+
+echo "==> Exporting the image's filesystem"
+mkdir "$WORK/root"
+CID="$(docker create agent-desktop:vm)"
+docker export "$CID" | tar -x -C "$WORK/root" --numeric-owner
+docker rm -f "$CID" >/dev/null; CID=""
+
+# What a container gets from Docker at run time and a VM has to have on its disk.
+R="$WORK/root"
+rm -f "$R/.dockerenv"
+printf '127.0.0.1\tlocalhost\n::1\tlocalhost\n' > "$R/etc/hosts"
+: > "$R/etc/hostname"
+# The manager's key may sign in as `box`; the private half never leaves the host.
+owner="$(awk -F: '$1=="box"{print $3":"$4}' "$R/etc/passwd")"
+[[ -n "$owner" ]] || { echo "The image has no box user" >&2; exit 1; }
+install -d -m 0700 -o "${owner%%:*}" -g "${owner##*:}" "$R/home/box/.ssh"
+install -m 0600 -o "${owner%%:*}" -g "${owner##*:}" "$KEY.pub" "$R/home/box/.ssh/authorized_keys"
+
+echo "==> Writing a ${SIZE_MB} MB ext4 image"
+rm -f "$ROOTFS.new"
+truncate -s "${SIZE_MB}M" "$ROOTFS.new"
+mkfs.ext4 -q -F -L agent-root -d "$R" "$ROOTFS.new"
+chmod 0600 "$ROOTFS.new"
+mv -f "$ROOTFS.new" "$ROOTFS"
 sha256sum "$ROOTFS" > "$ROOTFS.sha256"
 
 echo
-echo "Done."
-echo "  rootfs:   $ROOTFS"
-echo "  checksum: $ROOTFS.sha256"
-echo "  ssh key:  $OUT_DIR/id_ed25519"
-echo
-echo "Next: ./build-kernel.sh  then  ./setup-host.sh"
+echo "Done: $ROOTFS ($(cut -c1-12 "$ROOTFS.sha256"))"

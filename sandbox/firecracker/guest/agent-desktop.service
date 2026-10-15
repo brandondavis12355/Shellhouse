@@ -1,0 +1,13 @@
+[Unit]
+Description=Agent desktop (Xvfb + openbox + noVNC)
+After=shellhouse-guest-init.service
+Requires=shellhouse-guest-init.service
+
+[Service]
+Type=simple
+EnvironmentFile=/run/agent-desktop.env
+ExecStart=/usr/bin/supervisord -n -c /etc/agent-desktop/supervisord.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -24,6 +24,8 @@
 #   --host ADDR           the Linux box's IP address or hostname
 #   --user NAME           SSH user on the box (default: your Mac user name)
 #   --with-smolagents     also allow the optional smolagents engine's model-proxy forward (docs/SMOLAGENTS.md)
+#   --with-firecracker    run each bot's computer as a Firecracker microVM instead of a Docker container (needs
+#                         KVM on the box; docs/FIRECRACKER.md). Kept on later runs; --no-firecracker switches back.
 #   --no-sudo-in-sandboxes  don't give the bots sudo inside their own VMs (they then can't apt-get install)
 #   --host-fingerprint SHA256:…  the box's host key fingerprint, to verify it without asking
 #                         (on the box: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)
@@ -53,12 +55,14 @@ while [ $# -gt 0 ]; do
     --host) HOST_ARG="${2:?--host needs a value}"; shift 2 ;;
     --user) USER_ARG="${2:?--user needs a value}"; shift 2 ;;
     --with-smolagents) HOST_FLAGS+=(--with-smolagents); shift ;;
+    --with-firecracker) HOST_FLAGS+=(--with-firecracker); shift ;;
+    --no-firecracker) HOST_FLAGS+=(--no-firecracker); shift ;;
     --no-sudo-in-sandboxes) HOST_FLAGS+=(--no-sudo-in-sandboxes); shift ;;
     --yes) ASSUME_YES=1; HOST_FLAGS+=(--yes); shift ;;
     --host-fingerprint) HOST_FINGERPRINT="${2:?--host-fingerprint needs a value}"; shift 2 ;;
     --rotate-token) ROTATE=1; shift ;;
     --no-ui) SHELLHOUSE_UI=0; shift ;;
-    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
     *) die "Unknown option: $1 (see --help)" ;;
   esac
 done

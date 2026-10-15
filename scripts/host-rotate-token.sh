@@ -22,11 +22,22 @@ fi
 unset new
 chmod 600 .env
 
-dkr compose up -d --no-deps --force-recreate sandbox-manager >/dev/null
+if grep -q '^SANDBOX_BACKEND=firecracker' .env; then
+  # The manager is a host service (host-firecracker.sh): a fixed root helper, allowed for this user without a
+  # password, copies the new token into its settings and restarts it.
+  sudo -n /usr/local/lib/shellhouse-firecracker/sync-manager-token \
+    || { echo "Couldn't hand the new token to the agent-sandbox-manager service; run initial_setup.sh again." >&2; exit 1; }
+else
+  dkr compose up -d --no-deps --force-recreate sandbox-manager >/dev/null
+fi
 for _ in $(seq 1 60); do
   [ -S sandbox-manager-run/manager.sock ] && curl -fsS --unix-socket sandbox-manager-run/manager.sock http://localhost/healthz >/dev/null 2>&1 && break
   sleep 1
 done
 curl -fsS --unix-socket sandbox-manager-run/manager.sock http://localhost/healthz >/dev/null 2>&1 \
   || { echo "The manager didn't come back after the restart. Check: docker logs agent-sandbox-manager" >&2; exit 1; }
-echo "    ✓ New manager token in place; the manager restarted (bot VMs kept running)"
+if grep -q '^SANDBOX_BACKEND=firecracker' .env; then
+  echo "    ✓ New manager token in place; the manager restarted (bot VMs start again on next use, with their files)"
+else
+  echo "    ✓ New manager token in place; the manager restarted (bot VMs kept running)"
+fi

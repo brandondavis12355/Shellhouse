@@ -1,0 +1,12 @@
+# Added on top of docker-compose.yml when SANDBOX_BACKEND=firecracker (host-setup.sh --with-firecracker sets
+# COMPOSE_FILE=docker-compose.yml:docker-compose.firecracker.yml in .env, so every `docker compose` picks it up).
+#
+# In that mode the sandbox manager runs on the host as agent-sandbox-manager.service and the bots' computers are
+# microVMs, so neither the containerized manager nor the shared desktop container may start. Both are moved into a
+# profile nobody enables; api and worker list sandbox-manager as an optional dependency, and reach the host
+# service through the same ./sandbox-manager-run socket folder.
+services:
+  sandbox-manager:
+    profiles: ["docker-backend"]
+  sandbox:
+    profiles: ["docker-backend"]

@@ -3,7 +3,7 @@
 # Installs what the stack needs, starts the sandbox manager, and records everything it changed in
 # ~/.shellhouse-install-state so uninstall.sh can put it all back.
 #
-#   bash ~/shellhouse/scripts/host-setup.sh [--with-smolagents] [--no-sudo-in-sandboxes] [--yes]
+#   bash ~/shellhouse/scripts/host-setup.sh [--with-smolagents] [--with-firecracker|--no-firecracker] [--no-sudo-in-sandboxes] [--yes]
 #
 # Drafted with AI assistance (Claude Code); read it before you run it.
 set -euo pipefail
@@ -13,8 +13,12 @@ ALLOW_SUDO=1
 ASSUME_YES=0
 PASSWORD_STDIN=0
 NO_PASSWORD_LOGIN=0
+WITH_FIRECRACKER=""      # empty: keep whichever backend this box already uses
 for arg in "$@"; do
   case "$arg" in
+    # The bots' computers as Firecracker microVMs instead of Docker containers (docs/FIRECRACKER.md).
+    --with-firecracker) WITH_FIRECRACKER=1 ;;
+    --no-firecracker) WITH_FIRECRACKER=0 ;;
     --with-smolagents) WITH_SMOLAGENTS=1 ;;
     --no-sudo-in-sandboxes) ALLOW_SUDO=0 ;;
     --yes) ASSUME_YES=1 ;;
@@ -187,13 +191,22 @@ chmod 700 "$REPO" sandbox-manager-run
 chmod 755 scripts/app-ssh-command.sh 2>/dev/null || true
 ok "Wrote .env (manager token generated; it never leaves this host except to your Mac's Keychain)"
 
-step "Building the sandbox image (the first build takes a while)"
-dkr docker compose build sandbox sandbox-manager
+if [ -z "$WITH_FIRECRACKER" ]; then
+  WITH_FIRECRACKER=0; grep -q '^SANDBOX_BACKEND=firecracker' .env && WITH_FIRECRACKER=1
+fi
 record "COMPOSE_PROJECT=shellhouse"
-step "Starting the sandbox manager"
-dkr docker compose up -d sandbox sandbox-manager >/dev/null
+if [ "$WITH_FIRECRACKER" = "1" ]; then
+  # The manager becomes a host service and the bots' computers microVMs; it builds the same desktop image.
+  bash scripts/host-firecracker.sh install
+else
+  bash scripts/host-firecracker.sh disable
+  step "Building the sandbox image (the first build takes a while)"
+  dkr docker compose build sandbox sandbox-manager
+  step "Starting the sandbox manager"
+  dkr docker compose up -d sandbox sandbox-manager >/dev/null
+fi
 for _ in $(seq 1 60); do [ -S sandbox-manager-run/manager.sock ] && break; sleep 1; done
-[ -S sandbox-manager-run/manager.sock ] || die "The sandbox manager didn't create its socket. Check: docker logs agent-sandbox-manager"
+[ -S sandbox-manager-run/manager.sock ] || die "The sandbox manager didn't create its socket. Check: $([ "$WITH_FIRECRACKER" = 1 ] && echo 'journalctl -u agent-sandbox-manager' || echo 'docker logs agent-sandbox-manager')"
 if curl -fsS --unix-socket sandbox-manager-run/manager.sock http://localhost/healthz >/dev/null 2>&1; then
   ok "Sandbox manager is up"
 else

@@ -1,0 +1,23 @@
+#!/bin/sh
+# Runs once per boot inside a Shellhouse microVM, before sshd and the desktop. The host passes this VM's settings on
+# the kernel command line (shellhouse.*=…), so it never has to mount and edit the VM's disk.
+set -eu
+arg() { tr ' ' '\n' < /proc/cmdline | sed -n "s/^shellhouse\.$1=//p" | tail -n 1; }
+
+umask 077
+printf 'VNC_PASSWORD=%s\nSCREEN_GEOM=%s\nDISPLAY=:1\n' "$(arg vnc_password)" "$(arg screen || true)" > /run/agent-desktop.env
+grep -q '^SCREEN_GEOM=.' /run/agent-desktop.env || sed -i 's/^SCREEN_GEOM=$/SCREEN_GEOM=1280x800x24/' /run/agent-desktop.env
+
+umask 022
+dns="$(arg dns)"
+printf 'nameserver %s\n' "${dns:-1.1.1.1}" > /etc/resolv.conf
+
+# sudo for `box` (SANDBOX_ALLOW_SUDO on the host); set on every boot, so changing it takes a restart, not a new disk.
+if [ "$(arg sudo)" = "1" ]; then
+  printf 'box ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/box && chmod 0440 /etc/sudoers.d/box
+else
+  rm -f /etc/sudoers.d/box
+fi
+
+# Each VM gets its own SSH host keys (none are baked into the image).
+ssh-keygen -A >/dev/null

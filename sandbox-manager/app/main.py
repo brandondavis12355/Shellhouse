@@ -419,9 +419,11 @@ async def resume(req: SandboxIdRequest, x_manager_token: str = Header(default=""
 @app.post("/v1/destroy")
 async def destroy(req: DestroyRequest, x_manager_token: str = Header(default="")):
     require_auth(x_manager_token)
-    resolve(req.sandbox_id)
+    handle = resolve(req.sandbox_id)
     await get_backend().destroy(req.sandbox_id, force=req.force)
-    _registry.pop(req.sandbox_id, None)
+    # A persistent sandbox survives a routine destroy, so it stays addressable (a later force-delete must find it).
+    if req.force or not handle.persistent:
+        _registry.pop(req.sandbox_id, None)
     audit("destroy", "ok", sandbox_id=req.sandbox_id, force=req.force)
     return {"ok": True}
 

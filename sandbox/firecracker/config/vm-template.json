@@ -1,31 +1,29 @@
 {
   "_comment": [
-    "Reference VM shape, for booting a VM by hand while debugging:",
+    "Reference VM shape, for booting one VM by hand while debugging (no jailer, as root):",
+    "  cp --sparse=always /var/lib/agent-vm/rootfs.ext4 /var/lib/agent-vm/instances/debug.ext4",
+    "  ip tuntap add dev fctap1 mode tap && ip addr add 172.30.0.5/30 dev fctap1 && ip link set fctap1 up",
     "  firecracker --api-sock /tmp/fc.sock --config-file vm-template.json",
-    "The provider configures VMs through the API socket instead of this file,",
-    "but the values here must stay in sync with FirecrackerSandboxProvider."
+    "  ssh -i /var/lib/agent-vm/id_ed25519 box@172.30.0.6",
+    "The manager configures VMs through the API socket instead; keep these values in sync with",
+    "sandbox-manager/app/providers/firecracker_backend.py."
   ],
   "boot-source": {
     "kernel_image_path": "/var/lib/agent-vm/vmlinux",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/init random.trust_cpu=on"
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off random.trust_cpu=on net.ifnames=0 ip=172.30.0.6::172.30.0.5:255.255.255.252::eth0:off systemd.hostname=shellhouse-debug shellhouse.vnc_password=debugpw1 shellhouse.sudo=0"
   },
   "drives": [
     {
       "drive_id": "rootfs",
       "path_on_host": "/var/lib/agent-vm/instances/debug.ext4",
       "is_root_device": true,
-      "is_read_only": false,
-      "rate_limiter": {
-        "bandwidth": { "size": 104857600, "refill_time": 1000 },
-        "ops": { "size": 2000, "refill_time": 1000 }
-      }
+      "is_read_only": false
     }
   ],
   "machine-config": {
     "vcpu_count": 2,
     "mem_size_mib": 2048,
-    "smt": false,
-    "track_dirty_pages": true
+    "smt": false
   },
   "network-interfaces": [
     {
@@ -36,19 +34,5 @@
       "tx_rate_limiter": { "bandwidth": { "size": 25000000, "refill_time": 1000 } }
     }
   ],
-  "vsock": {
-    "guest_cid": 3,
-    "uds_path": "/var/run/agent-vm/debug.vsock"
-  },
-  "balloon": {
-    "amount_mib": 0,
-    "deflate_on_oom": true,
-    "stats_polling_interval_s": 5
-  },
-  "logger": {
-    "log_path": "/var/log/agent-vm/debug.log",
-    "level": "Warning",
-    "show_level": true,
-    "show_log_origin": true
-  }
+  "entropy": {}
 }

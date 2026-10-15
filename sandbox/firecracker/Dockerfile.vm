@@ -1,0 +1,23 @@
+# The Firecracker guest: the same desktop image the Docker backend runs, plus what a VM needs and a container
+# doesn't (init, sshd). build-rootfs.sh builds this and turns it into an ext4 disk image.
+#   docker build -f sandbox/firecracker/Dockerfile.vm --build-arg BASE=agent-desktop:vm-base .   (repo root)
+ARG BASE=agent-desktop:vm-base
+FROM ${BASE}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv udev dbus libnss-myhostname openssh-server \
+    && rm -rf /var/lib/apt/lists/* \
+    # Host keys are made per VM at first boot (shellhouse-guest-init), not shared by every VM.
+    && rm -f /etc/ssh/ssh_host_*
+
+COPY sandbox/firecracker/guest/shellhouse-guest-init /usr/local/sbin/shellhouse-guest-init
+COPY sandbox/firecracker/guest/shellhouse-guest-init.service sandbox/firecracker/guest/agent-desktop.service /etc/systemd/system/
+COPY sandbox/firecracker/guest/sshd-shellhouse.conf /etc/ssh/sshd_config.d/shellhouse.conf
+
+RUN chmod 0755 /usr/local/sbin/shellhouse-guest-init \
+    && systemctl enable ssh.service shellhouse-guest-init.service agent-desktop.service \
+    # The network is set up by the kernel (ip= on the command line); nothing should wait for or redo it.
+    && systemctl mask systemd-networkd-wait-online.service serial-getty@ttyS0.service getty@tty1.service \
+    && rm -f /etc/machine-id && : > /etc/machine-id \
+    && rm -f /etc/sudoers.d/box \
+    && install -d -m 700 -o box -g box /home/box/.ssh

@@ -218,7 +218,8 @@ services:
       - SANDBOX_PER_BOT_VOLUMES=${SANDBOX_PER_BOT_VOLUMES:-1}
       - MANAGER_SOCKET=/run/sandbox-manager/manager.sock
       - MANAGER_AUDIT_LOG=/var/log/sandbox-manager/audit.log
-      - SANDBOX_BACKEND=${SANDBOX_BACKEND:-docker}
+      # Always docker here; firecracker runs as a host service instead.
+      - SANDBOX_BACKEND=docker
       - SANDBOX_CONTAINER_NAME=agent-sandbox
       - SANDBOX_IMAGE=agent-desktop:local
       - SANDBOX_USER=box
@@ -242,11 +243,6 @@ services:
       # Name of the docker volume to mount into per-task sandboxes. Must match
       # the actual volume name: `docker volume ls | grep workspace`.
       - WORKSPACE_VOLUME=${WORKSPACE_VOLUME:-shellhouse_workspace}
-      # Firecracker backend only; ignored when SANDBOX_BACKEND=docker.
-      - FIRECRACKER_VCPUS=${FIRECRACKER_VCPUS:-2}
-      - FIRECRACKER_MEM_MIB=${FIRECRACKER_MEM_MIB:-2048}
-      - FIRECRACKER_KERNEL=/var/lib/agent-vm/vmlinux
-      - FIRECRACKER_ROOTFS=/var/lib/agent-vm/rootfs.ext4
     # Runs as the host user (not root) so the socket below is created with
     # that user's ownership — needed if anything outside Docker (e.g. an
     # SSH-tunneled remote client) needs to connect to it directly. The Mac app
@@ -261,9 +257,8 @@ services:
       - manager_logs:/var/log/sandbox-manager     # audit log
       - workspace:/workspace                      # for read_file/write_file
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Firecracker backend additionally needs /dev/kvm and /var/lib/agent-vm;
-      # see docs/SECURITY.md — running the manager as a host systemd unit is
-      # the better option in that case.
+      # The Firecracker backend doesn't run here at all: it is a host systemd
+      # unit (host-setup.sh --with-firecracker; docs/FIRECRACKER.md).
     group_add:
       - "${DOCKER_GID:-999}"    # read the socket via group, not as root
     logging: *default-logging
@@ -278,10 +273,17 @@ services:
     container_name: agent-api
     restart: unless-stopped
     depends_on:
-      - ollama
-      - redis
-      - qdrant
-      - sandbox-manager
+      ollama:
+        condition: service_started
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      # Optional: with SANDBOX_BACKEND=firecracker the manager is a host service, not this container
+      # (docker-compose.firecracker.yml).
+      sandbox-manager:
+        condition: service_started
+        required: false
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -328,10 +330,17 @@ services:
     build: ./api
     restart: unless-stopped
     depends_on:
-      - ollama
-      - redis
-      - qdrant
-      - sandbox-manager
+      ollama:
+        condition: service_started
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      # Optional: with SANDBOX_BACKEND=firecracker the manager is a host service, not this container
+      # (docker-compose.firecracker.yml).
+      sandbox-manager:
+        condition: service_started
+        required: false
     command: ["python", "worker.py"]
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434

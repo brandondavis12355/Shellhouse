@@ -1,0 +1,13 @@
+[Unit]
+Description=Shellhouse VM settings from the kernel command line
+DefaultDependencies=no
+After=local-fs.target
+Before=ssh.service agent-desktop.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/shellhouse-guest-init
+
+[Install]
+WantedBy=multi-user.target
