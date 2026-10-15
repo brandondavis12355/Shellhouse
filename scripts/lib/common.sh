@@ -151,7 +151,8 @@ ssh_setup() {
 }
 ssh_run()     { ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "$@"; }
 ssh_tty()     { ssh -t "${SSH_OPTS[@]}" "$SSH_TARGET" "$@"; }
-ssh_close()   { ssh "${SSH_OPTS[@]}" -O exit "$SSH_TARGET" >/dev/null 2>&1 || true; }
+# Nothing to close if no connection was ever set up (build.sh on its own, with no host to hand over to).
+ssh_close()   { [ -n "${SSH_TARGET:-}" ] || return 0; ssh "${SSH_OPTS[@]}" -O exit "$SSH_TARGET" >/dev/null 2>&1 || true; }
 
 # Makes sure the box's host key is the real one before anything is sent to it, then pins it.
 #   - Already pinned by an earlier run: used as is (and a different key is refused by ssh itself).

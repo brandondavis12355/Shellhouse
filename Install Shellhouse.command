@@ -21,6 +21,15 @@ fi
 ./initial_setup.sh "$@"
 status=$?
 
+# initial_setup.sh builds and installs the app as its last step. If it didn't (it was given --no-app, say) and the
+# box is set up, run the build now, so this file always ends with the app installed and connected.
+if [ "$status" -eq 0 ] && [ ! -d /Applications/Shellhouse.app ] && ! pgrep -x Shellhouse >/dev/null 2>&1; then
+  echo
+  echo "Building and installing the app…"
+  ./build.sh
+  status=$?
+fi
+
 echo
 if [ "$status" -eq 0 ]; then
   echo "Shellhouse setup finished."
