@@ -98,11 +98,11 @@ That's the whole install. It asks everything it needs first, in macOS dialogs (a
 | **4. Copy** | Copies the server side of this repo to `~/shellhouse` on the box. The box's own `.env`, seed folders and manager socket are never overwritten. | box |
 | **5. Set up the box** | Asks for your sudo password once, then runs [`scripts/host-setup.sh`](scripts/host-setup.sh): installs what's missing (Docker, Compose, a few tools); makes sure sshd allows the forwarding the app uses; writes `.env` with a fresh manager token and the seed folders; builds the sandbox image (the first build takes a while); starts the sandbox manager; sets up the optional parts you chose; and, if your SSH key already signs you in, offers to turn off SSH password sign-in. Everything it changes is recorded in `~/.shellhouse-install-state`. | box |
 | **6. Prepare the app's settings** | Writes the host, the user, the manager token and the pinned host key to `~/.config/shellhouse`, readable only by you. The token is never printed. | your Mac |
-| **7. Build and install the app** | [`build.sh`](build.sh) builds the app, installs it as `/Applications/Shellhouse.app`, pulls the default models (`qwen2.5:7b-instruct` for chat, `nomic-embed-text` for memory search), starts it, authorizes its SSH key on the box (only the public key leaves the app) and imports the settings. | your Mac |
+| **7. Build and install the app** | [`build.sh`](build.sh) builds the app, installs it as `/Applications/Shellhouse.app`, starts it, authorizes its SSH key on the box (only the public key leaves the app) and imports the settings. It installs the Ollama runtime if it's missing but pulls **no models**: choose and pull them in **Settings › Ollama**. | your Mac |
 
 Two steps can't be scripted, because Apple requires them to be done by you: downloading Xcode from the App Store, and signing in to Xcode with your Apple ID. The installer opens the right place for each and waits.
 
-When it finishes, add your first bot from the sidebar's **+** menu. Everything uses the default settings; change them in **Settings**, where every change applies right away.
+When it finishes, pull a model in **Settings › Ollama**: a chat model, and a small embedding model for memory search (the installer used to pull `qwen2.5:7b-instruct` and `nomic-embed-text`; any tool-calling-capable model works). Then add your first bot from the sidebar's **+** menu. Everything uses the default settings; change them in **Settings**, where every change applies right away.
 
 It's safe to run again: it picks up where it left off, and rerunning it with the same box updates that box in place. `./build.sh` on its own rebuilds only the app.
 
@@ -216,7 +216,7 @@ Everything the bots use (Python, Chromium, `gh` and the rest) is built into the 
 1. Checks Xcode (license, first-launch components). If [Homebrew](https://brew.sh) is missing, it offers to install it with Homebrew's official installer (which asks for your Mac password). Then it installs [XcodeGen](https://github.com/yonaskolb/XcodeGen) with Homebrew if needed.
 2. Finds your Apple signing team, or asks for it, and saves it to `macos/Signing.local.xcconfig` (git-ignored).
 3. Builds a Release copy and installs it as `/Applications/Shellhouse.app`, quitting a running copy first.
-4. Installs [Ollama](https://ollama.com) with Homebrew if it's missing, and pulls the default models: `qwen2.5:7b-instruct` for chat and `nomic-embed-text` for memory search. Skip this with `--no-models`.
+4. Installs [Ollama](https://ollama.com) with Homebrew if it's missing (skip with `--no-ollama`). It pulls no models: choose and pull them in the app's **Settings › Ollama**, since a bot can't reply until its model is available.
 5. Starts the app and connects it to the box `initial_setup.sh` prepared:
    - it authorizes the app's own SSH key on the box (only the public key leaves the app);
    - it imports the host and the manager token.

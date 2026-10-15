@@ -16,7 +16,7 @@
 #      with a fresh manager token, builds the sandbox image and starts the sandbox manager.
 #      Everything it changes is recorded in ~/.shellhouse-install-state for uninstall.sh.
 #   4. Prepares the app's settings (host, user, manager token) in ~/.config/shellhouse, readable only by you.
-# And last, the app (./build.sh): builds it, installs it in /Applications, pulls the default models, starts it
+# And last, the app (./build.sh): builds it, installs it in /Applications, starts it
 # and connects it to the box. (--no-app skips this; ./build.sh alone rebuilds the app any time.)
 #
 # Run it again with the same box to update it: nothing is overwritten (its .env and token stay, the image is rebuilt).
@@ -336,7 +336,7 @@ FROM_HOST="${SHELLHOUSE_PREV_HOST:-}"; FROM_USER="${SHELLHOUSE_PREV_USER:-}"
 SHELLHOUSE_PREV_HOST=""; SHELLHOUSE_PREV_USER=""; save_state
 
 if [ "$WITH_APP" = "1" ]; then
-  # Builds and installs the app, pulls the default models, starts it and connects it to the box.
+  # Builds and installs the app, starts it and connects it to the box.
   ssh_close
   "$REPO/build.sh" ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} || die "The box is ready, but building the app stopped (see above). Fix that and run ./build.sh; it connects the app when done."
 elif app_installed; then

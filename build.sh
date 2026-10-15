@@ -4,7 +4,7 @@
 #   ./build.sh                 # Release build, install, launch
 #   ./build.sh --debug         # Debug build instead
 #   ./build.sh --team ABCDE12345   # use this Apple signing team (saved to macos/Signing.local.xcconfig)
-#   ./build.sh --no-models     # don't install Ollama or pull the default models
+#   ./build.sh --no-ollama     # don't install Ollama
 #   ./build.sh --no-launch     # install but don't start it
 #
 # Steps:
@@ -12,8 +12,8 @@
 #      (its official installer, after you confirm), and installs XcodeGen with it.
 #   2. Finds your Apple Development signing team (or asks) and writes macos/Signing.local.xcconfig (git-ignored).
 #   3. Generates the Xcode project, builds, and copies "Shellhouse.app" to /Applications (quitting a running copy).
-#   4. Installs Ollama with Homebrew if it's missing and pulls the default models (a chat model and a small
-#      embedding model for memory search).
+#   4. Installs Ollama with Homebrew if it's missing. It pulls no models: choose them in the app's
+#      Settings › Ollama.
 #   5. Starts the app and, if ./initial_setup.sh has prepared a Linux host, connects the app to it: authorizes
 #      the app's SSH key on the host and imports the host address and manager token.
 #
@@ -26,13 +26,12 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 . "$REPO/scripts/lib/common.sh"
 
-CONFIGURATION="Release"; TEAM_ARG=""; WITH_MODELS=1; LAUNCH=1; ASSUME_YES=0; PREPARE_ONLY=0
-DEFAULT_MODELS=("qwen2.5:7b-instruct" "nomic-embed-text")
+CONFIGURATION="Release"; TEAM_ARG=""; WITH_OLLAMA=1; LAUNCH=1; ASSUME_YES=0; PREPARE_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --debug) CONFIGURATION="Debug"; shift ;;
     --team) TEAM_ARG="${2:?--team needs a value}"; shift 2 ;;
-    --no-models) WITH_MODELS=0; shift ;;
+    --no-ollama) WITH_OLLAMA=0; shift ;;
     --no-launch) LAUNCH=0; shift ;;
     --yes) ASSUME_YES=1; shift ;;
     # Only the Mac's tools and signing (initial_setup.sh does this first, so every question comes up front).
@@ -174,7 +173,7 @@ fi
 
 if [ "$PREPARE_ONLY" = "1" ]; then
   # Ollama too, so nothing is left to ask about later.
-  if [ "$WITH_MODELS" = "1" ] && ! command -v ollama >/dev/null && [ ! -d /Applications/Ollama.app ]; then
+  if [ "$WITH_OLLAMA" = "1" ] && ! command -v ollama >/dev/null && [ ! -d /Applications/Ollama.app ]; then
     ensure_brew; info "Installing Ollama with Homebrew…"; brew install ollama >/dev/null && ok "Installed Ollama"
   fi
   ok "This Mac has everything it needs to build Shellhouse"
@@ -214,34 +213,16 @@ ditto "$BUILT" "$SHELLHOUSE_APP"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$SHELLHOUSE_APP" >/dev/null 2>&1 || true
 ok "$SHELLHOUSE_APP"
 
-# --- 4. Models -------------------------------------------------------------------------------------------
-if [ "$WITH_MODELS" = "1" ]; then
-  step "Local models (Ollama)"
-  if ! command -v ollama >/dev/null && [ ! -d /Applications/Ollama.app ]; then
-    if confirm "Ollama isn't installed. Install it with Homebrew?" Y; then
-      ensure_brew
-      brew install ollama >/dev/null && ok "Installed Ollama"
-    else
-      warn "Skipping models. Install Ollama later (https://ollama.com/download); the app's Settings › Ollama can pull models."
-      WITH_MODELS=0
-    fi
+# --- 4. Ollama -------------------------------------------------------------------------------------------
+# Only the runtime. No models are pulled: choose and pull them in the app's Settings › Ollama.
+if [ "$WITH_OLLAMA" = "1" ] && ! command -v ollama >/dev/null && [ ! -d /Applications/Ollama.app ]; then
+  step "Ollama"
+  if confirm "Ollama isn't installed. Install it with Homebrew?" Y; then
+    ensure_brew
+    brew install ollama >/dev/null && ok "Installed Ollama"
+  else
+    warn "Skipping Ollama. Install it later (https://ollama.com/download)."
   fi
-fi
-if [ "$WITH_MODELS" = "1" ]; then
-  OLLAMA="$(command -v ollama || echo /Applications/Ollama.app/Contents/Resources/ollama)"
-  # The app starts `ollama serve` itself; start it here too so the pulls can run now.
-  if ! curl -fsS http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
-    ( "$OLLAMA" serve >/dev/null 2>&1 & )
-    for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:11434/api/version >/dev/null 2>&1 && break; sleep 1; done
-  fi
-  for model in "${DEFAULT_MODELS[@]}"; do
-    if "$OLLAMA" list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$model\(:latest\)\?"; then
-      ok "$model is already pulled"
-    else
-      info "Pulling ${model}…"
-      "$OLLAMA" pull "$model" && ok "Pulled $model" || warn "Couldn't pull $model; try again later in the app's Settings › Ollama."
-    fi
-  done
 fi
 
 # --- 5. Launch and connect -------------------------------------------------------------------------------
