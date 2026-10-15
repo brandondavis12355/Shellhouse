@@ -92,7 +92,7 @@ public enum ModelTiers {
     static let remoteIdentityPrefix = "remote:"
 
     /// https only (plain http just for this Mac), same rule as the remote fast model.
-    static func usableBaseURL(_ text: String) -> URL? {
+    public static func usableBaseURL(_ text: String) -> URL? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), let host = url.host else { return nil }
         guard url.scheme == "https" || (url.scheme == "http" && isPrivateHost(host)) else { return nil }
@@ -103,6 +103,39 @@ public enum ModelTiers {
             return parts.url ?? url
         }
         return url
+    }
+
+    /// Asks a remote OpenAI-compatible server for its model list and says, in one sentence, what happened: reachable
+    /// (and whether `model` is on it), or why not (with the usual causes of "can't connect").
+    public static func testRemote(baseURL: URL, apiKey: String?, model: String) async -> String {
+        var request = URLRequest(url: baseURL.appendingPathComponent("models"))
+        request.timeoutInterval = 6
+        if let apiKey, !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        do {
+            let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            guard status == 200 else {
+                if status == 401 || status == 403 { return "Reached \(baseURL.host ?? "the server"), but it refused the API key (HTTP \(status))." }
+                if status == 404 { return "Reached \(baseURL.host ?? "the server"), but \(baseURL.path)/models isn't there (HTTP 404). For Ollama the base URL ends in /v1." }
+                return "Reached \(baseURL.host ?? "the server"), but it answered HTTP \(status)."
+            }
+            let ids = ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["data"] as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? []
+            if model.isEmpty { return "Connected: \(ids.count) models available." }
+            return ids.contains(model) ? "Connected, and \(model) is available."
+                : "Connected, but \(model) isn't on that server (it has \(ids.count) models). Check the model id."
+        } catch {
+            let code = (error as NSError).code
+            let host = baseURL.host ?? "the server"
+            switch code {
+            case NSURLErrorTimedOut: return "\(host) didn't answer in time. Is it on, and is the port right?"
+            case NSURLErrorCannotConnectToHost:
+                return "\(host) refused the connection. Check the port (Ollama uses 11434) and that Ollama listens on the network (OLLAMA_HOST=0.0.0.0), not only on its own machine."
+            case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed: return "Couldn't find \(host). Check the name or address."
+            case NSURLErrorNotConnectedToInternet:
+                return "macOS blocked the connection to \(host). Allow Shellhouse under System Settings › Privacy & Security › Local Network, then try again."
+            default: return "Couldn't connect to \(host): \(error.localizedDescription)"
+            }
+        }
     }
 
     /// Posted when the embedding model or where it runs changes, so every bot re-indexes its notes for the new model.

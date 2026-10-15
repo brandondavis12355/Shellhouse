@@ -3,6 +3,9 @@
 <plist version="1.0">
 <dict>
 	<!-- Merged with the generated Info.plist (GENERATE_INFOPLIST_FILE). -->
+	<!-- Shown by macOS the first time the app talks to another machine on your network (a remote Ollama server). -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Shellhouse connects to model servers on your local network, such as an Ollama server you set up for the fast model or memory embeddings.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

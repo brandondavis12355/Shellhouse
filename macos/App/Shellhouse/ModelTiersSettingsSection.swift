@@ -11,6 +11,21 @@ struct ModelTiersSettingsSection: View {
     @State private var apiKeyInput = ""
     @State private var keySaved = false
     @State private var keyError: String?
+    @State private var testing = false
+    @State private var testResult: String?
+
+    private func testConnection() {
+        guard let url = ModelTiers.usableBaseURL(remoteBaseURL) else {
+            testResult = "That isn't a usable address. Use https://…, or http:// for a server on your own network."
+            return
+        }
+        testing = true; testResult = nil
+        Task {
+            let key = (try? await SecretStore().resolveOne(name: ModelTiers.fastRemoteAPIKeySecretName)) ?? nil
+            testResult = await ModelTiers.testRemote(baseURL: url, apiKey: key, model: remoteModel.trimmingCharacters(in: .whitespaces))
+            testing = false
+        }
+    }
 
     var body: some View {
         CollapsibleSection("Fast model", summary: summary, symbol: "hare", storageKey: "fastModel") {
@@ -83,6 +98,11 @@ extension ModelTiersSettingsSection {
                 Button("Save key", action: saveKey).disabled(apiKeyInput.isEmpty)
             }
             if let keyError { Text(keyError).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button("Test connection") { testConnection() }.disabled(testing)
+                if testing { ProgressView().controlSize(.small) }
+                if let testResult { Text(testResult).font(.system(size: 12)).foregroundStyle(.secondary) }
+            }
             Text(ModelTiers.fastUsesRemote
                  ? "Reply checks, the approval reviewer, quick replies, helpers and lesson reviews use this model for every bot. "
                     + "Each bot's own model still does the real work. Those prompts include parts of the chat, so they go to this provider."
@@ -115,6 +135,21 @@ struct EmbeddingsSettingsSection: View {
     @State private var apiKeyInput = ""
     @State private var keySaved = false
     @State private var keyError: String?
+    @State private var testing = false
+    @State private var testResult: String?
+
+    private func testConnection() {
+        guard let url = ModelTiers.usableBaseURL(remoteBaseURL) else {
+            testResult = "That isn't a usable address. Use https://…, or http:// for a server on your own network."
+            return
+        }
+        testing = true; testResult = nil
+        Task {
+            let key = (try? await SecretStore().resolveOne(name: ModelTiers.embeddingAPIKeySecretName)) ?? nil
+            testResult = await ModelTiers.testRemote(baseURL: url, apiKey: key, model: remoteModel.trimmingCharacters(in: .whitespaces))
+            testing = false
+        }
+    }
 
     private var summary: String {
         if provider == "remote" { return ModelTiers.embeddingUsesRemote ? "remote · \(remoteModel)" : "remote · not set up" }
@@ -189,6 +224,11 @@ struct EmbeddingsSettingsSection: View {
                 Button("Save key", action: saveKey).disabled(apiKeyInput.isEmpty)
             }
             if let keyError { Text(keyError).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button("Test connection") { testConnection() }.disabled(testing)
+                if testing { ProgressView().controlSize(.small) }
+                if let testResult { Text(testResult).font(.system(size: 12)).foregroundStyle(.secondary) }
+            }
             Text(ModelTiers.embeddingUsesRemote
                  ? "The text of each memory note, and each search query, is sent to this provider. Nothing else is."
                  : "Needs a base URL and a model id (https, or http for a server on your own network such as http://192.168.1.20:11434) . Until then, memory search uses the local setting.")
