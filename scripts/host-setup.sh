@@ -184,14 +184,38 @@ fi
 
 # --- The stack -------------------------------------------------------------------------------------------
 step "Configuring the stack in ~/shellhouse"
-./setup.sh >/dev/null
 set_env() {
   if grep -q "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi
 }
+# The stack's .env, in the folder it runs from. An existing .env is kept as it is (its token stays); only what
+# belongs to this machine is refreshed.
+write_stack_env() {
+  [ -f .env ] || (umask 077; cp .env.example .env)
+  # The secret shared by the API and the sandbox manager; every call to the manager carries it.
+  grep -q '^MANAGER_TOKEN=.\+' .env || set_env MANAGER_TOKEN "$(openssl rand -hex 32)"
+  # The group that owns the Docker socket, so the manager container reads it through the group, not as root.
+  set_env DOCKER_GID "$(stat -c '%g' /var/run/docker.sock)"
+  # The manager's socket is a plain folder owned by this user, so the app's SSH tunnel (also this user) can reach it.
+  set_env MANAGER_SOCKET_UID "$(id -u)"
+  set_env MANAGER_SOCKET_GID "$(id -g)"
+  set_env MANAGER_SOCKET_HOST_DIR "./sandbox-manager-run"
+  # The desktop image seeds /home/box and /workspace from box/ and workspace/. Both are git-ignored (they can hold
+  # real credentials), so a fresh copy has neither: a minimal seed lets the image build. Existing files are kept.
+  mkdir -p box/.config workspace
+  local f
+  for f in .bashrc .profile .bash_logout .gitconfig; do
+    if [ ! -e "box/$f" ]; then
+      if [ -f "/etc/skel/$f" ]; then cp "/etc/skel/$f" "box/$f"; else : > "box/$f"; fi
+    fi
+  done
+  # Compose prefixes volume names with the project name (pinned by `name:` in docker-compose.yml); the manager
+  # needs the workspace volume's real name to mount it into per-bot sandboxes.
+  local project; project="$(sed -n 's/^name:[[:space:]]*//p' docker-compose.yml | head -1)"
+  set_env WORKSPACE_VOLUME "${project:-shellhouse}_workspace"
+}
+write_stack_env
 # Bots install what their work needs (apt-get) inside their own VM; this is how the app is normally run.
 set_env SANDBOX_ALLOW_SUDO "$ALLOW_SUDO"
-DGID="$(stat -c '%g' /var/run/docker.sock)"
-set_env DOCKER_GID "$DGID"
 # A changeover from another box: its options come along (initial_setup.sh copied them to .env.carryover), but not
 # what is this machine's own (the token, the docker group, the socket owner, the relay's address, and whether it
 # runs Docker containers or Firecracker microVMs: that is asked for each box).

@@ -11,7 +11,7 @@ first pass is debugging rather than discovery.
 ## Start here
 
 ```bash
-./setup.sh
+# scripts/host-setup.sh writes .env and the box/ and workspace/ seeds (see write_stack_env there)
 docker compose up -d --build        # expect 10-20 min on first build
 docker compose ps                   # all 8 services should be Up
 docker compose logs -f api worker sandbox-manager
@@ -68,7 +68,7 @@ doesn't preserve group semantics the way a bind mount does. If this fails,
 switching `manager_socket` to a host bind mount is the fix.
 
 ### 4. `WORKSPACE_VOLUME` name
-`setup.sh` guesses the compose-prefixed volume name from the directory name.
+`scripts/host-setup.sh` sets the compose-prefixed volume name from the project name in docker-compose.yml.
 Verify and correct:
 
 ```bash

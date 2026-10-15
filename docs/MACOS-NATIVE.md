@@ -174,7 +174,7 @@ this is a first-run download with a pinned SHA-256.
 ## What gets deleted
 
 noVNC, websockify, x11vnc, Redis, Qdrant, Docker Compose, the FastAPI HTTP
-layer, the unix-socket manager protocol, Fernet key management, `setup.sh`'s
+layer, the unix-socket manager protocol, Fernet key management, the host setup's
 GID detection. That's a large amount of accidental complexity that existed to
 work around not being native.
 

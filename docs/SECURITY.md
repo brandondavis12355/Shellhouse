@@ -83,7 +83,7 @@ not the default, because the honest cost/benefit for local use doesn't
 support it.
 
 **Run the manager as root.** With the Docker backend it reads the Docker
-socket through `group_add: DOCKER_GID` instead. `setup.sh` detects the right
+socket through `group_add: DOCKER_GID` instead. `scripts/host-setup.sh` detects the right
 GID. (The Firecracker backend is the exception: the jailer must start as root
 to drop every capability when it switches to its unprivileged user, so that
 manager is a confined host service. `docs/FIRECRACKER.md` has the details.)

@@ -50,7 +50,7 @@ The full tour of the app is in **[macos/README.md](macos/README.md)**.
                      · Firecracker microVMs instead of containers (--with-firecracker, needs KVM on the box)
 ```
 
-The repo also contains the **Docker/Python reference stack** the app grew out of: a single-agent loop with a web UI (`api/`, `web/`), durable task queue, vector memory, MCP client and deterministic evals. It runs entirely in Docker and is still the design reference for features the Mac app hasn't adopted.
+The repo also contains the **Docker/Python reference stack** the app grew out of: a single-agent loop with a web UI (`api/`, `web/`), durable task queue, vector memory, MCP client and deterministic evals. It runs entirely in Docker and is still the design reference for features the Mac app hasn't adopted. The setup scripts don't install it: they set up the sandbox host the app uses, so running it by hand means writing its `.env` yourself (`.env.example` lists every setting).
 
 ## Repository layout
 
@@ -213,16 +213,6 @@ It asks you to type the box's address to confirm. It removes:
 Conversations and memories are never included.
 
 Importing merges: bots and groups are matched by name and created if they're missing. Opening a `.shellhousesettings` file imports it too. A downloaded file asks before it changes anything.
-
-### Or: the Docker reference stack
-
-```bash
-./setup.sh
-docker compose up -d --build
-docker exec agent-ollama ollama pull qwen2.5:7b-instruct
-```
-
-Open the web UI at <http://localhost:3000>. The agent's live desktop is embedded on the left; click into it to take over. Every port binds to `127.0.0.1`.
 
 ## Testing
 

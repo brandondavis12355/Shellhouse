@@ -53,7 +53,7 @@ HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 REPO="${REPO_ARG:-$HOME_DIR/shellhouse}"
 SOCKET_DIR="$REPO/sandbox-manager-run"
 DOTENV="$REPO/.env"
-[[ -f "$DOTENV" ]] || { echo "$DOTENV is missing (run ./setup.sh there first)" >&2; exit 1; }
+[[ -f "$DOTENV" ]] || { echo "$DOTENV is missing (scripts/host-setup.sh writes it)" >&2; exit 1; }
 install -d -m 0700 -o "$USER_NAME" -g "$(id -g "$USER_NAME")" "$SOCKET_DIR"
 
 echo "==> Installing the manager in $OPT"

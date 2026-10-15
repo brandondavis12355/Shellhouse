@@ -71,7 +71,7 @@ RUN mkdir -p /home/box/.config/openbox /home/box/.config/tint2 \
 RUN /usr/local/bin/make-wallpaper.sh && chown box:box /usr/share/backgrounds/agent-wallpaper.png
 
 # --- Seed /home/box from the top-level box/ directory (gitignored — see
-# .gitignore; ./setup.sh creates a minimal one) ------------------------------
+# .gitignore; scripts/host-setup.sh creates a minimal one) ------------------------------
 # Only these named files are copied, so nothing else that lands in box/ ends
 # up in the image.
 COPY box/.bashrc box/.profile box/.gitconfig box/.bash_logout /home/box/

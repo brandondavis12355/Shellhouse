@@ -40,7 +40,7 @@ caller.
   follows the active task's own noVNC URL.
 
 **[unverified]** The `WORKSPACE_VOLUME` name is project-prefixed by compose;
-`setup.sh` guesses it from the directory name. Check with
+the setup script (now `write_stack_env` in `scripts/host-setup.sh`) guessed it from the directory name. Check with
 `docker volume ls | grep workspace` after first start.
 
 **[unverified]** Ephemeral containers symlink `/workspace` to

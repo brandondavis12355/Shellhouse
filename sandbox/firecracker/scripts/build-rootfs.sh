@@ -19,7 +19,7 @@ KEY="$OUT_DIR/id_ed25519"
 [[ $EUID -eq 0 ]] || { echo "Run as root (sudo): it reads the exported image as root to keep file ownership." >&2; exit 1; }
 command -v docker >/dev/null || { echo "docker is required to build the image" >&2; exit 1; }
 command -v mkfs.ext4 >/dev/null || { echo "mkfs.ext4 (e2fsprogs) is required" >&2; exit 1; }
-[[ -d "$REPO/box" && -d "$REPO/workspace" ]] || { echo "Run ./setup.sh in $REPO first (it creates the box/ and workspace/ seeds)." >&2; exit 1; }
+[[ -d "$REPO/box" && -d "$REPO/workspace" ]] || { echo "Run scripts/host-setup.sh first (it creates the box/ and workspace/ seeds in $REPO)." >&2; exit 1; }
 
 install -d -m 0700 "$OUT_DIR"
 if [[ ! -f "$KEY" ]]; then

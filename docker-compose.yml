@@ -246,7 +246,7 @@ services:
     # Runs as the host user (not root) so the socket below is created with
     # that user's ownership — needed if anything outside Docker (e.g. an
     # SSH-tunneled remote client) needs to connect to it directly. The Mac app
-    # does exactly that (README.md › Linux host setup). ./setup.sh fills these in from `id -u`/`id -g`.
+    # does exactly that (README.md › Linux host setup). scripts/host-setup.sh fills these in from `id -u`/`id -g`.
     user: "${MANAGER_SOCKET_UID:-1000}:${MANAGER_SOCKET_GID:-1000}"
     volumes:
       # A host bind mount, not a named volume: a named volume's backing path
