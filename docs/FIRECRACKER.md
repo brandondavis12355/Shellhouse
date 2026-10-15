@@ -91,6 +91,8 @@ curl -m 3 https://example.com/           # internet: works
 
 On the host: `ps -o user,cmd -C firecracker` shows `shellhouse-fc`, never root.
 
+To boot one VM by hand while debugging, [`sandbox/firecracker/config/vm-template.json`](../sandbox/firecracker/config/vm-template.json) is a reference shape (its header comment has the commands); keep it in step with `firecracker_backend.py`.
+
 ## Settings (`~/shellhouse/.env`, applied by re-running setup)
 
 `FIRECRACKER_VCPUS` (2), `FIRECRACKER_MEM_MIB` (2048), `FIRECRACKER_BOOT_TIMEOUT` (90), `FIRECRACKER_USE_JAILER`

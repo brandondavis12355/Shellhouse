@@ -28,9 +28,6 @@ enum SettingsBundle {
     /// Settings stored as a JSON blob in UserDefaults; written out as readable dictionaries.
     static let jsonBlobKeys: Set<String> = ["linuxHostSettings.v1", "relaySettings.v1", "smolagents.config.v1"]
 
-    /// Secrets the app itself owns; `REMOTE_API_KEY_…` (per-bot model keys) are matched by prefix.
-    static let appSecretNames: Set<String> = ["SANDBOX_MANAGER_TOKEN", ModelTiers.fastRemoteAPIKeySecretName, "RELAY_REGISTRATION_TOKEN"]
-
     struct Contents {
         var app: [String: Any] = [:]
         var bots: [BotConfig] = []

@@ -408,7 +408,6 @@ class DockerBackend:
         else:
             workspace_volumes = {WORKSPACE_VOLUME: {"bind": "/workspaces", "mode": "rw"}}
 
-        created = False
         try:
             if allowlist:
                 # Fails closed (raises) rather than starting an open sandbox.
@@ -462,7 +461,6 @@ class DockerBackend:
                 return self._docker().containers.run(SANDBOX_IMAGE, **kwargs)
 
             await asyncio.to_thread(_run)
-            created = True
             if allowlist:
                 # Give the sandbox its VNC alias on its internal network.
                 await asyncio.to_thread(self._alias_vnc, network_name, name, port)
@@ -483,7 +481,7 @@ class DockerBackend:
                 # Idempotent, best-effort; no-op if the image lacks the script.
                 await self.exec(name, "command -v seed-canaries.sh >/dev/null && seed-canaries.sh || true", timeout=30)
         except BaseException:
-            await asyncio.to_thread(self._cleanup_failed, name, created, allowlist)
+            await asyncio.to_thread(self._cleanup_failed, name, allowlist)
             async with self._lock:
                 self._ports.pop(name, None)
                 self._persistent.pop(name, None)
@@ -491,7 +489,7 @@ class DockerBackend:
         return self._handle(name, port=port, persistent=persistent,
                             egress="allowlist" if allowlist else "open")
 
-    def _cleanup_failed(self, name: str, container_created: bool, allowlist: bool) -> None:
+    def _cleanup_failed(self, name: str, allowlist: bool) -> None:
         """Undo a half-finished create so nothing is left running or leaked.
         Best-effort and blocking."""
         try:

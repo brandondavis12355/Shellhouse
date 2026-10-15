@@ -170,11 +170,6 @@ struct SidebarView: View {
 
     // MARK: Pinned
 
-    private var pinnedBots: [Bot] {
-        let byID = Dictionary(uniqueKeysWithValues: allBots.map { ("bot:\($0.id)", $0) })
-        return pins.ids.compactMap { byID[$0] }.filter(matches)
-    }
-
     @ViewBuilder
     private var pinnedSection: some View {
         let byBot = Dictionary(uniqueKeysWithValues: allBots.map { (SidebarPins.botID($0.id), $0) })
