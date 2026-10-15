@@ -93,6 +93,10 @@ final class GroupChatSession: Identifiable {
     /// Members owed a working turn after answering a status request during a live goal (the report itself runs no tools).
     private var resumeWorkDue: Set<String> = []
     private var ownerReviewTask: Task<Void, Never>?
+    /// The goal owner is owed a nudge: the goal is active but nothing has happened in the group for a while.
+    private var probeDue: Set<String> = []
+    private var idleProbeTask: Task<Void, Never>?
+    static let idleProbeSeconds: TimeInterval = 30
     private var lastOwnerReview = Date.distantPast
     private var lastReviewedSignature = ""
     static let ownerReviewInterval: TimeInterval = 240
@@ -118,6 +122,7 @@ final class GroupChatSession: Identifiable {
         for memberID in self.memberBotIDs { seenCount[memberID] = displayMessages.count }
         scheduleConfirmTimer()
         startOwnerReviewLoop()
+        startIdleProbeLoop()
     }
 
     var config: GroupChat {
@@ -241,6 +246,7 @@ final class GroupChatSession: Identifiable {
     func shutdown() {
         confirmTimerTask?.cancel()
         ownerReviewTask?.cancel()
+        idleProbeTask?.cancel()
         goalPersistTask?.cancel()
         stopRelay()
         workers.values.forEach { $0.cancel() }
@@ -501,6 +507,13 @@ final class GroupChatSession: Identifiable {
                 if decision == .none || decision == .optional { decision = .mentionedByBot }
                 debugLog(bot, "resuming goal work after the status report")
             }
+            // The group went quiet during an active goal: the owner checks what is stuck and gets it moving.
+            var probeTurn = false
+            if probeDue.remove(botID) != nil, let live = goal, live.isLive, live.status == .active, live.ownerBotID == botID {
+                probeTurn = true
+                if decision == .none || decision == .optional { decision = .mentionedByBot }
+                debugLog(bot, "idle probe: no activity for \(Int(Self.idleProbeSeconds))s")
+            }
             // New work from the user while a goal is running: only the owner can add it to the plan, so the owner
             // checks every new user message and, if it asks for something, adds the steps before anything else.
             var goalAdditionTurn = false
@@ -599,6 +612,11 @@ final class GroupChatSession: Identifiable {
                 if ownerReviewTurn || resumeTurn, let work = reviewWork(live, botID: botID) { extraSuffix += "\n\n" + work }
                 if goalAdditionTurn {
                     extraSuffix += "\n\n" + Self.goalAdditionInstruction
+                }
+                if probeTurn {
+                    extraSuffix += "\n\nThe group has been quiet for \(Int(Self.idleProbeSeconds)) seconds while this goal is active. "
+                        + "You own it: work out what is stuck (a step nobody is on, someone waiting, a missing answer), then act with tools "
+                        + "or @mention whoever should move next. If everything is genuinely in hand, finish silently."
                 }
                 if resumeTurn {
                     extraSuffix += "\n\nYou just gave the user a status report. Now get back to work on the goal with tools: "
@@ -978,6 +996,36 @@ final class GroupChatSession: Identifiable {
                 let quiet = Date().timeIntervalSince(self.lastOwnerReview)
                 let changed = live.reviewSignature != self.lastReviewedSignature
                 if (changed && quiet > Self.ownerReviewInterval) || quiet > 600 { self.requestOwnerReview() }
+            }
+        }
+    }
+
+    /// If a goal is active and nothing has happened for `idleProbeSeconds` (no new message, nobody mid-turn, nobody
+    /// waiting on the user), the owner gets a turn to find out why. Once per quiet period; its own turn counts as
+    /// activity, and the stall limit still pauses a goal that keeps producing nothing.
+    private func startIdleProbeLoop() {
+        idleProbeTask?.cancel()
+        idleProbeTask = Task { @MainActor [weak self] in
+            var lastCount = -1
+            var lastActivity = Date()
+            var probed = false
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let self else { return }
+                let busy = !self.workers.isEmpty
+                if busy || self.displayMessages.count != lastCount {
+                    lastCount = self.displayMessages.count
+                    lastActivity = Date()
+                    probed = false
+                    continue
+                }
+                guard !probed, Date().timeIntervalSince(lastActivity) >= Self.idleProbeSeconds,
+                      let live = self.goal, live.isLive, live.status == .active,
+                      let owner = self.members.first(where: { $0.id == live.ownerBotID }),
+                      !self.members.contains(where: { $0.pendingApproval != nil || $0.pendingCredentialRequest != nil }) else { continue }
+                probed = true
+                self.probeDue.insert(owner.id)
+                self.wake(owner)
             }
         }
     }
