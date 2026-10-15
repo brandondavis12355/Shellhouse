@@ -169,7 +169,7 @@ def test_canary_in_plain_http_denied_and_flagged(tmp_path):
             for req in (b"GET http://allowed.com/?k=SHELLHOUSE-CANARY-abc123 HTTP/1.1\r\n\r\n",
                         b"GET http://allowed.com/?k=shellhouse%2Dcanary%2Dabc HTTP/1.1\r\n\r\n",
                         b"GET http://allowed.com/ HTTP/1.1\r\nX-Key: SHELLHOUSE-CANARY-zz\r\n\r\n",
-                        b"POST http://allowed.com/ HTTP/1.1\r\nContent-Length: 20\r\n\r\nkey=SHELLHOUSE-CANARY-zz99"):
+                        b"POST http://allowed.com/ HTTP/1.1\r\nContent-Length: 26\r\n\r\nkey=SHELLHOUSE-CANARY-zz99"):
                 out = await w.raw(req)
                 assert b"canary_token_in_request" in out, req
             assert w.upstream_requests == []

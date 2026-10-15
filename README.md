@@ -39,7 +39,7 @@ The full tour of the app is in **[macos/README.md](macos/README.md)**.
 ```
  ┌──────────────── Your Mac ─────────────────┐            ┌──────────── Linux host (~/shellhouse) ────────────┐
  │                                           │            │                                                 │
- │  Shellhouse.app                             │    SSH     │  sandbox-manager   the only privileged service; │
+ │  Shellhouse.app                           │    SSH     │  sandbox-manager   the only privileged service; │
  │   ├─ bots, groups, memory, routines       │  tunnel    │   (unix socket)    creates and drives sandboxes │
  │   ├─ guardrails + approvals + audit log  ─┼───────────▶│        │                                        │
  │   └─ Ollama (local models, Metal)         │            │        ▼                                        │
