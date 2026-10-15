@@ -379,6 +379,12 @@ final class OpenAIEmbedderTests: XCTestCase {
         XCTAssertEqual(ModelTiers.usableBaseURL("http://192.168.1.20:11434/v1")?.absoluteString, "http://192.168.1.20:11434/v1")
     }
 
+    func testOllamaLikeServersAreRecognizedForReasoningOff() {
+        XCTAssertTrue(ModelTiers.looksLikeOllama(URL(string: "http://10.63.128.211:11434/v1")!))
+        XCTAssertTrue(ModelTiers.looksLikeOllama(URL(string: "http://studio.local:8080/v1")!))
+        XCTAssertFalse(ModelTiers.looksLikeOllama(URL(string: "https://api.openai.com/v1")!))
+    }
+
     func testNotesNeedReindexingWhenTheModelChanges() {
         var book = MemoryBook()
         _ = book.add("the gh tool is installed", embedding: [1, 0], embeddingModel: "qwen3-embedding:8b")

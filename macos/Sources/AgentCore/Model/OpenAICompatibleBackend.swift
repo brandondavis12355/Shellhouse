@@ -20,14 +20,19 @@ public actor OpenAICompatibleBackend: ModelBackend {
     private let defaultModel: String
     private let session: URLSession
     private let visionOverrides: Set<String>
+    /// Sent as `reasoning_effort` when set ("none" turns off a thinking model's hidden reasoning, which otherwise
+    /// can run for a minute and leave the reply empty). Dropped automatically if the server rejects it.
+    private let reasoningEffort: String?
 
     public init(
         baseURL: URL,
         apiKey: String,
         defaultModel: String,
         timeout: TimeInterval = 600,
-        visionOverrides: Set<String> = []
+        visionOverrides: Set<String> = [],
+        reasoningEffort: String? = nil
     ) {
+        self.reasoningEffort = reasoningEffort
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.defaultModel = defaultModel
@@ -60,6 +65,12 @@ public actor OpenAICompatibleBackend: ModelBackend {
            (String(data: data, encoding: .utf8) ?? "").lowercased().contains("max_tokens") {
             (data, response) = try await send(messages: messages, tools: tools, model: model, temperature: temperature, maxTokens: nil)
         }
+        // A server that doesn't know `reasoning_effort`: ask again without it.
+        if reasoningEffort != nil, (response as? HTTPURLResponse)?.statusCode == 400,
+           (String(data: data, encoding: .utf8) ?? "").lowercased().contains("reasoning") {
+            (data, response) = try await send(messages: messages, tools: tools, model: model, temperature: temperature,
+                                              maxTokens: Self.replyTokenLimit, includeReasoning: false)
+        }
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             Telemetry.recorder.modelCall(model: model ?? "remote", promptTokens: 0, completionTokens: 0,
@@ -77,7 +88,8 @@ public actor OpenAICompatibleBackend: ModelBackend {
         tools: [ToolSchema],
         model: String?,
         temperature: Double,
-        maxTokens: Int?
+        maxTokens: Int?,
+        includeReasoning: Bool = true
     ) async throws -> (Data, URLResponse) {
         var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
         request.httpMethod = "POST"
@@ -89,7 +101,8 @@ public actor OpenAICompatibleBackend: ModelBackend {
             messages: Self.wireMessages(messages),
             tools: tools.isEmpty ? nil : tools.map(Tool.init),
             temperature: temperature,
-            max_tokens: maxTokens
+            max_tokens: maxTokens,
+            reasoning_effort: includeReasoning ? reasoningEffort : nil
         )
         request.httpBody = try ModelRequestEncoding.encode(body)
         return try await session.data(for: request)
@@ -141,6 +154,7 @@ public actor OpenAICompatibleBackend: ModelBackend {
         let tools: [Tool]?
         let temperature: Double
         let max_tokens: Int?
+        let reasoning_effort: String?
     }
 
     /// Room for a whole file in one `write_file` call. Left to the server, some providers stop a reply at a

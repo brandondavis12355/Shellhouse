@@ -125,6 +125,7 @@ public struct FallbackBackend: ModelBackend, WrappingBackend {
 
     static func describe(_ error: Error) -> String {
         if case ModelError.requestFailed(let status, _) = error, status > 0 { return "HTTP \(status)" }
+        if (error as NSError).code == NSURLErrorTimedOut { return "no answer in time" }
         return ModelConnection.isConnectionProblem(error) ? "couldn't connect" : "no response"
     }
 }

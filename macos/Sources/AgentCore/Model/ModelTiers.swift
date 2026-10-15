@@ -138,6 +138,32 @@ public enum ModelTiers {
         }
     }
 
+    /// A server that looks like Ollama (its port, or plain http on your own network). Its thinking models reason at
+    /// length unless told not to, which is wrong for quick yes/no decisions.
+    public static func looksLikeOllama(_ url: URL) -> Bool {
+        url.port == 11434 || (url.scheme == "http" && url.host.map(isPrivateHost) == true)
+    }
+
+    private static let probeLock = NSLock()
+    nonisolated(unsafe) private static var probeCache: [String: (at: Date, ok: Bool)] = [:]
+
+    /// Whether a remote server answers at all (any HTTP response counts), checked with a short timeout and remembered
+    /// for a minute (ten seconds after a failure), so a server that isn't there costs one quick probe instead of a
+    /// full request timeout on every call.
+    public static func remoteReachable(_ baseURL: URL) async -> Bool {
+        let key = baseURL.absoluteString
+        probeLock.lock()
+        let cached = probeCache[key]
+        probeLock.unlock()
+        if let cached, Date().timeIntervalSince(cached.at) < (cached.ok ? 60 : 10) { return cached.ok }
+        var request = URLRequest(url: baseURL.appendingPathComponent("models"))
+        request.timeoutInterval = 3
+        let ok: Bool
+        do { _ = try await URLSession(configuration: .ephemeral).data(for: request); ok = true } catch { ok = false }
+        probeLock.lock(); probeCache[key] = (Date(), ok); probeLock.unlock()
+        return ok
+    }
+
     /// Posted when the embedding model or where it runs changes, so every bot re-indexes its notes for the new model.
     public static let embeddingChangedNotification = Notification.Name("shellhouse.embeddingSettingsChanged")
     public static func embeddingSettingsChanged() {

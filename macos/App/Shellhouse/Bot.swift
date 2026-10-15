@@ -2022,9 +2022,12 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// The fast tier on a remote endpoint (Settings › Fast model), when one is set up.
     private func remoteFastBackend(timeout: TimeInterval) async -> (backend: any ModelBackend, model: String)? {
         guard ModelTiers.fastUsesRemote, let url = ModelTiers.fastRemoteBaseURL else { return nil }
+        // Not answering at all (wrong address, switched off, blocked): use the local tier now, not after a 30 s wait.
+        guard await ModelTiers.remoteReachable(url) else { return nil }
         let key = (try? await SecretStore().resolveOne(name: ModelTiers.fastRemoteAPIKeySecretName)) ?? nil
         let model = ModelTiers.fastRemoteModel
-        return (OpenAICompatibleBackend(baseURL: url, apiKey: key ?? "", defaultModel: model, timeout: timeout), model)
+        return (OpenAICompatibleBackend(baseURL: url, apiKey: key ?? "", defaultModel: model, timeout: timeout,
+                                        reasoningEffort: ModelTiers.looksLikeOllama(url) ? "none" : nil), model)
     }
 
     private func makeFastBackend() async -> (backend: any ModelBackend, model: String) {
