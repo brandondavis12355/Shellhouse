@@ -119,7 +119,7 @@ struct BotStatusStrip: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .motion(Motion.smooth, value: current.map { "\($0.state)" + $0.bots.map(\.id).joined() })
+                .motion(Motion.status, value: current.map { "\($0.state)" + $0.bots.map(\.id).joined() })
             }
         }
     }
@@ -147,8 +147,8 @@ struct BotStatusStrip: View {
                 .italic(state == .responding || state == .working || state == .checking)
                 .foregroundStyle(state == .waiting ? Color.secondary : (state == .approval ? Color.orange : color))
                 .contentTransition(.opacity)
-                .motion(Motion.smooth, value: index)
-                .motion(Motion.quick, value: text)
+                .motion(Motion.status, value: index)
+                .motion(Motion.status, value: text)
         }
     }
 }
@@ -185,7 +185,7 @@ struct OwnBotStatusView: View {
                         .italic()
                         .foregroundStyle(bot.pendingApproval != nil ? Color.orange : Color(hex: bot.colorHex))
                         .contentTransition(.opacity)
-                        .motion(Motion.quick, value: bot.status)
+                        .motion(Motion.status, value: bot.status)
                 }
                 .transition(.opacity)
             }
@@ -194,7 +194,7 @@ struct OwnBotStatusView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .contentTransition(.opacity)
-                .motion(Motion.quick, value: bot.status)
+                .motion(Motion.status, value: bot.status)
         }
     }
 }

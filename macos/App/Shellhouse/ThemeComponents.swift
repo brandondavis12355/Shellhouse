@@ -1121,6 +1121,8 @@ enum Motion {
     static let quick = Animation.smooth(duration: 0.2)
     /// Things that should feel physical: press feedback, cards settling in.
     static let settle = Animation.spring(response: 0.42, dampingFraction: 0.88)
+    /// Bot status lines changing state: slow enough that a swap reads as a fade, not a jump.
+    static let status = Animation.smooth(duration: 0.7)
     static let reduced = Animation.easeOut(duration: 0.15)
 
     static func pick(_ animation: Animation, reduceMotion: Bool) -> Animation { reduceMotion ? reduced : animation }

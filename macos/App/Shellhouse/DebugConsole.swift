@@ -323,15 +323,42 @@ final class BotActivity {
 
     func end(_ id: UUID?) {
         guard let id else { return }
+        phaseChangedAt[id] = nil
         spans.removeAll { $0.id == id }
     }
 
     /// Flips the bot's current running span between working and responding.
     /// Cheap no-op when nothing changes, so it's safe to call per token.
+    /// A phase stays on screen at least this long before it flips, so a bot that alternates between thinking
+    /// and streaming (many times a second while it works through tools) doesn't make the status line flicker.
+    static let minPhaseSeconds: TimeInterval = 2.0
+    private var phaseChangedAt: [UUID: Date] = [:]
+    private var wantedPhase: [String: Phase] = [:]
+    private var phaseFlipScheduled: Set<String> = []
+
     func setPhase(botID: String, _ phase: Phase) {
-        guard let index = spans.firstIndex(where: { $0.botID == botID && $0.kind == .running }),
-              spans[index].phase != phase else { return }
+        guard let index = spans.firstIndex(where: { $0.botID == botID && $0.kind == .running }) else { return }
+        wantedPhase[botID] = phase
+        guard spans[index].phase != phase else { return }
+        let id = spans[index].id
+        let wait = Self.minPhaseSeconds - Date().timeIntervalSince(phaseChangedAt[id] ?? .distantPast)
+        if wait <= 0 {
+            applyPhase(botID: botID, spanID: id, phase)
+        } else if phaseFlipScheduled.insert(botID).inserted {
+            // Hold the current phase for the rest of its time, then show whatever the bot wants by then.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                guard let self else { return }
+                self.phaseFlipScheduled.remove(botID)
+                if let want = self.wantedPhase[botID] { self.applyPhase(botID: botID, spanID: id, want) }
+            }
+        }
+    }
+
+    private func applyPhase(botID: String, spanID: UUID, _ phase: Phase) {
+        guard let index = spans.firstIndex(where: { $0.id == spanID }), spans[index].phase != phase else { return }
         spans[index].phase = phase
+        phaseChangedAt[spanID] = Date()
     }
 
     func resetPeak() {
