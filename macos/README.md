@@ -96,7 +96,7 @@ macos/
 
 ## Building
 
-The quickest way is `./build.sh` from the repo root: it builds, installs to /Applications and connects the app to the Linux box ([README.md › Getting started](../README.md#getting-started), which also covers the one-time Xcode setup). By hand:
+The quickest way is `./build.sh` from the repo root: it builds, installs to /Applications and connects the app to the Linux box ([README.md › Install](../README.md#install), which also covers the one-time Xcode setup). By hand:
 
 ```bash
 cd macos

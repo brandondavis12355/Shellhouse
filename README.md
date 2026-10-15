@@ -50,7 +50,7 @@ The full tour of the app is in **[macos/README.md](macos/README.md)**.
                      · Firecracker microVMs instead of containers (--with-firecracker, needs KVM on the box)
 ```
 
-The repo also contains the **Docker/Python reference stack** the app grew out of: a single-agent loop with a web UI (`api/`, `web/`), durable task queue, vector memory, MCP client and deterministic evals. It runs entirely in Docker and is still the design reference for features the Mac app hasn't adopted. The setup scripts don't install it: they set up the sandbox host the app uses, so running it by hand means writing its `.env` yourself (`.env.example` lists every setting).
+The repo also contains the **Docker/Python reference stack** the app grew out of: a single-agent loop with a web UI (`api/`, `web/`), durable task queue, vector memory, MCP client and deterministic evals. It runs entirely in Docker and is still the design reference for features the Mac app hasn't adopted. The installer doesn't set it up (see [Running the Docker stack by hand](#running-the-docker-stack-by-hand)).
 
 ## Repository layout
 
@@ -68,9 +68,19 @@ The repo also contains the **Docker/Python reference stack** the app grew out of
 | [`scripts/`](scripts/) | Host helpers used by `initial_setup.sh` and `uninstall.sh`, and the sshd drop-in for the model proxy |
 | `initial_setup.sh`, `build.sh`, `uninstall.sh` | Set up the Linux box, build and install the app, and remove it all again |
 
-## Getting started
+## Install
 
-You need an Apple Silicon Mac (macOS 14+) with Xcode, and a Linux box (Ubuntu/Debian or Fedora; a spare machine or a VM) that you can reach over normal SSH with a user that has sudo rights.
+### What you need
+
+| | Requirement |
+|---|---|
+| **Your Mac** | Apple Silicon, macOS 14+. An Apple ID (a free one works), to sign the app. Your Mac password, for the few steps that need it. Internet access. |
+| **A Linux box** | Ubuntu/Debian or Fedora: a spare machine or a VM. Reachable from your Mac over normal SSH on **port 22** (the app's tunnel uses it), with a user that has **sudo** rights. Internet access, to pull Docker and the sandbox image. |
+| **Optional** | `/dev/kvm` on the box, to run each bot in a Firecracker microVM instead of a container ([docs/FIRECRACKER.md](docs/FIRECRACKER.md)). |
+
+Xcode, Homebrew, XcodeGen and Ollama go on your Mac, and Docker goes on the box. The installer sets up whichever of them is missing.
+
+### Install it
 
 ```bash
 git clone https://github.com/brandondavis12355/Shellhouse.git
@@ -78,20 +88,61 @@ cd Shellhouse
 ./initial_setup.sh
 ```
 
-That's the whole install. It sets up three things, asking everything up front in macOS dialogs:
+That's the whole install. It asks everything it needs first, in macOS dialogs (add `--no-ui` to answer in Terminal instead), then does the long parts:
 
-1. **This Mac:**
-   - Xcode: if it's missing, it opens the App Store page and waits while you install it, then finishes Xcode's one-time setup.
-   - Homebrew, XcodeGen and Ollama.
-   - Your Apple signing team: if you aren't signed in to Xcode yet, it opens Xcode and waits while you do.
-2. **The Linux box:** everything below.
-3. **The app:** it builds and installs it in /Applications, pulls the default models, starts it and connects it to the box.
+| Step | What happens | Where |
+|---|---|---|
+| **1. Questions** | The Linux box's address and SSH user, and whether to add the optional parts (smolagents, friends relay, egress allowlist, and microVMs when the box has KVM). | your Mac |
+| **2. Prepare the Mac** | Checks Xcode: if it's missing, opens its App Store page and waits while you install it, then finishes its one-time setup (license, first-launch components). Installs Homebrew (after you confirm), XcodeGen and Ollama if they're missing. Finds your Apple signing team; if you aren't signed in to Xcode yet, opens Xcode and waits while you do. | your Mac |
+| **3. Connect** | Checks the box answers on SSH. **Verifies its host key**: you compare the fingerprint with what the box itself shows, and the key is pinned from then on. Offers to install your SSH key so later runs don't ask for the password. | Mac → box |
+| **4. Copy** | Copies the server side of this repo to `~/shellhouse` on the box. The box's own `.env`, seed folders and manager socket are never overwritten. | box |
+| **5. Set up the box** | Asks for your sudo password once, then runs [`scripts/host-setup.sh`](scripts/host-setup.sh): installs what's missing (Docker, Compose, a few tools); makes sure sshd allows the forwarding the app uses; writes `.env` with a fresh manager token and the seed folders; builds the sandbox image (the first build takes a while); starts the sandbox manager; sets up the optional parts you chose; and, if your SSH key already signs you in, offers to turn off SSH password sign-in. Everything it changes is recorded in `~/.shellhouse-install-state`. | box |
+| **6. Prepare the app's settings** | Writes the host, the user, the manager token and the pinned host key to `~/.config/shellhouse`, readable only by you. The token is never printed. | your Mac |
+| **7. Build and install the app** | [`build.sh`](build.sh) builds the app, installs it as `/Applications/Shellhouse.app`, pulls the default models (`qwen2.5:7b-instruct` for chat, `nomic-embed-text` for memory search), starts it, authorizes its SSH key on the box (only the public key leaves the app) and imports the settings. | your Mac |
 
-Then add your first bot from the sidebar's **+** menu. Everything uses the default settings; change them in **Settings**, where every change applies right away. Use `./build.sh` on its own to rebuild the app later.
+Two steps can't be scripted, because Apple requires them to be done by you: downloading Xcode from the App Store, and signing in to Xcode with your Apple ID. The installer opens the right place for each and waits.
 
-Two steps can't be scripted, because Apple requires them to be done by you: downloading Xcode from the App Store, and signing in to Xcode with your Apple ID (a free one works). The script opens the right place for each and waits.
+When it finishes, add your first bot from the sidebar's **+** menu. Everything uses the default settings; change them in **Settings**, where every change applies right away.
 
-### What `initial_setup.sh` does on the Linux box
+It's safe to run again: it picks up where it left off, and rerunning it with the same box updates that box in place. `./build.sh` on its own rebuilds only the app.
+
+### Check that it worked
+
+```bash
+ssh USER@BOX 'curl -s --unix-socket ~/shellhouse/sandbox-manager-run/manager.sock http://localhost/healthz'
+# {"ok":true,"backend":"docker"}      ("firecracker" if you chose microVMs)
+ssh USER@BOX 'docker ps --format "{{.Names}}"'
+# agent-sandbox-manager, agent-sandbox, plus one agent-sandbox-bot-… per bot (Docker backend)
+```
+
+In the app, **Settings › Linux host** shows the connection. A bot's computer panel shows its desktop once the bot has run.
+
+### Where everything ends up
+
+| | Location |
+|---|---|
+| App | `/Applications/Shellhouse.app`; its data in `~/Library/Containers/com.shellhouse.app` |
+| Manager token (Mac) | the app's Keychain items |
+| Installer state (Mac) | `~/.config/shellhouse`: `setup.env` (the box you use), `known_hosts` (the pinned host key), `build.log`. A `pending-setup.shellhousesettings` file (holds the token) exists only until the app takes it. |
+| Server side (box) | `~/shellhouse`, with `.env` (manager token, options) and `sandbox-manager-run/manager.sock`, all readable only by your user |
+| Install record (box) | `~/.shellhouse-install-state`: everything setup changed, which `uninstall.sh` reverts |
+| sshd drop-ins (box) | `/etc/ssh/sshd_config.d/`: `49-shellhouse.conf` (forwarding), `48-shellhouse-auth.conf` (password sign-in off), `50-shellhouse-model-proxy.conf` (smolagents), each only if needed |
+| Firecracker (box) | `/var/lib/agent-vm` (kernel, disk images, VM disks), `/opt/agent-sandbox-manager`, the `agent-sandbox-manager` service, `shellhouse-vm-net.service` |
+
+### If something goes wrong
+
+| What you see | What to do |
+|---|---|
+| "doesn't answer on SSH" | The installer shows the commands to run on the box's own screen (and copies them to your clipboard), then waits. Also check the address, and that both machines are on the same network. |
+| "answered with a DIFFERENT host key" | Someone may be intercepting the connection, or the box was reinstalled. Check the fingerprint on the box (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`); if it was reinstalled, run `ssh-keygen -R ADDRESS` and start again. |
+| sudo password rejected three times | Check the user has sudo rights, then run it again. |
+| "Host setup failed" | Read the output above it, fix that, and run `./initial_setup.sh` again: it picks up where it left off. |
+| The manager "didn't create its socket" | On the box: `docker logs agent-sandbox-manager` (with microVMs: `journalctl -u agent-sandbox-manager`). |
+| A signing or provisioning error building the app | [If signing fails](#if-signing-fails-one-time-xcode-setup), below. |
+| "The app didn't hand over its SSH key" | In the app: Settings › Linux host › Copy authorize command, and run it on the box. |
+| "The app didn't confirm the import" | Open `~/.config/shellhouse/pending-setup.shellhousesettings` with Shellhouse, or delete it and paste the token in Settings › Sandbox manager token. |
+
+### The Linux box in detail
 
 It asks for the Linux box's IP address (or hostname) and your SSH user, then:
 
@@ -160,7 +211,7 @@ Everything the bots use (Python, Chromium, `gh` and the rest) is built into the 
 | No password guessing | Once your own SSH key signs you in, it offers to turn off password sign-in for your user on the box. `uninstall.sh` turns it back on. |
 | A fresh token when you want one | `./initial_setup.sh --rotate-token` replaces the manager token on the box, restarts only the manager and hands the new token to the app. The old token stops working at once. Docker bots keep running; with Firecracker the restart stops the VMs, and each boots again, with its files, the next time it's used. |
 
-### What `build.sh` does (step 3, or on its own to rebuild)
+### What `build.sh` does (step 7, or on its own to rebuild)
 
 1. Checks Xcode (license, first-launch components). If [Homebrew](https://brew.sh) is missing, it offers to install it with Homebrew's official installer (which asks for your Mac password). Then it installs [XcodeGen](https://github.com/yonaskolb/XcodeGen) with Homebrew if needed.
 2. Finds your Apple signing team, or asks for it, and saves it to `macos/Signing.local.xcconfig` (git-ignored).
@@ -213,6 +264,18 @@ It asks you to type the box's address to confirm. It removes:
 Conversations and memories are never included.
 
 Importing merges: bots and groups are matched by name and created if they're missing. Opening a `.shellhousesettings` file imports it too. A downloaded file asks before it changes anything.
+
+### Running the Docker stack by hand
+
+The installer doesn't set up the reference stack; to run it yourself (on Linux or macOS), write its `.env` with the helper, then start it:
+
+```bash
+./scripts/make-env.sh                  # .env with a fresh manager token, the Docker group, the socket owner, the workspace volume name
+docker compose up -d --build
+docker exec agent-ollama ollama pull qwen2.5:7b-instruct
+```
+
+The helper keeps an existing `.env` (and its token) and creates minimal `box/` and `workspace/` seed folders if they're missing. Open the web UI at <http://localhost:3000>: the agent's live desktop is embedded on the left, and you can click into it to take over. Every port binds to `127.0.0.1`.
 
 ## Testing
 
