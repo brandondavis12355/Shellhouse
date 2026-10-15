@@ -99,6 +99,15 @@ public struct AppSSHIdentity: Sendable {
         line.range(of: #"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9._@-]+)?$"#, options: .regularExpression) != nil
     }
 
+    /// `Name=path` for `ssh -o`. ssh splits an option's value on whitespace, so a path with a space in it (the
+    /// app's own folder is `…/Application Support/…`) must be quoted, or ssh looks for two files that don't exist
+    /// and, with strict host-key checking, refuses every connection. Inside the quotes `\` and `"` are escaped.
+    public static func fileOption(_ name: String, _ path: String) -> String {
+        guard path.contains(where: { $0.isWhitespace || $0 == "\"" }) else { return "\(name)=\(path)" }
+        let escaped = path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        return "\(name)=\"\(escaped)\""
+    }
+
     /// Options every `ssh` the app runs must carry: only this key, no agent, no user config or
     /// personal known_hosts (the sandbox can't read them), and a host-key store in the container.
     public func clientOptions() -> [String] {
@@ -107,7 +116,7 @@ public struct AppSSHIdentity: Sendable {
             "-i", privateKeyURL.path,
             "-o", "IdentitiesOnly=yes",
             "-o", "IdentityAgent=none",
-            "-o", "UserKnownHostsFile=\(knownHostsURL.path)",
+            "-o", Self.fileOption("UserKnownHostsFile", knownHostsURL.path),
             "-o", "GlobalKnownHostsFile=/dev/null",
         ]
     }

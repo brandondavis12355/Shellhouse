@@ -29,6 +29,22 @@ final class AppSSHIdentityTests: XCTestCase {
         XCTAssertFalse(o.joined().contains(".ssh/id_"), "never the personal key")
     }
 
+    /// The reported bug: the app's folder is ".../Application Support/...", and an unquoted path with a space makes
+    /// ssh look for two files that don't exist, so strict host-key checking refuses every connection.
+    func testKnownHostsPathWithASpaceIsQuoted() {
+        let id = AppSSHIdentity(directory: URL(fileURLWithPath: "/Users/x/Library/Application Support/AICompute/ssh"))
+        let opts = id.clientOptions()
+        XCTAssertTrue(opts.contains("UserKnownHostsFile=\"/Users/x/Library/Application Support/AICompute/ssh/known_hosts\""))
+        XCTAssertFalse(opts.contains("UserKnownHostsFile=/Users/x/Library/Application Support/AICompute/ssh/known_hosts"))
+    }
+
+    func testFileOptionQuotesOnlyWhenNeededAndEscapes() {
+        XCTAssertEqual(AppSSHIdentity.fileOption("UserKnownHostsFile", "/a/b/known_hosts"), "UserKnownHostsFile=/a/b/known_hosts")
+        XCTAssertEqual(AppSSHIdentity.fileOption("X", "/a b/c"), "X=\"/a b/c\"")
+        XCTAssertEqual(AppSSHIdentity.fileOption("X", "/a\"b/c"), "X=\"/a\\\"b/c\"")
+        XCTAssertEqual(AppSSHIdentity.fileOption("X", "/a b\\c"), "X=\"/a b\\\\c\"")
+    }
+
     func testAuthorizeCommandIsIdempotentAndRefusesOddInput() throws {
         let id = temp()
         defer { try? FileManager.default.removeItem(at: id.directory) }
