@@ -66,7 +66,7 @@ The repo also contains the **Docker/Python reference stack** the app grew out of
 | [`api/`](api/), [`web/`](web/), [`evals/`](evals/) | The Docker/Python reference stack and its evaluation suites |
 | [`docs/`](docs/) | Security model, guardrails, reliability, egress, Firecracker and design notes |
 | [`scripts/`](scripts/) | Host helpers used by `initial_setup.sh` and `uninstall.sh`, and the sshd drop-in for the model proxy |
-| `initial_setup.sh`, `build.sh`, `uninstall.sh` | Set up the Linux box, build and install the app, and remove it all again |
+| `Install Shellhouse.command`, `initial_setup.sh`, `build.sh`, `uninstall.sh` | Set up the Linux box, build and install the app, and remove it all again |
 
 ## Install
 
@@ -82,15 +82,33 @@ Xcode, Homebrew, XcodeGen and Ollama go on your Mac, and Docker goes on the box.
 
 ### Install it
 
+The easiest way is one double-click.
+
+1. **Get the code.** In Terminal:
+   ```bash
+   git clone https://github.com/brandondavis12355/Shellhouse.git
+   ```
+   (Or download the repository as a ZIP from GitHub and unzip it.)
+2. **Double-click `Install Shellhouse.command`** in the `Shellhouse` folder, in Finder.
+   - It opens a Terminal window titled "Shellhouse setup" and runs the whole installer from the folder it sits in. Leave that window open: it shows the progress.
+   - It asks its questions in macOS dialogs, up front, then does the long parts.
+   - At the end it says "Shellhouse setup finished." and waits for a key press, so you can read the result before the window closes. If a step fails it stays open with what to fix, and you double-click the file again: it picks up where it left off.
+   - If macOS says it can't open the file because it's from an unidentified developer (it can happen with a ZIP download), right-click the file, choose **Open**, then **Open** again.
+3. **Pull a model** in **Settings › Ollama** when it finishes (see below), then add your first bot.
+
+The launcher runs [`initial_setup.sh`](initial_setup.sh), which does everything and builds and installs the app as its last step. If the app still isn't installed afterwards (you passed `--no-app`, say), the launcher runs [`build.sh`](build.sh) itself, so it always ends with the app installed. To **update** later, run `git pull` in the folder and double-click it again.
+
+**From Terminal instead:**
+
 ```bash
-git clone https://github.com/brandondavis12355/Shellhouse.git
 cd Shellhouse
-./initial_setup.sh
+./initial_setup.sh                       # the same installer, without the launcher
+./"Install Shellhouse.command"           # the launcher, from Terminal
 ```
 
-Or, after cloning, double-click **`Install Shellhouse.command`** in Finder: it opens Terminal and runs the same installer, and keeps the window open at the end so you can read the result. If macOS refuses to open a downloaded copy because it's from an unidentified developer, right-click the file, choose **Open**, then **Open** again. Options go after the command in Terminal, e.g. `./"Install Shellhouse.command" --host 192.0.2.10 --user alice`.
+Options go after either command, for example `./"Install Shellhouse.command" --host 192.0.2.10 --user alice --no-ui`; the full list is [below](#the-linux-box-in-detail) and in `./initial_setup.sh --help`.
 
-That's the whole install. It asks everything it needs first, in macOS dialogs (add `--no-ui` to answer in Terminal instead), then does the long parts:
+What it does, in order:
 
 | Step | What happens | Where |
 |---|---|---|
@@ -106,7 +124,7 @@ Two steps can't be scripted, because Apple requires them to be done by you: down
 
 When it finishes, pull a model in **Settings › Ollama**: a chat model, and a small embedding model for memory search (the installer used to pull `qwen2.5:7b-instruct` and `nomic-embed-text`; any tool-calling-capable model works). Then add your first bot from the sidebar's **+** menu. Everything uses the default settings; change them in **Settings**, where every change applies right away.
 
-It's safe to run again: it picks up where it left off, and rerunning it with the same box updates that box in place. `./build.sh` on its own rebuilds only the app.
+It's safe to run again (double-click the file, or run the command): it picks up where it left off, and rerunning it with the same box updates that box in place. `./build.sh` on its own rebuilds only the app.
 
 ### Check that it worked
 
