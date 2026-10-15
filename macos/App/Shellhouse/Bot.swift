@@ -3176,6 +3176,13 @@ final class Bot: Identifiable, @unchecked Sendable {
         }
         let store = SecretStore()
         let savedNames = Set(((try? await store.list()) ?? []).map(\.name))
+        // Everything asked for is a secret that is already saved: don't bother the user, point at the saved one.
+        if !isLogin, request.fields.allSatisfy({ $0.secret && savedNames.contains($0.name) }) {
+            let names = request.fields.map(\.name)
+            return ["already_saved": names,
+                    "note": "\(names.joined(separator: ", ")) is already saved, so there is nothing to ask your user. Use it: run_shell(use_secrets: "
+                        + "[\(names.map { "\"\($0)\"" }.joined(separator: ", "))]) and read it as $\(names[0]). If it was rejected (expired or wrong), say so to your user instead of asking again."]
+        }
         let answer: [String: String]? = await withCheckedContinuation { continuation in
             let pending = PendingCredentialRequest(request: request, savedNames: savedNames, untrusted: untrusted, continuation: continuation)
             pendingCredentialRequest = pending

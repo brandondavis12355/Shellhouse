@@ -131,6 +131,16 @@ final class GoalValidationTests: XCTestCase {
         if case .rejected = g.updateStep(id: id, status: .inProgress, evidence: nil, assigneeName: "Cleo", turnHadToolCalls: true, byOwner: false) {} else { XCTFail("done is final for members") }
     }
 
+    func testRejectionOfASubmittedStepNamesWhoValidates() {
+        var g = goal()
+        g.validatorName = "Bugbot"
+        let id = g.steps[0].id
+        _ = g.updateStep(id: id, status: .done, evidence: evidence, assigneeName: "Tai Lung", turnHadToolCalls: true, byOwner: false)
+        guard case .rejected(let message) = g.updateStep(id: id, status: .done, evidence: evidence, assigneeName: nil, turnHadToolCalls: true, byOwner: false) else { return XCTFail() }
+        XCTAssertTrue(message.contains("Bugbot"), message)
+        XCTAssertFalse(message.contains("only the owner can change it"), "must not tell the owner they can't")
+    }
+
     func testOwnerCanSendASubmissionBack() {
         var g = goal()
         let id = g.steps[0].id

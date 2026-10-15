@@ -266,6 +266,36 @@ final class ClaimCheckTests: XCTestCase {
 final class ToolCallRecoveryTests: XCTestCase {
     private let names: Set<String> = ["run_shell", "read_file", "finish_task"]
 
+    private func schema(_ name: String, _ properties: [String], required: [String]) -> ToolSchema {
+        ToolSchema(name: name, description: "", parameters: [
+            "type": "object", "properties": Dictionary(uniqueKeysWithValues: properties.map { ($0, ["type": "string"]) }), "required": required,
+        ])
+    }
+
+    func testArgumentsOnlyJSONBecomesTheOneToolThatTakesThem() {
+        let schemas = [schema("update_goal_step", ["step_id", "status", "evidence", "assignee"], required: ["step_id", "status"]),
+                       schema("read_file", ["path"], required: ["path"])]
+        let text = #"{"step_id":"X1","status":"done","evidence":"ran the tests"}"#
+        let call = ToolCallRecovery.extract(from: text, toolNames: ["update_goal_step", "read_file"], schemas: schemas)
+        XCTAssertEqual(call?.name, "update_goal_step")
+        XCTAssertEqual(call?.arguments["step_id"]?.asString, "X1")
+    }
+
+    func testArgumentsOnlyJSONIsNotGuessedWhenAmbiguousOrIncomplete() {
+        let two = [schema("a", ["text"], required: ["text"]), schema("b", ["text"], required: ["text"])]
+        XCTAssertNil(ToolCallRecovery.extract(from: #"{"text":"hi"}"#, toolNames: ["a", "b"], schemas: two))
+        let one = [schema("update_goal_step", ["step_id", "status"], required: ["step_id", "status"])]
+        XCTAssertNil(ToolCallRecovery.extract(from: #"{"status":"done"}"#, toolNames: ["update_goal_step"], schemas: one))
+        // JSON inside a sentence is prose, not a call.
+        XCTAssertNil(ToolCallRecovery.extract(from: #"The reply looks like {"step_id":"X1","status":"done"} to me."#, toolNames: ["update_goal_step"], schemas: one))
+    }
+
+    func testTrashPathsGetAWarning() {
+        XCTAssertNotNil(ObservationPolicy.trashWarning(forArguments: #"{"command":"cd /workspace/.shellhouse/trash/2026-10-15T17-48-56Z/workspace/Repo && ls"}"#))
+        XCTAssertNotNil(ObservationPolicy.trashWarning(forArguments: #"{"path":"/workspace/.brok/trash/x/y.py"}"#))
+        XCTAssertNil(ObservationPolicy.trashWarning(forArguments: #"{"command":"cd /workspace/Repo && ls"}"#))
+    }
+
     func testToolCallsWrittenAsTextAreRecovered() {
         let forms = [
             #"{"name":"run_shell","arguments":{"command":"ls /workspace"}}"#,

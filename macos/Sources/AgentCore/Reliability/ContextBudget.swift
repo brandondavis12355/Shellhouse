@@ -12,6 +12,15 @@ public enum ContextBudget {
         return max(4_000, Int(Double(usable) * 0.65))
     }
 
+    /// The threshold, raised when the fixed start of the conversation (system prompt, goal, skills) already takes
+    /// most of it: otherwise every step is over the line and the bot spends its time summarizing itself and
+    /// forgetting what it just read. Leaves at least `headroom` tokens of working history, capped at 85% of the window.
+    public static func threshold(window: Int, schemaTokens: Int, fixedPrefixTokens: Int, headroom: Int = 6_000) -> Int {
+        let base = compactionThreshold(window: window, schemaTokens: schemaTokens)
+        let cap = Int(Double(window - schemaTokens - replyReserve) * 0.85)
+        return max(base, min(fixedPrefixTokens + headroom, cap))
+    }
+
     /// Tool definitions travel with every request and count against the window.
     public static func estimatedTokens(ofSchemas schemas: [ToolSchema]) -> Int {
         schemas.reduce(0) { total, schema in

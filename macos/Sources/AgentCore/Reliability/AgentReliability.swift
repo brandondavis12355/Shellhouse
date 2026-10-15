@@ -38,6 +38,16 @@ public enum ObservationPolicy {
         return out
     }
 
+    /// Files a bot deleted are moved here (see `PendingInbox.trashDirectory`). A bot that works from, or validates
+    /// against, a copy in the trash is looking at stale files that nobody else sees.
+    public static func trashWarning(forArguments argumentsJSON: String) -> String? {
+        let inTrash = argumentsJSON.contains("/.shellhouse/trash/") || argumentsJSON.contains("/.brok/trash/")
+            || argumentsJSON.contains(".shellhouse/trash/") || argumentsJSON.contains(".brok/trash/")
+        guard inTrash else { return nil }
+        return "That path is in the trash (files that were deleted), not the live workspace. Nobody else sees it, so work done or checked "
+            + "there says nothing about the real project. Restore what you need into /workspace (cp -a) or fetch it fresh, then continue there."
+    }
+
     private static let failureMarkers = [
         "command not found", "No such file or directory", "Permission denied", "cannot access", "cannot open",
         "is not recognized", "not found", "Traceback (most recent call last)", "fatal:", "Segmentation fault",
@@ -447,7 +457,7 @@ public enum ClaimCheck {
 /// Small local models often print the tool call as text instead of using the tool-call channel:
 /// `{"name":"run_shell","arguments":{...}}`, `Action: {...}`, or a fenced json block. Recover those.
 public enum ToolCallRecovery {
-    public static func extract(from content: String, toolNames: Set<String>) -> ToolCall? {
+    public static func extract(from content: String, toolNames: Set<String>, schemas: [ToolSchema] = []) -> ToolCall? {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if let tagged = taggedCall(in: text, toolNames: toolNames) { return tagged }
         guard text.count < 4_000, text.contains("{") else { return nil }
@@ -455,13 +465,32 @@ public enum ToolCallRecovery {
             guard let data = candidate.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             let name = (object["name"] as? String) ?? (object["tool"] as? String) ?? (object["function"] as? String)
-            guard let name, toolNames.contains(name) else { continue }
+            guard let name, toolNames.contains(name) else {
+                // Only the arguments, no tool name (`{"step_id": …, "status": "done", "evidence": …}`): the call is
+                // the one tool whose parameters these are, if exactly one fits.
+                if text == candidate, let inferred = inferredCall(arguments: object, schemas: schemas) { return inferred }
+                continue
+            }
             var arguments = (object["arguments"] as? [String: Any]) ?? (object["parameters"] as? [String: Any]) ?? (object["args"] as? [String: Any]) ?? [:]
             if arguments.isEmpty, let raw = object["arguments"] as? String, let d = raw.data(using: .utf8),
                let parsed = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { arguments = parsed }
             return ToolCall(name: name, arguments: arguments.mapValues { AnyCodable($0) })
         }
         return nil
+    }
+
+    /// The single tool that takes exactly these argument names: every key is one of its parameters, and every
+    /// parameter it requires is present. Nil when none fits or more than one does, so nothing is guessed.
+    static func inferredCall(arguments: [String: Any], schemas: [ToolSchema]) -> ToolCall? {
+        guard !arguments.isEmpty, arguments["name"] == nil else { return nil }
+        let keys = Set(arguments.keys)
+        let fits = schemas.filter { schema in
+            guard let properties = schema.parameters["properties"] as? [String: Any], !properties.isEmpty else { return false }
+            let required = Set((schema.parameters["required"] as? [String]) ?? [])
+            return keys.isSubset(of: Set(properties.keys)) && required.isSubset(of: keys)
+        }
+        guard fits.count == 1, let schema = fits.first else { return nil }
+        return ToolCall(name: schema.name, arguments: arguments.mapValues { AnyCodable($0) })
     }
 
     /// The XML-ish format some models write their calls in (`<longcat_tool_call>`, GLM's `<tool_call>`):

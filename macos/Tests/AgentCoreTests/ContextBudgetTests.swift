@@ -7,6 +7,18 @@ final class ContextBudgetTests: XCTestCase {
         XCTAssertEqual(ContextBudget.compactionThreshold(window: 8_000, schemaTokens: 7_000), 4_000)
     }
 
+    func testAHeavyFixedPrefixRaisesTheThresholdSoItDoesNotCompactEveryStep() {
+        let base = ContextBudget.compactionThreshold(window: 32_768, schemaTokens: 8_000)
+        // A small prefix changes nothing.
+        XCTAssertEqual(ContextBudget.threshold(window: 32_768, schemaTokens: 8_000, fixedPrefixTokens: 2_000), base)
+        // A prefix near the old threshold leaves room to work, but never past 85% of what the window can hold.
+        let heavy = ContextBudget.threshold(window: 32_768, schemaTokens: 8_000, fixedPrefixTokens: base)
+        XCTAssertGreaterThan(heavy, base)
+        XCTAssertLessThanOrEqual(heavy, Int(Double(32_768 - 8_000 - 2_048) * 0.85))
+        XCTAssertEqual(ContextBudget.threshold(window: 32_768, schemaTokens: 8_000, fixedPrefixTokens: 1_000_000),
+                       Int(Double(32_768 - 8_000 - 2_048) * 0.85))
+    }
+
     func testSummaryAsksForWhatTheBotNeedsToContinue() {
         for heading in ["GOAL:", "DONE AND VERIFIED:", "FILES AND PATHS:", "WHAT WORKED:", "OPEN:"] {
             XCTAssertTrue(ContextBudget.summaryInstruction.contains(heading), heading)

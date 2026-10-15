@@ -332,7 +332,11 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         if !byOwner {
             // Members work steps; only the owner decides they're finished.
             if current == .done { return .rejected("This step is already validated as done by the goal owner.") }
-            if current == .review { return .rejected("This step is waiting for the goal owner's validation; only the owner can change it now.") }
+            if current == .review {
+                let checker = validatorName ?? "the goal owner"
+                return .rejected("This step was already submitted and is waiting for \(checker) to validate it; only \(checker) can change it now. "
+                    + "Don't call update_goal_step on it again. @mention \(checker) once with what to check, then end your turn or take another open step.")
+            }
         }
         // The same status again is no news: say so, rather than record it and let the bot keep re-announcing it.
         if !steps[index].isPerMember, newStatus == current, newStatus == .blocked || newStatus == .inProgress {

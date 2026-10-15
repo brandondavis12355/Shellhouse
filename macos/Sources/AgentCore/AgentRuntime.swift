@@ -518,7 +518,7 @@ public actor AgentRuntime {
             }
             chargeUsage(reply.usage)
             if Reliability.isOn(.callChecks), (reply.message.toolCalls ?? []).isEmpty,
-               let recovered = ToolCallRecovery.extract(from: reply.message.content, toolNames: Set(tools.names())) {
+               let recovered = ToolCallRecovery.extract(from: reply.message.content, toolNames: Set(tools.names()), schemas: tools.schemas) {
                 // The model wrote its tool call as text. Treat it as the call it meant to make.
                 reply = ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [recovered]), usage: reply.usage)
             }
@@ -747,7 +747,12 @@ public actor AgentRuntime {
         // What the model reads (and the console shows): bounded, with grounded warnings/hints added.
         var shown = observation
         if Reliability.isOn(.outputLimits) { shown = ObservationPolicy.bounded(shown) }
-        if Reliability.isOn(.failureHints) { shown = ObservationPolicy.annotate(tool: call.name, observation: shown) }
+        if Reliability.isOn(.failureHints) {
+            shown = ObservationPolicy.annotate(tool: call.name, observation: shown)
+            if shown["warning"] == nil, let trash = ObservationPolicy.trashWarning(forArguments: jsonString(call.arguments.mapValues(\.value))) {
+                shown["warning"] = trash
+            }
+        }
         appendToolResult(name: call.name, observation: shown)
         onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(shown)))
         let staleKey = Reliability.isOn(.loopGuards) ? staleKey(call, observation: observation) : nil
@@ -921,7 +926,8 @@ public actor AgentRuntime {
     /// `budgets.compactionThresholdTokens`.
     private func compactContextIfNeeded() async {
         let threshold = budgets.compactionThresholdTokens > 0 ? budgets.compactionThresholdTokens
-            : ContextBudget.compactionThreshold(window: contextWindow, schemaTokens: schemaTokens)
+            : ContextBudget.threshold(window: contextWindow, schemaTokens: schemaTokens,
+                                      fixedPrefixTokens: messages.first.map { estimatedTokens(for: $0) } ?? 0)
         let estimatedTotal = messages.reduce(0) { $0 + estimatedTokens(for: $1) }
         // The server's own count of the last prompt catches what the estimate misses (tool definitions,
         // formatting); it includes the schemas, so compare it against the whole usable window.
