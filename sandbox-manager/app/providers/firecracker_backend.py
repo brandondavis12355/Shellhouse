@@ -176,6 +176,7 @@ class FirecrackerBackend:
         self._used_ports: set[int] = set()
         self._lock = asyncio.Lock()
         self._vm_locks: dict[str, asyncio.Lock] = {}
+        self._booting: dict[str, asyncio.Future] = {}   # task_id -> boot in progress
 
     def _vm_lock(self, key: str) -> asyncio.Lock:
         return self._vm_locks.setdefault(key, asyncio.Lock())
@@ -197,8 +198,25 @@ class FirecrackerBackend:
                 vm_id = f"fc-{safe}"
             else:
                 vm_id = f"fc-{safe}-{secrets.token_hex(3)}"
-            slot = await self._boot(vm_id, task_id, persistent)
+            slot = await self._boot_once(vm_id, task_id, persistent)
             return self._handle(slot)
+
+    async def _boot_once(self, vm_id: str, task_id: str, persistent: bool) -> _Slot:
+        """Boots, or joins the boot already under way for this task. The boot
+        runs on its own, so a caller that goes away (the app timing out while
+        several bots start at once) doesn't cancel it halfway; its retry gets
+        the same VM."""
+        fut = self._booting.get(task_id)
+        if fut is None:
+            fut = asyncio.ensure_future(self._boot(vm_id, task_id, persistent))
+            self._booting[task_id] = fut
+
+            def done(f: asyncio.Future) -> None:
+                self._booting.pop(task_id, None)
+                if not f.cancelled():
+                    f.exception()       # retrieved here, so it is never "unretrieved"
+            fut.add_done_callback(done)
+        return await asyncio.shield(fut)
 
     async def _running(self, sandbox_id: str) -> _Slot:
         """The running VM, booting a persistent one that isn't running yet
@@ -215,11 +233,11 @@ class FirecrackerBackend:
                 await self._teardown(slot, delete_disk=not slot.persistent)
                 if not slot.persistent:
                     raise RuntimeError(f"Sandbox {sandbox_id} has stopped")
-                return await self._boot(sandbox_id, slot.task_id, True)
+                return await self._boot_once(sandbox_id, slot.task_id, True)
             task_id = self._stopped.get(sandbox_id)
             if task_id is None:
                 raise RuntimeError(f"Unknown sandbox '{sandbox_id}'")
-            return await self._boot(sandbox_id, task_id, True)
+            return await self._boot_once(sandbox_id, task_id, True)
 
     async def _boot(self, vm_id: str, task_id: str, persistent: bool) -> _Slot:
         if not os.path.exists(FC_ROOTFS) or not os.path.exists(FC_KERNEL):
@@ -251,6 +269,10 @@ class FirecrackerBackend:
         except BaseException:
             await self._teardown(slot, delete_disk=new_disk or not persistent)
             raise
+        if persistent:
+            # Written once the VM has booted: reconcile() only lists disks that have one.
+            with open(os.path.join(FC_STATE_DIR, f"{vm_id}.json"), "w") as f:
+                json.dump({"task_id": task_id}, f)
         self._slots[vm_id] = slot
         self._stopped.pop(vm_id, None)
         self._by_task[task_id] = vm_id
@@ -270,9 +292,6 @@ class FirecrackerBackend:
             # --reflink=auto: instant copy-on-write on btrfs/xfs, sparse copy elsewhere.
             await self._run("cp", "--reflink=auto", "--sparse=always", FC_ROOTFS, slot.disk + ".tmp")
             os.replace(slot.disk + ".tmp", slot.disk)
-            if slot.persistent:
-                with open(os.path.join(FC_STATE_DIR, f"{slot.vm_id}.json"), "w") as f:
-                    json.dump({"task_id": slot.task_id}, f)
         if not FC_USE_JAILER:
             return
         os.chown(slot.disk, FC_UID, FC_GID)
@@ -655,6 +674,9 @@ class FirecrackerBackend:
                 self._stopped[vm_id] = task_id
                 self._by_task[task_id] = vm_id
                 adopted.append(self._stopped_handle(vm_id))
+            elif name.endswith(".json") and not os.path.exists(self._persistent_disk(name[:-5])):
+                with contextlib.suppress(OSError):
+                    os.unlink(path)      # a record whose disk never got made
             elif name.endswith(".ext4") or name.endswith(".tmp"):
                 with contextlib.suppress(OSError):
                     os.unlink(path)

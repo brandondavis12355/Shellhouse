@@ -70,7 +70,8 @@ if [ "$PASSWORD_STDIN" = "1" ]; then
   sudo -v 2>/dev/null || die "That sudo password wasn't accepted."
 else
   note "Some steps need administrator rights; enter your password if asked."
-  sudo -v || die "sudo is required for the one-time install."
+  # `sudo -v` asks for a password even under NOPASSWD unless every matching rule is NOPASSWD.
+  sudo -n true 2>/dev/null || sudo -v || die "sudo is required for the one-time install."
 fi
 # Keep the sudo timestamp fresh while the long build runs.
 ( while true; do sudo -n true 2>/dev/null; sleep 50; done ) &

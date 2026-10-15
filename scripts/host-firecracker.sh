@@ -72,7 +72,8 @@ install)
 
   step "Firecracker: host setup (binaries, VM user, network policy)"
   record "FIRECRACKER=1"
-  sudo bash "$FC_SCRIPTS/setup-host.sh" | sed 's/^/    /'
+  # (Its closing "Next:" steps are what this script does below.)
+  sudo bash "$FC_SCRIPTS/setup-host.sh" | sed '/^Host is ready/,$d; /^$/d; s/^/    /'
   sudo install -m 0755 "$FC_SCRIPTS/setup-host.sh" "$FC_SCRIPTS/install-manager.sh" "$REPO/scripts/host-firecracker.sh" "$LIB_DIR/"
   ok "Host prepared"
 
