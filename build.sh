@@ -238,7 +238,7 @@ if [ "$WITH_MODELS" = "1" ]; then
     if "$OLLAMA" list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$model\(:latest\)\?"; then
       ok "$model is already pulled"
     else
-      info "Pulling $model…"
+      info "Pulling ${model}…"
       "$OLLAMA" pull "$model" && ok "Pulled $model" || warn "Couldn't pull $model; try again later in the app's Settings › Ollama."
     fi
   done
