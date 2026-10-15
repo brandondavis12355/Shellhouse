@@ -88,6 +88,8 @@ cd Shellhouse
 ./initial_setup.sh
 ```
 
+Or, after cloning, double-click **`Install Shellhouse.command`** in Finder: it opens Terminal and runs the same installer, and keeps the window open at the end so you can read the result. If macOS refuses to open a downloaded copy because it's from an unidentified developer, right-click the file, choose **Open**, then **Open** again. Options go after the command in Terminal, e.g. `./"Install Shellhouse.command" --host 192.0.2.10 --user alice`.
+
 That's the whole install. It asks everything it needs first, in macOS dialogs (add `--no-ui` to answer in Terminal instead), then does the long parts:
 
 | Step | What happens | Where |
