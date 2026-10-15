@@ -21,10 +21,25 @@ public enum ModelTiers {
     public static let fastRemoteAPIKeySecretName = "FAST_MODEL_API_KEY"
 
     public static var fastRemoteBaseURL: URL? {
-        let text = (UserDefaults.standard.string(forKey: fastRemoteBaseURLKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: text), let host = url.host else { return nil }
-        let local = ["localhost", "127.0.0.1", "::1"].contains(host)
-        return url.scheme == "https" || (url.scheme == "http" && local) ? url : nil
+        usableBaseURL(UserDefaults.standard.string(forKey: fastRemoteBaseURLKey) ?? "")
+    }
+
+    /// Hosts where plain http is acceptable because the traffic stays on this Mac or your own network: loopback,
+    /// private ranges (10/8, 172.16/12, 192.168/16), link-local, Tailscale-style 100.64/10, and local names
+    /// (`.local`, `.lan`, or a bare hostname). Anything else must be https.
+    static func isPrivateHost(_ rawHost: String) -> Bool {
+        let host = rawHost.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if host == "localhost" || host == "::1" || host.hasSuffix(".local") || host.hasSuffix(".lan") || host.hasSuffix(".localhost") { return true }
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        if parts.count == 4, parts.allSatisfy({ (0...255).contains($0) }) {
+            switch (parts[0], parts[1]) {
+            case (127, _), (10, _), (192, 168), (169, 254): return true
+            case (172, 16...31): return true
+            case (100, 64...127): return true
+            default: return false
+            }
+        }
+        return !host.contains(".") && !host.contains(":")   // a bare hostname: only resolvable on a local network
     }
 
     public static var fastRemoteModel: String {
@@ -80,8 +95,14 @@ public enum ModelTiers {
     static func usableBaseURL(_ text: String) -> URL? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), let host = url.host else { return nil }
-        let local = ["localhost", "127.0.0.1", "::1"].contains(host)
-        return url.scheme == "https" || (url.scheme == "http" && local) ? url : nil
+        guard url.scheme == "https" || (url.scheme == "http" && isPrivateHost(host)) else { return nil }
+        // A bare Ollama address (`http://host:11434`): its OpenAI-compatible API lives under /v1.
+        if url.port == 11434, url.path.isEmpty || url.path == "/",
+           var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            parts.path = "/v1"
+            return parts.url ?? url
+        }
+        return url
     }
 
     /// Posted when the embedding model or where it runs changes, so every bot re-indexes its notes for the new model.

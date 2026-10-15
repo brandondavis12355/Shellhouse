@@ -74,7 +74,7 @@ extension ModelTiersSettingsSection {
                 Button("OpenAI") { remoteBaseURL = "https://api.openai.com/v1" }
                 Spacer()
             }
-            TextField("Base URL (https://…)", text: $remoteBaseURL).themedField()
+            TextField("Base URL (https://… or http://your-server:11434)", text: $remoteBaseURL).themedField()
             TextField("Model id (e.g. gemini-3.8-flash)", text: $remoteModel).themedField()
             HStack {
                 SecureField(keySaved ? "API key saved — type a new one to replace it" : "API key", text: $apiKeyInput)
@@ -86,7 +86,7 @@ extension ModelTiersSettingsSection {
             Text(ModelTiers.fastUsesRemote
                  ? "Reply checks, the approval reviewer, quick replies, helpers and lesson reviews use this model for every bot. "
                     + "Each bot's own model still does the real work. Those prompts include parts of the chat, so they go to this provider."
-                 : "Needs an https base URL and a model id. Until then, the fast tier stays local.")
+                 : "Needs a base URL and a model id (https, or http for a server on your own network such as http://192.168.1.20:11434). Until then, the fast tier stays local.")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
         }
     }
@@ -179,7 +179,7 @@ struct EmbeddingsSettingsSection: View {
                 Button("Google Gemini") { remoteBaseURL = OpenAICompatibleBackend.geminiBaseURL }
                 Spacer()
             }
-            TextField("Base URL (https://…)", text: $remoteBaseURL).themedField()
+            TextField("Base URL (https://… or http://your-server:11434)", text: $remoteBaseURL).themedField()
             TextField("Embedding model id", text: $remoteModel).themedField()
                 .onSubmit { ModelTiers.embeddingSettingsChanged() }
             HStack {
@@ -191,7 +191,7 @@ struct EmbeddingsSettingsSection: View {
             if let keyError { Text(keyError).font(.caption).foregroundStyle(.red) }
             Text(ModelTiers.embeddingUsesRemote
                  ? "The text of each memory note, and each search query, is sent to this provider. Nothing else is."
-                 : "Needs an https base URL and a model id. Until then, memory search uses the local setting.")
+                 : "Needs a base URL and a model id (https, or http for a server on your own network such as http://192.168.1.20:11434) . Until then, memory search uses the local setting.")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
         }
     }

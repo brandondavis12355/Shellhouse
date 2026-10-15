@@ -362,8 +362,21 @@ final class OpenAIEmbedderTests: XCTestCase {
         XCTAssertEqual(identity, "remote:embed-small")
         let embedder = await ModelTiers.embedder(for: identity ?? "")
         XCTAssertTrue(embedder is OpenAIEmbedder)
-        defaults.set("http://example.invalid/v1", forKey: ModelTiers.embeddingRemoteBaseURLKey)   // plain http off this Mac: not usable
+        defaults.set("http://example.invalid/v1", forKey: ModelTiers.embeddingRemoteBaseURLKey)   // plain http to a public name: not usable
         XCTAssertFalse(ModelTiers.embeddingUsesRemote)
+    }
+
+    func testPlainHttpIsAcceptedOnlyOnYourOwnNetworkAndBareOllamaGetsV1() {
+        for ok in ["http://192.168.1.20:11434", "http://10.0.0.5:11434/v1", "http://172.20.1.1:8080/v1", "http://100.101.102.103:11434",
+                   "http://studio.local:11434", "http://mac-studio:11434", "http://localhost:11434", "https://api.example.com/v1"] {
+            XCTAssertNotNil(ModelTiers.usableBaseURL(ok), ok)
+        }
+        for bad in ["http://api.example.com/v1", "http://8.8.8.8:11434", "http://172.32.0.1:11434", "ftp://192.168.1.2", "not a url", ""] {
+            XCTAssertNil(ModelTiers.usableBaseURL(bad), bad)
+        }
+        XCTAssertEqual(ModelTiers.usableBaseURL("http://192.168.1.20:11434")?.absoluteString, "http://192.168.1.20:11434/v1")
+        XCTAssertEqual(ModelTiers.usableBaseURL("http://192.168.1.20:11434/")?.absoluteString, "http://192.168.1.20:11434/v1")
+        XCTAssertEqual(ModelTiers.usableBaseURL("http://192.168.1.20:11434/v1")?.absoluteString, "http://192.168.1.20:11434/v1")
     }
 
     func testNotesNeedReindexingWhenTheModelChanges() {
