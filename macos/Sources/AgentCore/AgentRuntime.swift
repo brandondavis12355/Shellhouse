@@ -786,7 +786,7 @@ public actor AgentRuntime {
         let screenshotBase64 = observation.removeValue(forKey: "_base64") as? String
         // What the model reads (and the console shows): bounded, with grounded warnings/hints added.
         var shown = observation
-        if Reliability.isOn(.outputLimits) { shown = ObservationPolicy.bounded(shown) }
+        if Reliability.isOn(.outputLimits) { shown = ObservationPolicy.bounded(shown, limit: call.name == "read_file" ? PagedRead.defaultCharacterBudget + 500 : ObservationPolicy.maxFieldCharacters) }
         if Reliability.isOn(.failureHints) {
             shown = ObservationPolicy.annotate(tool: call.name, observation: shown)
             if shown["warning"] == nil, let trash = ObservationPolicy.trashWarning(forArguments: jsonString(call.arguments.mapValues(\.value))) {

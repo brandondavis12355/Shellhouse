@@ -1661,6 +1661,9 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// recipient's own chat is untouched by any of this.
     static let delegationBootWaitSeconds = 90
 
+    struct RecentDelegation { let peerID: String; let message: String; let reply: String; let tainted: Bool; let at: Date }
+    var recentDelegations: [RecentDelegation] = []
+
     func delegateToBot(named name: String, message: String, quickIfBusy: Bool = false, senderTainted: Bool = false) async -> [String: Any] {
         guard let recipient = botDirectory.bot(named: name, excluding: id) else {
             return ["error": "No other bot named '\(name)'. Use list_bots to see who's available."]
@@ -1678,6 +1681,16 @@ final class Bot: Identifiable, @unchecked Sendable {
                 return ["error": "\(recipient.name)'s computer failed to start (\(why)). Tell your user; they can reset it in that bot's settings."]
             }
             return ["error": "\(recipient.name) is still starting up after \(waited) s. Tell your user and try again in a few minutes; don't retry in a loop."]
+        }
+
+        // The same request to the same bot again, soon after it answered: a delegation loop. Hand back the answer
+        // already received instead of starting another run on the recipient.
+        let now = Date()
+        recentDelegations = recentDelegations.filter { now.timeIntervalSince($0.at) < 600 }
+        if let earlier = recentDelegations.last(where: { $0.peerID == recipient.id && ReplyQuality.isDuplicate(message, of: [$0.message], threshold: 0.8) }) {
+            return ["from": recipient.name, "reply": earlier.reply, "_tainted": earlier.tainted, "already_asked": true,
+                    "note": "You asked \(recipient.name) this \(Int(now.timeIntervalSince(earlier.at))) s ago; this is the answer you got, not a new run. "
+                        + "Do not ask again. Act on it, or ask something different (what changed, a specific file or command)."]
         }
 
         InterBotStore.append(InterBotMessage(fromBotID: id, fromBotName: self.name, toBotID: recipient.id, toBotName: recipient.name, text: message))
@@ -1718,6 +1731,9 @@ final class Bot: Identifiable, @unchecked Sendable {
             recipient.addMemory("\(self.name) asked me: \"\(Self.truncatedForMemory(message))\" — I answered: \"\(Self.truncatedForMemory(reply))\"", source: "delegation")
         }
 
+        if !answeredQuickly, Self.isSubstantiveDelegationReply(reply) {
+            recentDelegations.append(RecentDelegation(peerID: recipient.id, message: message, reply: reply, tainted: replyTainted, at: Date()))
+        }
         var result: [String: Any] = ["from": recipient.name, "reply": reply, "_tainted": replyTainted]
         if answeredQuickly {
             result["note"] = "\(recipient.name) was busy with another task, so this answer comes from what it already knew "

@@ -891,6 +891,8 @@ final class GroupChatSession: Identifiable {
             + "That also means your copy of the code can be behind or different from a teammate's: before you say something is "
             + "missing, broken or fixed, run `git fetch` and `git log -1 --oneline`, check you're on the branch and commit being "
             + "discussed, and name that commit in what you report. Never judge someone's work from a stale checkout. "
+            + "Don't call a teammate stuck or re-brief them while their run is still going or they answered recently: wait for their "
+            + "report, and if you must ask again, ask something new (what changed, a specific file or command), not the same request. "
             + "A step marked \"each member on their own VM\" is done by every listed member checking in their OWN part "
             + "(update_goal_step → done with evidence from their own tools); nobody can check in for anyone else."
         let ownerName = members.first(where: { $0.id == goal.ownerBotID })?.name ?? "the owner"
@@ -1199,7 +1201,11 @@ final class GroupChatSession: Identifiable {
                     + "helps, send it to \(holder) (@mention) instead, or leave it if they already have it."]
             }
             // Members can only put themselves on a step; the owner may assign anyone.
-            let assignee = isOwner ? (arguments["assignee"]?.asString ?? (status == .inProgress ? bot.name : nil)) : bot.name
+            // The owner keeps a step with whoever already holds it; only an unassigned step it starts becomes its own.
+            let existingHolder = g.steps.first(where: { $0.id == stepID })?.assigneeName
+            let assignee = isOwner
+                ? (arguments["assignee"]?.asString ?? ((status == .inProgress && (existingHolder ?? "").isEmpty) ? bot.name : nil))
+                : bot.name
             let ownerName = g.validatorName ?? members.first(where: { $0.id == g.ownerBotID })?.name ?? "the goal owner"
             let result = g.updateStep(
                 id: stepID, status: status, evidence: arguments["evidence"]?.asString,

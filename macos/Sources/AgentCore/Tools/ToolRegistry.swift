@@ -881,7 +881,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "read_file",
-                description: "Returns the text of one file in the sandbox, a page at a time: about 5,500 characters from line `offset` on, with start_line, end_line, total_lines and next_offset when there is more. Read a file before editing it with edit_file. To find files or text, use find_files or search_files. Paths are relative to /workspace unless absolute. An error means the path is wrong or unreadable: list the parent directory before retrying.",
+                description: "Returns the text of one file in the sandbox, a page at a time: about 12,000 characters (usually the whole file) from line `offset` on, with start_line, end_line, total_lines and next_offset when there is more. Read a file before editing it with edit_file. To find files or text, use find_files or search_files. Paths are relative to /workspace unless absolute. An error means the path is wrong or unreadable: list the parent directory before retrying.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -1022,7 +1022,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "edit_file",
-                description: "Changes part of a file: replaces old_text with new_text. old_text must match the file exactly once (indentation differences are tolerated), so include a few surrounding lines. Read the file with read_file first; the edit is refused if you haven't, or if it changed since. Returns a numbered snippet of the result. Syntax-checked like write_file. To create or rewrite a whole file, use write_file.",
+                description: "Changes part of a file: replaces old_text with new_text (or pass edits to make several changes in one call). old_text must match the file exactly once (indentation differences are tolerated), so include a few surrounding lines. Read the file with read_file first; the edit is refused if you haven't, or if it changed since. Returns a numbered snippet of the result. Syntax-checked like write_file. To create or rewrite a whole file, use write_file.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -1030,8 +1030,10 @@ public struct ToolRegistry: Sendable {
                         "old_text": ["type": "string", "description": "Exact text currently in the file (no line numbers)."],
                         "new_text": ["type": "string", "description": "What to put in its place (empty to delete it)."],
                         "replace_all": ["type": "boolean", "description": "Replace every match instead of requiring exactly one."],
+                        "edits": ["type": "array", "description": "Several changes to the same file in ONE call, applied in order and all-or-nothing: each item {old_text, new_text}. Prefer this over repeated edit_file calls.",
+                                  "items": ["type": "object", "properties": ["old_text": ["type": "string"], "new_text": ["type": "string"]], "required": ["old_text", "new_text"]]],
                     ],
-                    "required": ["path", "old_text", "new_text"],
+                    "required": ["path"],
                 ]
             ),
             ToolSchema(

@@ -20,7 +20,7 @@ do the job. Paths are relative to `/workspace`.
 - `search_files(pattern, path, file_glob)`: lines matching a regular
   expression, as `file:line: text`. Too many matches? Narrow the pattern,
   path or `file_glob`.
-- `read_file(path, offset, limit)`: one page (about 5,500 characters) at a
+- `read_file(path, offset, limit)`: one page (about 12,000 characters) at a
   time. When it returns `next_offset`, there is more: read on from there.
   If it errors, list the parent folder before guessing again.
 - `edit_file(path, old_text, new_text)`: change part of a file. Read the

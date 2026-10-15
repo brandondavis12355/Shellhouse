@@ -100,6 +100,22 @@ final class WorkspaceToolExecutionTests: XCTestCase {
         XCTAssertEqual(box.files["app.py"], "x = 2\ny = 5\n")
     }
 
+    func testSeveralEditsInOneCallAreAllOrNothing() async {
+        let box = MemoryBox(); box.files["app.txt"] = "a = 1\nb = 2\nc = 3\n"
+        let tools = ToolRegistry()
+        _ = await run(tools, box, "read_file", ["path": "app.txt"])
+        let bad = await run(tools, box, "edit_file", ["path": "app.txt", "edits": [
+            ["old_text": "a = 1", "new_text": "a = 10"], ["old_text": "zzz", "new_text": "q"],
+        ]])
+        XCTAssertTrue((bad["error"] as? String ?? "").contains("Edit 2 of 2"), "\(bad)")
+        XCTAssertEqual(box.files["app.txt"], "a = 1\nb = 2\nc = 3\n", "nothing written")
+        let ok = await run(tools, box, "edit_file", ["path": "app.txt", "edits": [
+            ["old_text": "a = 1", "new_text": "a = 10"], ["old_text": "c = 3", "new_text": "c = 30"],
+        ]])
+        XCTAssertEqual(ok["replacements"] as? Int, 2, "\(ok)")
+        XCTAssertEqual(box.files["app.txt"], "a = 10\nb = 2\nc = 30\n")
+    }
+
     func testAnEditThatBreaksValidJSONIsRefused() async {
         let box = MemoryBox(); box.files["cfg.json"] = "{\"port\": 80}\n"
         let tools = ToolRegistry()

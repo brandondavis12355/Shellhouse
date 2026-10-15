@@ -109,7 +109,7 @@ public enum EditMatcher {
 // MARK: - Paged reads
 
 public enum PagedRead {
-    public static let defaultCharacterBudget = 5_500
+    public static let defaultCharacterBudget = 12_000   // a typical source file in one read, not four
 
     /// Lines `offset` (1-based) onward, up to `limit` lines and the character budget, with where to continue.
     public static func page(_ content: String, offset: Int?, limit: Int?, budget: Int = defaultCharacterBudget) -> [String: Any] {
@@ -180,17 +180,17 @@ public enum SyntaxCheck {
             if hasTrailingComma(content) { return .broken("invalid JSON: trailing comma before } or ]") }
             return .ok
         }
-        let name = ".shellhouse/validate/\(UUID().uuidString).\((path as NSString).pathExtension)"
-        let abs = "/workspace/\(name)"
-        guard (try? await sandbox.writeFile(sandboxID, path: name, contents: Data(content.utf8))) != nil else { return .unchecked }
-        defer { Task { _ = try? await sandbox.exec(sandboxID, command: "rm -f \(shellQuote(abs))", timeout: 10, env: nil) } }
-        let command: String
+        // One round trip: the content travels inside the command, is checked from a temp file there, and is removed.
+        let abs = "/tmp/shellhouse-validate-\(UUID().uuidString.prefix(8)).\((path as NSString).pathExtension)"
+        let check: String
         switch kind {
-        case "python": command = "python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' \(shellQuote(abs))"
-        case "shell": command = "bash -n \(shellQuote(abs))"
-        default: command = "python3 -c 'import sys, yaml; list(yaml.safe_load_all(open(sys.argv[1])))' \(shellQuote(abs))"
+        case "python": check = "python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' \(abs)"
+        case "shell": check = "bash -n \(abs)"
+        default: check = "python3 -c 'import sys, yaml; list(yaml.safe_load_all(open(sys.argv[1])))' \(abs)"
         }
-        guard let result = try? await sandbox.exec(sandboxID, command: command, timeout: 20, env: nil) else { return .unchecked }
+        let encoded = Data(content.utf8).base64EncodedString()
+        let command = "printf %s '\(encoded)' | base64 -d > \(abs) && \(check); rc=$?; rm -f \(abs); exit $rc"
+        guard command.utf8.count < 900_000, let result = try? await sandbox.exec(sandboxID, command: command, timeout: 20, env: nil) else { return .unchecked }
         if result.exitCode == 0 { return .ok }
         let message = (result.stderr.isEmpty ? result.stdout : result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
         if kind == "yaml", message.contains("No module named") { return .unchecked }
@@ -276,11 +276,24 @@ enum WorkspaceTools {
         }
 
         out["edit_file"] = { sandboxID, sandbox, args, _ in
-            guard let path = args["path"]?.asString, let old = args["old_text"]?.asString, let new = args["new_text"]?.asString else {
-                return ["error": "edit_file requires 'path', 'old_text' and 'new_text'"]
+            guard let path = args["path"]?.asString else { return ["error": "edit_file requires 'path'"] }
+            // One edit (old_text/new_text), or several at once (edits: [{old_text, new_text}]) applied in order.
+            var pairs: [(old: String, new: String)] = []
+            if let list = args["edits"]?.value as? [Any] {
+                for item in list {
+                    guard let dict = item as? [String: Any], let o = dict["old_text"] as? String, let n = dict["new_text"] as? String else {
+                        return ["error": "each item in edits needs 'old_text' and 'new_text'"]
+                    }
+                    pairs.append((o, n))
+                }
             }
-            guard !old.isEmpty else { return ["error": "old_text is empty. To create or replace a whole file, use write_file."] }
-            guard old != new else { return ["error": "old_text and new_text are the same; nothing to change."] }
+            if let o = args["old_text"]?.asString, let n = args["new_text"]?.asString { pairs.insert((o, n), at: 0) }
+            guard !pairs.isEmpty else { return ["error": "edit_file requires 'old_text' and 'new_text' (or an 'edits' list)"] }
+            for (i, pair) in pairs.enumerated() {
+                let label = pairs.count > 1 ? "Edit \(i + 1): " : ""
+                guard !pair.old.isEmpty else { return ["error": label + "old_text is empty. To create or replace a whole file, use write_file."] }
+                guard pair.old != pair.new else { return ["error": label + "old_text and new_text are the same; nothing to change."] }
+            }
             let current: String
             do { current = try await readText(sandbox, sandboxID, path) } catch {
                 return ["error": "\(error.localizedDescription). To create a new file, use write_file."]
@@ -290,14 +303,17 @@ enum WorkspaceTools {
             case .stale: return ["error": "\(path) changed since you last read it. Read it again, then edit."]
             case .fresh: break
             }
-            let updated: String, occurrences: Int, fuzzy: Bool
-            switch EditMatcher.apply(to: current, old: old, new: new, replaceAll: args["replace_all"]?.asBool ?? false) {
-            case .ambiguous(let count):
-                return ["error": "old_text matches \(count) places in \(path). Include more surrounding lines so it matches once, or set replace_all to true."]
-            case .notFound(let hint):
-                return ["error": hint]
-            case .replaced(let text, let count, let wasFuzzy):
-                updated = text; occurrences = count; fuzzy = wasFuzzy
+            var updated = current, occurrences = 0, fuzzy = false
+            for (i, pair) in pairs.enumerated() {
+                let label = pairs.count > 1 ? "Edit \(i + 1) of \(pairs.count) failed and nothing was written: " : ""
+                switch EditMatcher.apply(to: updated, old: pair.old, new: pair.new, replaceAll: args["replace_all"]?.asBool ?? false) {
+                case .ambiguous(let count):
+                    return ["error": label + "old_text matches \(count) places in \(path). Include more surrounding lines so it matches once, or set replace_all to true."]
+                case .notFound(let hint):
+                    return ["error": label + hint]
+                case .replaced(let text, let count, let wasFuzzy):
+                    updated = text; occurrences += count; fuzzy = fuzzy || wasFuzzy
+                }
             }
             let (reject, warning) = await validated(updated, replacing: current, path: path, sandboxID: sandboxID, sandbox: sandbox)
             if let reject { return ["error": reject] }
