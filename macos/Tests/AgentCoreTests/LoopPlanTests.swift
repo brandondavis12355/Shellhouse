@@ -293,3 +293,15 @@ private final class SavedNotes: @unchecked Sendable {
     func add(_ text: String) { lock.lock(); items.append(text); lock.unlock() }
     var all: [String] { lock.lock(); defer { lock.unlock() }; return items }
 }
+
+final class DelegationLogCleanupTests: XCTestCase {
+    func testOldAskedBotNotesAreArchivedAndRealNotesStay() {
+        var book = MemoryBook()
+        _ = book.add("Asked Tai Lung: \"fix the tests\" — they answered: \"done\"", source: "delegation")
+        _ = book.add("Mr. Smith asked me: \"status?\" — I answered: \"all green\"", source: "self")
+        _ = book.add("Deploys run from main with make release.", source: "self")
+        let report = book.consolidate()
+        XCTAssertEqual(report.archived.count, 2)
+        XCTAssertEqual(book.texts, ["Deploys run from main with make release."])
+    }
+}

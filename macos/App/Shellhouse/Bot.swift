@@ -678,6 +678,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         // Reads the managed memory book (or migrates the old plain list), then tidies it once.
         memoryBook = BotMemoryStore.loadBook(id: id)
         memories = memoryBook.texts
+        // Old automatic "Asked <bot>: … they answered: …" entries go to the archive now.
+        consolidateMemories(force: memoryBook.entries.contains(where: MemoryBook.isDelegationLog))
         consolidateMemories(force: false)
         Task { @MainActor [weak self] in await self?.embedPendingMemories() }
         // A different embedding model (or a switch between local and remote): re-index every note for it.
