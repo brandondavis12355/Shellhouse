@@ -249,7 +249,24 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// `.ollama` talks to the local `ollama serve` process `boot()` already
     /// waits for; `.remote` talks to `remoteBaseURLText`, any OpenAI-
     /// `/v1/chat/completions`-compatible server. See `makeModelBackend()`.
-    var modelProvider: ModelProvider = .ollama
+    var modelProvider: ModelProvider = .ollama {
+        didSet { switchedProvider(from: oldValue) }
+    }
+    /// The model last used with each provider, so switching to the other and back doesn't leave the picker
+    /// holding a name the other server never heard of (which showed as a blank selection).
+    private var lastModelByProvider: [ModelProvider: String] = [:]
+
+    private func switchedProvider(from old: ModelProvider) {
+        guard old != modelProvider else { return }
+        if !selectedModel.isEmpty { lastModelByProvider[old] = selectedModel }
+        if let remembered = lastModelByProvider[modelProvider] {
+            selectedModel = remembered
+        } else if modelProvider == .ollama, !availableModels.contains(selectedModel) {
+            selectedModel = availableModels.first ?? selectedModel
+        } else if modelProvider == .remote, availableModels.contains(selectedModel) {
+            selectedModel = ""   // a local model name means nothing to a remote server
+        }
+    }
     /// Only meaningful when `modelProvider == .remote` — e.g.
     /// "https://api.openai.com/v1" or a self-hosted vLLM/LM Studio URL,
     /// including whatever path prefix that server expects before

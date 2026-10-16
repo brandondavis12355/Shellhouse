@@ -278,6 +278,11 @@ struct BotSettingsTab: View {
                                 ForEach(bot.availableModels, id: \.self) { model in
                                     Text(model).tag(model)
                                 }
+                                // A saved model that isn't in the list (not pulled yet, or the list is still loading)
+                                // must still be a choice, or the picker shows nothing selected.
+                                if !bot.selectedModel.isEmpty, !bot.availableModels.contains(bot.selectedModel) {
+                                    Text("\(bot.selectedModel) (not installed)").tag(bot.selectedModel)
+                                }
                             }
                             .labelsHidden()
                             .pickerStyle(.menu)
