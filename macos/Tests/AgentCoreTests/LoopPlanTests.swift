@@ -157,3 +157,25 @@ final class GroupLoopPlanTests: XCTestCase {
         XCTAssertFalse(goal.validates("Owner", isOwner: true, step: goal.steps[1]))
     }
 }
+
+final class RememberSummaryTests: XCTestCase {
+    func testALongNoteIsRefusedWithAskToSummarize() async {
+        let saved = SavedNotes()
+        let registry = ToolRegistry(onRemember: { text in saved.add(text); return true })
+        let box = LoopPlanTests.SlowBoxShared()
+        let long = await registry.execute(name: "remember", arguments: ["text": AnyCodable(String(repeating: "word ", count: 120))],
+                                          sandboxID: "t", sandbox: box, secretStore: SecretStore())
+        XCTAssertTrue((long["error"] as? String ?? "").contains("Summarize"), "\(long)")
+        let short = await registry.execute(name: "remember", arguments: ["text": AnyCodable("Deploys: run make release from main.")],
+                                           sandboxID: "t", sandbox: box, secretStore: SecretStore())
+        XCTAssertEqual(short["saved"] as? Bool, true)
+        XCTAssertEqual(saved.all, ["Deploys: run make release from main."])
+    }
+}
+
+private final class SavedNotes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+    func add(_ text: String) { lock.lock(); items.append(text); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return items }
+}

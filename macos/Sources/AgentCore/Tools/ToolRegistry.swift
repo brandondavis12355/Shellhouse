@@ -123,6 +123,12 @@ public struct ToolRegistry: Sendable {
                 // immediately regardless of whether it landed, the same
                 // structural gap `create_routine` had (see its own doc
                 // comments) before this was noticed too.
+                // A note is a summary, not a copy of the message: ask for the point in a sentence or two.
+                if text.count > Self.maxNoteCharacters {
+                    return ["error": "That note is \(text.count) characters: too long. Don't save the message itself. Summarize only the "
+                        + "parts you'll need again (the rule, the fact, the exact value or command) in one or two sentences under "
+                        + "\(Self.maxNoteCharacters) characters, then call remember again with that."]
+                }
                 guard await onRemember(text) else {
                     return ["error": "failed to save to disk — this wasn't actually remembered"]
                 }
@@ -343,10 +349,12 @@ public struct ToolRegistry: Sendable {
         )
     }
 
+    static let maxNoteCharacters = 300
+
     private static var rememberSchema: ToolSchema {
         ToolSchema(
             name: "remember",
-            description: "Save one short, durable note: a correction or standing preference from the user, or a lesson "
+            description: "Save one short, durable note (a summary of the key point in one or two sentences, never the whole message): a correction or standing preference from the user, or a lesson "
                 + "you learned that your skills don't cover (a fix that worked, a quirk of this VM, repo or tool, a needed "
                 + "command), written as a rule for next time. It's shown "
                 + "to the user in this bot's settings and resent at the start of every future conversation "
@@ -355,7 +363,7 @@ public struct ToolRegistry: Sendable {
                 + "recall_memory first so you don't save a near-duplicate of something you already have.",
             parameters: [
                 "type": "object",
-                "properties": ["text": ["type": "string", "description": "One instruction or preference, in plain language."]],
+                "properties": ["text": ["type": "string", "description": "The key point only, in plain language, under 300 characters: the rule, fact, value or command, not the surrounding message."]],
                 "required": ["text"],
             ]
         )

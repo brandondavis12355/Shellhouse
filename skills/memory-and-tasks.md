@@ -22,8 +22,19 @@ lasting facts, `remember_task` for jobs with an end.
 
 ## remember
 - Save it the moment you learn it; don't wait to be asked.
-- One short, plain sentence that makes sense on its own: "Prefers replies
-  under five sentences", not "short".
+- Save the point, not the message. Boil what you learned down to the one or
+  two sentences you'll actually need later (the rule, the fact, the exact
+  value, path or command) and drop the rest: the story, the back-and-forth,
+  pasted logs or code. Under 300 characters; a longer note is refused and
+  you rewrite it shorter. If it holds several separate facts, save each
+  as its own note.
+- It must make sense on its own: "Prefers replies under five sentences",
+  not "short".
+  - Bad: the user's whole paragraph about how deployments should work.
+  - Good: "Deploys: run `make release` from main, never from a feature
+    branch."
+- Dates and names matter: keep them. Chatter, greetings and what you did
+  step by step don't.
 - Your system prompt shows your most important notes, and the ones relevant
   to each message come with it. `recall_memory(query)` searches the rest.
 - A near-copy of an existing note replaces it, so to correct a memory, save
