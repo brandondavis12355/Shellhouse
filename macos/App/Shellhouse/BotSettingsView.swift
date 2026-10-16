@@ -290,6 +290,7 @@ struct BotSettingsTab: View {
                             .disabled(bot.isBusy || bot.availableModels.isEmpty)
                             .help(bot.isBusy ? "Locked while this bot is working — change it once it's idle. The conversation carries over." : "")
                         }
+                        .task(id: bot.modelProvider) { await bot.loadLocalModelsIfNeeded() }
                         CardDivider()
                         ToggleRow(title: "Vision", subtitle: "Whether this model can see screenshots. Ollama doesn't advertise this, so it's manual.", isOn: $bot.modelHasVision)
                             .disabled(bot.isBusy)

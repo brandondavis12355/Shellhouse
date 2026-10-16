@@ -266,6 +266,16 @@ final class Bot: Identifiable, @unchecked Sendable {
         } else if modelProvider == .remote, availableModels.contains(selectedModel) {
             selectedModel = ""   // a local model name means nothing to a remote server
         }
+        // A bot that booted on a remote model never loaded Ollama's list, so the local picker would be empty and
+        // disabled: load it now and settle on an installed model.
+        if modelProvider == .ollama, availableModels.isEmpty {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.loadLocalModelsIfNeeded()
+                guard self.modelProvider == .ollama, !self.availableModels.isEmpty else { return }
+                if !self.availableModels.contains(self.selectedModel) { self.selectedModel = self.availableModels[0] }
+            }
+        }
     }
     /// Only meaningful when `modelProvider == .remote` — e.g.
     /// "https://api.openai.com/v1" or a self-hosted vLLM/LM Studio URL,
