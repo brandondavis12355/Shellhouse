@@ -106,9 +106,20 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     public var validatorName: String?
 
     /// Whether `name` (the owner if `isOwner`) is the one who validates submissions into `done`.
-    public func validates(_ name: String, isOwner: Bool) -> Bool {
+    public func validates(_ name: String, isOwner: Bool, step: Step? = nil) -> Bool {
         guard let validatorName else { return isOwner }
-        return validatorName.caseInsensitiveCompare(name) == .orderedSame
+        let isValidator = validatorName.caseInsensitiveCompare(name) == .orderedSame
+        // Nobody validates their own work: a step the validator did itself is checked by the owner.
+        if let step, !step.isPerMember, step.assigneeName?.caseInsensitiveCompare(validatorName) == .orderedSame {
+            return isOwner && !isValidator
+        }
+        return isValidator
+    }
+
+    /// A submitted step the validator did itself: the owner checks it.
+    func isSelfValidated(_ step: Step) -> Bool {
+        guard let validatorName, !step.isPerMember else { return false }
+        return step.assigneeName?.caseInsensitiveCompare(validatorName) == .orderedSame
     }
 
     public init(id: String = UUID().uuidString, title: String, ownerBotID: String, steps: [Step] = [],
@@ -505,7 +516,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     /// as an instruction for its review turn, or nil if nothing does.
     public func ownerReviewWork() -> String? {
         var lines: [String] = []
-        for (index, step) in steps.enumerated() where step.status == .review && validatorName == nil {
+        for (index, step) in steps.enumerated() where step.status == .review && (validatorName == nil || isSelfValidated(step)) {
             let evidence = (step.evidence ?? "").prefix(300)
             lines.append("- Waiting for your validation: step \(index + 1) \"\(Self.displayText(step.text))\""
                 + (step.assigneeName.map { ", submitted by \($0)" } ?? "") + (evidence.isEmpty ? "" : ". Their evidence: \(evidence)"))
@@ -526,7 +537,7 @@ public struct GroupGoal: Codable, Sendable, Equatable {
     /// What the validator (when it isn't the owner) needs to check, as an instruction for its review turn.
     public func validatorReviewWork() -> String? {
         guard let validatorName else { return nil }
-        let lines = steps.enumerated().filter { $0.element.status == .review }.map { index, step in
+        let lines = steps.enumerated().filter { $0.element.status == .review && !isSelfValidated($0.element) }.map { index, step in
             "- Waiting for your validation: step \(index + 1) \"\(Self.displayText(step.text))\""
                 + (step.assigneeName.map { ", submitted by \($0)" } ?? "")
                 + ((step.evidence ?? "").isEmpty ? "" : ". Their evidence: \((step.evidence ?? "").prefix(300))")

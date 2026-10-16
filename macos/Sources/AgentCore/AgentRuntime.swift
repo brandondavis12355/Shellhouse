@@ -147,6 +147,9 @@ public actor AgentRuntime {
     /// Time spent waiting for a person to answer an approval card: it does not count against the wall-clock budget.
     private var secondsWaitingForHuman: TimeInterval = 0
     private var callFingerprints: [String: Int] = [:]
+    /// Read-only calls from one reply, started together so their waits overlap (see `prefetchReads`).
+    private var prefetched: [String: Task<UncheckedBox<[String: Any]>, Never>] = [:]
+    static let parallelReadTools: Set<String> = ["read_file", "list_files", "search_files", "find_files"]
     /// Chat-style turns (a group reply with no goal work): a substantial plain-text answer IS the
     /// answer, so skip the "you did not call a tool" nudge round trip that makes models repeat themselves.
     private let plainReplyEndsTurn: Bool
@@ -166,6 +169,9 @@ public actor AgentRuntime {
     }
     private(set) var plan: [PlanItem] = []
     private var finishGuardUsed = false
+    private var verifyGuardUsed = false
+    /// Set when code or config was written and nothing has been run since; cleared by any shell command or screenshot.
+    private var unverifiedChange = false
     /// Identical errors per tool this turn; the third gets one message naming it (OpenHands).
     private var errorCounts: [String: Int] = [:]
     static let sameErrorNudgeAt = 3
@@ -415,6 +421,8 @@ public actor AgentRuntime {
         toolCallsThisTurn = 0
         plan = []
         finishGuardUsed = false
+        verifyGuardUsed = false
+        unverifiedChange = false
         errorCounts = [:]
         failureStreak = 0; abortForFailures = false; abortForSameResults = false; sameResultStreak = 0
         sameFailureStreak = 0; lastFailureKey = ""
@@ -436,6 +444,8 @@ public actor AgentRuntime {
         toolCallsThisTurn = 0
         plan = []
         finishGuardUsed = false
+        verifyGuardUsed = false
+        unverifiedChange = false
         errorCounts = [:]
         failureStreak = 0; abortForFailures = false; abortForSameResults = false; sameResultStreak = 0
         sameFailureStreak = 0; lastFailureKey = ""
@@ -530,6 +540,7 @@ public actor AgentRuntime {
                         onEvent(.contextTrimmed(detail: "reply cut off: the model was repeating itself (\(streamed.text.count) characters)"))
                         reply = ModelReply(message: ChatMessage(role: .assistant, content: once), usage: nil)
                         loopBroken = true
+                        Telemetry.recorder.loopEvent("repetition_cut")
                     }
                     break
                 } catch {
@@ -603,9 +614,11 @@ public actor AgentRuntime {
                     lastNarration = plain
                     messages.removeLast()
                     narrationStreak += 1
+                    Telemetry.recorder.loopEvent(narrationStreak >= 2 ? "narration_escalated" : "narration")
                     let nudge = narrationStreak >= 2
                         ? Self.escalatedNarrationNudge(narration: plain, toolNames: Array(tools.names()))
                         : "Make the tool call for your next step now. No sentence about it first: just the call."
+                            + Self.screenshotRoute(for: plain)
                     if messages.last?.content != nudge { messages.append(ChatMessage(role: .user, content: nudge)) }
                     continue
                 }
@@ -651,6 +664,17 @@ public actor AgentRuntime {
                     ])
                     continue
                 }
+                // "Done" right after changing code, with nothing run since: ask for the check once.
+                if outcome == "done", calls.count == 1, unverifiedChange, !verifyGuardUsed, Reliability.isOn(.taskFocus) {
+                    verifyGuardUsed = true
+                    Telemetry.recorder.loopEvent("unverified_done")
+                    appendToolResult(name: Self.finishTaskName, observation: [
+                        "error": "Not finished: you changed files and ran nothing afterwards to check them. Run the test, command or request that "
+                            + "shows it works (or take a screenshot), read the output, fix what it shows, then call finish_task with that output "
+                            + "as evidence. If nothing can be run, say so in the summary.",
+                    ])
+                    continue
+                }
                 onEvent(.message(ChatMessage(role: .assistant, content: summary, isTaskSummary: true)))
                 onEvent(.status(outcome == "done" ? .completed : .aborted(outcome)))
                 return
@@ -658,6 +682,7 @@ public actor AgentRuntime {
 
             var seenThisTurn = Set<String>()
             toolCallsThisTurn += calls.count
+            prefetchReads(calls)
             for call in calls {
                 if call.name == Self.updatePlanName {
                     onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
@@ -780,9 +805,14 @@ public actor AgentRuntime {
     private func execute(_ call: ToolCall, repeatCount: Int, decision: GuardrailDecision) async {
         onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
         let toolStarted = Date()
-        var observation = await tools.execute(
-            name: call.name, arguments: call.arguments, sandboxID: sandboxID, sandbox: sandbox, secretStore: secretStore
-        )
+        var observation: [String: Any]
+        if let early = prefetched.removeValue(forKey: Self.repeatFingerprint(for: call)) {
+            observation = await early.value.value
+        } else {
+            observation = await tools.execute(
+                name: call.name, arguments: call.arguments, sandboxID: sandboxID, sandbox: sandbox, secretStore: secretStore
+            )
+        }
         let screenshotBase64 = observation.removeValue(forKey: "_base64") as? String
         // What the model reads (and the console shows): bounded, with grounded warnings/hints added.
         var shown = observation
@@ -816,6 +846,7 @@ public actor AgentRuntime {
             sameResultStreak = 0
             stuck.reset()
         }
+        noteVerification(call, observation: observation)
         noteError(call, observation: observation)
         noteFailure(FailureCheck.kind(shown), key: call.name + FailureCheck.key(shown))
         Telemetry.recorder.toolRun(call.name, seconds: Date().timeIntervalSince(toolStarted), failed: FailureCheck.kind(shown) != .ok)
@@ -1127,6 +1158,23 @@ public actor AgentRuntime {
     /// with these exact arguments in this run — `execute` uses it to
     /// nudge the model once, well before the hard abort below.
     @discardableResult
+    /// Starts the reads of one multi-call reply together: each still goes through the same checks, gate and
+    /// result handling in order, but the waits on the sandbox overlap instead of adding up. A read the gate
+    /// then refuses is simply never used.
+    private func prefetchReads(_ calls: [ToolCall]) {
+        prefetched.removeAll()
+        guard calls.count >= 2 else { return }
+        if calls.filter({ Self.parallelReadTools.contains($0.name) }).count >= 2 { Telemetry.recorder.loopEvent("parallel_reads") }
+        let backend = tools, box = sandbox, id = sandboxID, store = secretStore
+        for call in calls where Self.parallelReadTools.contains(call.name) {
+            let key = Self.repeatFingerprint(for: call)
+            guard prefetched[key] == nil else { continue }
+            prefetched[key] = Task {
+                UncheckedBox(value: await backend.execute(name: call.name, arguments: call.arguments, sandboxID: id, sandbox: box, secretStore: store))
+            }
+        }
+    }
+
     private func checkRepeat(_ call: ToolCall) throws -> Int {
         let key = Self.repeatFingerprint(for: call)
         let count = (callFingerprints[key] ?? 0) + 1
@@ -1162,6 +1210,11 @@ public actor AgentRuntime {
                 // drop display-only pipes
                 if let pipe = piece.range(of: #"\|\s*(head|tail)\b.*$"#, options: .regularExpression) { piece.removeSubrange(pipe) }
                 piece = piece.split(whereSeparator: { $0 == " " || $0 == "\t" }).joined(separator: " ")
+                // `head -20 f`, `tail -n 50 f`, `cat f` are one look at one file.
+                if piece.range(of: #"^(cat|head|tail|less|more)( -n ?\d+| -\d+)? \S+$"#, options: .regularExpression) != nil,
+                   let file = piece.split(separator: " ").last {
+                    piece = "cat " + file
+                }
                 if piece.isEmpty || piece.hasPrefix("echo ") || piece == "echo" || piece.hasPrefix("exit=") { continue }
                 parts.append(piece)
             }
@@ -1227,6 +1280,21 @@ public actor AgentRuntime {
         return false
     }
 
+    private static let docExtensions: Set<String> = ["md", "txt", "rst", "csv", "log"]
+
+    /// Tracks "changed code, then ran nothing" for the finish check.
+    private func noteVerification(_ call: ToolCall, observation: [String: Any]) {
+        switch call.name {
+        case "write_file", "edit_file":
+            guard observation["error"] == nil, let path = call.arguments["path"]?.asString else { return }
+            if !Self.docExtensions.contains((path as NSString).pathExtension.lowercased()) { unverifiedChange = true }
+        case "run_shell", "screenshot", "check_job":
+            unverifiedChange = false
+        default:
+            break
+        }
+    }
+
     private func noteError(_ call: ToolCall, observation: [String: Any]) {
         guard Reliability.isOn(.loopGuards) else { return }
         var error = observation["error"] as? String ?? ""
@@ -1252,16 +1320,20 @@ public actor AgentRuntime {
 
     /// When a bot keeps announcing the next step instead of doing it, say which tools exist, and for a screenshot the
     /// exact route (the first nudge alone often just gets the same sentence again).
+    /// The exact route to a screenshot, for a reply that talks about taking one without doing it.
+    static func screenshotRoute(for narration: String) -> String {
+        let lowered = narration.lowercased()
+        guard lowered.contains("screenshot") || lowered.contains("picture") || lowered.contains("capture") else { return "" }
+        return " To show a web page headlessly: run_shell `chromium --headless --no-sandbox --disable-gpu --hide-scrollbars "
+            + "--window-size=1280,800 --screenshot=/workspace/shot.png URL` (URL is the live site, or http://localhost:PORT for a server "
+            + "you are running), then post_screenshot with path \"/workspace/shot.png\". If a browser is already open on the desktop, "
+            + "call screenshot instead."
+    }
+
     static func escalatedNarrationNudge(narration: String, toolNames: [String]) -> String {
         var text = "You have described the next step \(2) times without calling a tool. Do not write another sentence: reply with ONLY a tool call. "
             + "Tools you can call: " + toolNames.sorted().prefix(30).joined(separator: ", ") + "."
-        let lowered = narration.lowercased()
-        if lowered.contains("screenshot") || lowered.contains("picture") || lowered.contains("capture") {
-            text += " To show a web page headlessly: run_shell `chromium --headless --no-sandbox --disable-gpu --hide-scrollbars "
-                + "--window-size=1280,800 --screenshot=/workspace/shot.png URL` (URL is the live site, or http://localhost:PORT for a server "
-                + "you are running), then post_screenshot with path \"/workspace/shot.png\". If a browser is already open on the desktop, "
-                + "call screenshot instead."
-        }
+        text += screenshotRoute(for: narration)
         return text
     }
 
@@ -1272,3 +1344,6 @@ public actor AgentRuntime {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 }
+
+/// Carries a value across a task boundary that Swift can't prove safe; used for tool results that are plain data.
+struct UncheckedBox<T>: @unchecked Sendable { let value: T }

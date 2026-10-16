@@ -103,6 +103,7 @@ public final class TelemetryRecorder: @unchecked Sendable {
     private var tools: [String: ToolStats] = [:]
     private var approvals: [String: Int] = [:]
     private var stopReasons: [String: Int] = [:]
+    private var loopEvents: [String: Int] = [:]
     private var recent: [Event] = []
     static let recentLimit = 300
 
@@ -170,6 +171,17 @@ public final class TelemetryRecorder: @unchecked Sendable {
         }
         note(bot, reason == nil ? "run" : "run stopped", "\(purpose)" + (reason.map { " · \($0.prefix(140))" } ?? " · finished"))
     }
+
+    /// How often each loop correction fired (narration, unverified_done, repetition_cut, ...): the numbers to compare
+    /// before and after a change to the loop.
+    public func loopEvent(_ kind: String) {
+        let bot = Telemetry.context?.bot ?? "app"
+        lock.lock(); defer { lock.unlock() }
+        loopEvents[kind, default: 0] += 1
+        note(bot, "loop", kind)
+    }
+
+    public func loopEventCounts() -> [String: Int] { lock.lock(); defer { lock.unlock() }; return loopEvents }
 
     public func compaction(dropped: Int) {
         let bot = Telemetry.context?.bot ?? "app"

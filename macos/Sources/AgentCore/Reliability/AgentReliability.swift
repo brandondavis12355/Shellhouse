@@ -68,7 +68,9 @@ public enum ObservationPolicy {
         if exit == 0, let marker = shown {
             out["warning"] = "exit_code is 0, but the output contains \"\(marker)\". The command may have failed inside a chain (`;`, `&&`, `|`, `echo exit=$?`): treat the output, not exit_code, as the result."
         }
-        if exit != 0 || shown != nil {
+        if exit == 124 {
+            out["hint"] = "The command hit its time limit and was stopped. For anything slow (builds, installs, servers, test suites) run it with background: true and follow it with check_job; don't just retry it with a longer wait."
+        } else if exit != 0 || shown != nil {
             if let hint = recoveryHint(for: combined) { out["hint"] = hint }
         }
         if exit == 0, shown == nil, observation["job_id"] == nil, observation["error"] == nil, combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -363,6 +365,14 @@ public enum ReplyQuality {
     }
 
     /// Is `candidate` (nearly) a repeat of something already said?
+    /// A reply that promises work it has not done ("I'll send it", "let me check"): from a no-tools quick answer
+    /// that is an empty promise, so the message needs a full turn.
+    public static func promisesWork(_ text: String) -> Bool {
+        let t = text.lowercased()
+        let phrases = ["i'll ", "i will ", "let me ", "i'm going to ", "i am going to ", "on it", "working on it", "give me a moment", "one moment"]
+        return phrases.contains { t.contains($0) }
+    }
+
     public static func isDuplicate(_ candidate: String, of earlier: [String], threshold: Double = 0.85) -> Bool {
         let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 12 else { return false }
@@ -655,7 +665,12 @@ public final class RepetitionGuard: @unchecked Sendable {
     private let minUnit: Int
     private var tripped = false
 
-    public init(repeats: Int = 4, minUnit: Int = 24) { self.repeats = repeats; self.minUnit = minUnit }
+    /// Defaults 4 copies of a 24-character passage; `defaults write <app> loopRepeatCopies N` / `loopRepeatMinChars N` tunes them.
+    public init(repeats: Int? = nil, minUnit: Int? = nil) {
+        let store = UserDefaults.standard
+        self.repeats = max(2, repeats ?? (store.integer(forKey: "loopRepeatCopies") > 0 ? store.integer(forKey: "loopRepeatCopies") : 4))
+        self.minUnit = max(8, minUnit ?? (store.integer(forKey: "loopRepeatMinChars") > 0 ? store.integer(forKey: "loopRepeatMinChars") : 24))
+    }
 
     /// Adds streamed text; true once the tail is one passage of at least `minUnit` characters repeated `repeats` times.
     @discardableResult

@@ -1664,6 +1664,17 @@ final class Bot: Identifiable, @unchecked Sendable {
     struct RecentDelegation { let peerID: String; let message: String; let reply: String; let tainted: Bool; let at: Date }
     var recentDelegations: [RecentDelegation] = []
 
+    /// `git fetch` in every repository under /workspace, best effort: lets a review start from current remote state.
+    /// Returns a short note of what was fetched, or nil if there was nothing to do or it could not run.
+    func refreshCheckouts() async -> String? {
+        guard let sandbox, let handle else { return nil }
+        let command = "cd /workspace 2>/dev/null || exit 0; n=0; for d in */.git; do [ -e \"$d\" ] || continue; "
+            + "timeout 25 git -C \"${d%/.git}\" fetch --all --prune --quiet >/dev/null 2>&1; n=$((n+1)); done; echo $n"
+        guard let result = try? await sandbox.exec(handle.id, command: command, timeout: 60, env: nil),
+              let count = Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)), count > 0 else { return nil }
+        return "\(count) repo\(count == 1 ? "" : "s")"
+    }
+
     func delegateToBot(named name: String, message: String, quickIfBusy: Bool = false, senderTainted: Bool = false) async -> [String: Any] {
         guard let recipient = botDirectory.bot(named: name, excluding: id) else {
             return ["error": "No other bot named '\(name)'. Use list_bots to see who's available."]

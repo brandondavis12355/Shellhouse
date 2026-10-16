@@ -209,11 +209,22 @@ enum WorkspaceTools {
         String(decoding: try await sandbox.readFile(sandboxID, path: path, maxBytes: readFileMaxBytes), as: UTF8.self)
     }
 
+    /// The lines around the one a parser error names ("line 12"), so the model sees what it wrote there.
+    static func excerpt(of content: String, near message: String) -> String {
+        guard let range = message.range(of: #"line (\d+)"#, options: .regularExpression),
+              let number = Int(message[range].dropFirst(5)) else { return "" }
+        let lines = content.components(separatedBy: "\n")
+        guard number >= 1, number <= lines.count else { return "" }
+        let from = max(1, number - 2), to = min(lines.count, number + 1)
+        return "\nAs written, lines \(from)–\(to):\n" + (from...to).map { "\($0): \(lines[$0 - 1])" }.joined(separator: "\n")
+    }
+
     /// Rejects a change that breaks a file which parsed before; flags a new file that doesn't parse.
     static func validated(_ new: String, replacing old: String?, path: String,
                           sandboxID: String, sandbox: any SandboxProvider) async -> (reject: String?, warning: String?) {
         let after = await SyntaxCheck.check(new, path: path, sandboxID: sandboxID, sandbox: sandbox)
-        guard case .broken(let why) = after else { return (nil, nil) }
+        guard case .broken(let reported) = after else { return (nil, nil) }
+        let why = reported + excerpt(of: new, near: reported)
         if let old {
             let before = await SyntaxCheck.check(old, path: path, sandboxID: sandboxID, sandbox: sandbox)
             if before == .ok {

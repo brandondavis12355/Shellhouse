@@ -59,6 +59,9 @@ the count). Your user's next message resumes a paused goal.
 The goal line says "owner: X" and maybe "validated by: Y". The validator (Y,
 else the owner) is the only one who can mark a `[?]` step done. If an owner
 is set not to check work itself, the app picks a tester-like member.
+Nobody validates their own work: a step the validator did itself is checked by
+the owner. Your prompt lists each teammate as "working now" or "idle": a
+teammate working now is not stuck, so wait for its report.
 **If you validate:** for each `[?]` step, fetch the submitter's branch and
 commit, run the check yourself this turn, then `update_goal_step(step_id,
 "done", evidence)` with what *you* saw and the commit. If it fails, set it

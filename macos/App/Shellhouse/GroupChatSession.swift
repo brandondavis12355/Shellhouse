@@ -619,7 +619,11 @@ final class GroupChatSession: Identifiable {
             }
             if !isIntakeTurn, let live = goal, live.isLive {
                 extraSuffix = goalPrompt(for: live, botID: botID)
-                if ownerReviewTurn || resumeTurn, let work = reviewWork(live, botID: botID) { extraSuffix += "\n\n" + work }
+                if ownerReviewTurn || resumeTurn, let work = reviewWork(live, botID: botID) {
+                    // Judging a teammate's work from a stale checkout was a repeated failure: refresh every repo first.
+                    if let refreshed = await bot.refreshCheckouts() { debugLog(bot, "fetched before reviewing: \(refreshed)") }
+                    extraSuffix += "\n\n" + work
+                }
                 if goalAdditionTurn {
                     extraSuffix += "\n\n" + Self.goalAdditionInstruction
                 }
@@ -725,6 +729,11 @@ final class GroupChatSession: Identifiable {
                     instruction += " It is a greeting: greet back briefly and say what you can help with."
                 }
                 reply = await bot.quickReplyInGroup(groupName: name, otherMembers: others, transcript: formatRecentTranscript(limit: 8, clipTo: 400), instruction: instruction)
+                // A small model that promises work ("I'll send it") can't do it: hand the message to a full turn.
+                if let draft = reply, ReplyQuality.promisesWork(draft) {
+                    debugLog(bot, "quick reply promised work — running a full turn instead")
+                    reply = nil
+                }
                 usedQuickPath = reply != nil
                 if usedQuickPath { debugLog(bot, "quick reply (\(ModelTiers.fastModelLabel(main: bot.selectedModel)))") }
                 if !usedQuickPath { debugLog(bot, "quick reply failed — falling back to a full turn") }
@@ -932,7 +941,25 @@ final class GroupChatSession: Identifiable {
         if goal.status == .awaitingConfirmation {
             text += " The goal is awaiting the user's confirmation — do not start new work unless you were asked."
         }
+        if let status = teammateStatus(excluding: botID) { text += "\n\n" + status }
         return text
+    }
+
+    /// One line per teammate: working right now (and for how long), or idle. Read this instead of guessing "stuck".
+    private func teammateStatus(excluding botID: String) -> String? {
+        let others = members.filter { $0.id != botID }
+        guard !others.isEmpty else { return nil }
+        let now = Date()
+        let lines = others.map { member -> String in
+            let span = BotActivity.shared.spans.filter { $0.botID == member.id && $0.kind != .queued }.min { $0.since < $1.since }
+            if let span {
+                let minutes = Int(now.timeIntervalSince(span.since) / 60)
+                return "- \(member.name): working now" + (minutes >= 1 ? " (\(minutes) min into this run)" : "")
+            }
+            if workers[member.id] != nil || member.isProcessingMessage { return "- \(member.name): working now" }
+            return "- \(member.name): idle"
+        }
+        return "Teammates right now (a run in progress is not stuck; wait for its report):\n" + lines.joined(separator: "\n")
     }
 
     /// Who would own a goal for this user message: the one bot the user
@@ -1194,7 +1221,7 @@ final class GroupChatSession: Identifiable {
                             + (next.map { "Next open step: \($0.offset + 1). \(GroupGoal.displayText($0.element.text))" } ?? "Every step is done.")]
             }
             // A step that's another member's (assigned, or named "Name: …" in its text) is theirs to update.
-            let isValidator = g.validates(bot.name, isOwner: isOwner)
+            let isValidator = g.validates(bot.name, isOwner: isOwner, step: g.steps.first { $0.id == stepID })
             if !isOwner, !isValidator, let index = g.steps.firstIndex(where: { $0.id == stepID }), !g.steps[index].isPerMember,
                let holder = stepHolder(g.steps[index]), holder.caseInsensitiveCompare(bot.name) != .orderedSame {
                 return ["error": "Step \(index + 1) is \(holder)'s: only \(holder) or the goal owner updates it. If you have evidence that "
