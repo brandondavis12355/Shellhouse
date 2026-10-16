@@ -1,0 +1,29 @@
+{
+  "name": "mlx qwen3.6-35b (no draft)",
+  "model": "mlx-community/Qwen3.6-35B-A3B-4bit-DWQ",
+  "speed": {
+    "chat": {
+      "ttft_s": 0.10815310478210449,
+      "tps": 76.33007741590689,
+      "total_s": 2.7805628776550293,
+      "prompt_tokens": 58
+    },
+    "code": {
+      "ttft_s": 0.10666513442993164,
+      "tps": 77.38511407599951,
+      "total_s": 1.5648629665374756,
+      "prompt_tokens": 63
+    },
+    "long_prompt": {
+      "ttft_s": 1.0668609142303467,
+      "tps": 79.35826373991029,
+      "total_s": 1.394489049911499,
+      "prompt_tokens": 4676
+    }
+  },
+  "accuracy": {
+    "qa": "6/6",
+    "json": true,
+    "tool_call": true
+  }
+}
