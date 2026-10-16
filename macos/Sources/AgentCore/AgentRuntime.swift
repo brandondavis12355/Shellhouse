@@ -1177,6 +1177,13 @@ public actor AgentRuntime {
 
     private func checkRepeat(_ call: ToolCall) throws -> Int {
         let key = Self.repeatFingerprint(for: call)
+        // A read whose earlier result has since been collapsed out of the context is not a repeat: the model no
+        // longer has that text, so asking again is the right move.
+        if Self.parallelReadTools.contains(call.name), callFingerprints[key] != nil,
+           let path = call.arguments["path"]?.asString,
+           !messages.contains(where: { $0.role == .tool && $0.toolName == call.name && !$0.content.hasPrefix("[earlier output") && $0.content.contains(path) }) {
+            callFingerprints[key] = 0
+        }
         let count = (callFingerprints[key] ?? 0) + 1
         callFingerprints[key] = count
         if count > Self.loopRepeatThreshold {

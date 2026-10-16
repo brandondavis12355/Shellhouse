@@ -519,8 +519,11 @@ final class GroupChatSession: Identifiable {
             }
             // The group went quiet during an active goal: the owner checks what is stuck and gets it moving.
             var probeTurn = false
-            if probeDue.remove(botID) != nil, let live = goal, live.isLive, live.status == .active, live.ownerBotID == botID {
+            var workerProbe = false
+            if probeDue.remove(botID) != nil, let live = goal, live.isLive, live.status == .active,
+               live.ownerBotID == botID || live.hasActionableWork(for: bot.name) {
                 probeTurn = true
+                workerProbe = live.ownerBotID != botID
                 if decision == .none || decision == .optional { decision = .mentionedByBot }
                 debugLog(bot, "idle probe: no activity for \(Int(Self.idleProbeSeconds))s")
             }
@@ -627,8 +630,16 @@ final class GroupChatSession: Identifiable {
                 if goalAdditionTurn {
                     extraSuffix += "\n\n" + Self.goalAdditionInstruction
                 }
-                if probeTurn {
-                    extraSuffix += "\n\nThe group has been quiet for \(Int(Self.idleProbeSeconds)) seconds while this goal is active. "
+                if probeTurn, workerProbe {
+                    extraSuffix += "\n\nNothing has moved in the group for a while and you hold open work on this goal. Continue your step now with tools "
+                        + "(read the code, make the change, run the check) and report it with evidence. If something truly blocks you, say exactly what "
+                        + "(the command you ran and what it printed) and @mention \(members.first(where: { $0.id == live.ownerBotID })?.name ?? "the owner"). "
+                        + "Don't reply with a status line only."
+                } else if probeTurn {
+                    extraSuffix += "\n\nThe group has been quiet for a while while this goal is active. "
+                        + "Before you report anything as down, broken or blocked, check it with a command this turn (for example `run_shell echo ok`): "
+                        + "an earlier failure may be over. If a member holds an open step and has not reported, @mention THAT member by name and tell them "
+                        + "to continue; escalate to the user only when you have tried that and a check you ran just now still fails. "
                         + "You own it: work out what is stuck (a step nobody is on, someone waiting, a missing answer), then act with tools "
                         + "or @mention whoever should move next. Don't re-read files you already read or ask someone who is already working "
                         + "on it for an update. If everything is genuinely in hand, finish silently."
@@ -1052,28 +1063,46 @@ final class GroupChatSession: Identifiable {
             var lastCount = -1
             var lastActivity = Date()
             var probed = false
+            // Quiet periods that end with nothing new from anyone but the owner double the wait (up to 20 minutes):
+            // a goal waiting on the user shouldn't be nudged every 30 s forever.
+            var interval = Self.idleProbeSeconds
+            var lastOthers = -1
+            var lastSignature = ""
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard let self else { return }
                 let busy = !self.workers.isEmpty
                     || self.members.contains { $0.isProcessingMessage }
                     || BotActivity.shared.spans.contains { span in self.members.contains { $0.id == span.botID } }
+                let ownerID = self.goal?.ownerBotID
+                let others = self.displayMessages.filter { $0.isSystem != true && $0.speakerBotID != ownerID }.count
+                let signature = self.goal?.reviewSignature ?? ""
+                if others != lastOthers || signature != lastSignature {
+                    lastOthers = others; lastSignature = signature
+                    interval = Self.idleProbeSeconds
+                }
                 if busy || self.displayMessages.count != lastCount {
                     lastCount = self.displayMessages.count
                     lastActivity = Date()
                     probed = false
                     continue
                 }
-                guard !probed, Date().timeIntervalSince(lastActivity) >= Self.idleProbeSeconds,
+                guard !probed, Date().timeIntervalSince(lastActivity) >= interval,
                       let live = self.goal, live.isLive, live.status == .active,
                       let owner = self.members.first(where: { $0.id == live.ownerBotID }),
                       !self.members.contains(where: { $0.pendingApproval != nil || $0.pendingCredentialRequest != nil }) else { continue }
                 probed = true
+                interval = min(interval * 2, 1_200)
                 // Work already submitted waits on its validator, not on the owner: wake the validator (once) rather
                 // than sending the owner to ask it again and again while it is mid-check.
                 if live.steps.contains(where: { $0.status == .review }) {
                     self.requestOwnerReview()
                     continue
+                }
+                // Members holding open work go first: they are the ones who can move it.
+                for member in self.members where member.id != owner.id && live.hasActionableWork(for: member.name) {
+                    self.probeDue.insert(member.id)
+                    self.wake(member)
                 }
                 self.probeDue.insert(owner.id)
                 self.wake(owner)
