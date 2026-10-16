@@ -276,17 +276,17 @@ struct BotSettingsTab: View {
                         SettingRow("Model") {
                             Picker("Model", selection: $bot.selectedModel) {
                                 ForEach(bot.availableModels, id: \.self) { model in
-                                    Text(model).tag(model)
+                                    Text(model).lineLimit(1).truncationMode(.middle).tag(model)
                                 }
                                 // A saved model that isn't in the list (not pulled yet, or the list is still loading)
                                 // must still be a choice, or the picker shows nothing selected.
                                 if !bot.selectedModel.isEmpty, !bot.availableModels.contains(bot.selectedModel) {
-                                    Text("\(bot.selectedModel) (not installed)").tag(bot.selectedModel)
+                                    Text("\(bot.selectedModel) (not installed)").lineLimit(1).truncationMode(.middle).tag(bot.selectedModel)
                                 }
                             }
                             .labelsHidden()
                             .pickerStyle(.menu)
-                            .fixedSize()
+                            .frame(maxWidth: 380, alignment: .trailing)
                             .disabled(bot.isBusy || bot.availableModels.isEmpty)
                             .help(bot.isBusy ? "Locked while this bot is working — change it once it's idle. The conversation carries over." : "")
                         }

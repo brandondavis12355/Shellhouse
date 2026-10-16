@@ -97,6 +97,8 @@ struct SettingRow<Trailing: View>: View {
                 Text(title)
                     .font(.system(size: 16))
                     .foregroundStyle(titleColor)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)   // a wide control never squeezes the label into one letter per line
                 if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 13))
