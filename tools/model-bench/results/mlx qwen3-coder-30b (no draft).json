@@ -1,0 +1,29 @@
+{
+  "name": "mlx qwen3-coder-30b (no draft)",
+  "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+  "speed": {
+    "chat": {
+      "ttft_s": 0.10533595085144043,
+      "tps": 100.27864727681876,
+      "total_s": 1.8814918994903564,
+      "prompt_tokens": 51
+    },
+    "code": {
+      "ttft_s": 0.11082100868225098,
+      "tps": 100.98602154118053,
+      "total_s": 1.486618995666504,
+      "prompt_tokens": 59
+    },
+    "long_prompt": {
+      "ttft_s": 1.0289089679718018,
+      "tps": 97.60851473360303,
+      "total_s": 1.3445508480072021,
+      "prompt_tokens": 4674
+    }
+  },
+  "accuracy": {
+    "qa": "6/6",
+    "json": false,
+    "tool_call": true
+  }
+}
