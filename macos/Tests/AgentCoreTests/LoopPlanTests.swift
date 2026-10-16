@@ -305,3 +305,25 @@ final class DelegationLogCleanupTests: XCTestCase {
         XCTAssertEqual(book.texts, ["Deploys run from main with make release."])
     }
 }
+
+final class ActionableNoteTests: XCTestCase {
+    func testLogStyleNotesAreRefusedAndRulesAreSaved() async {
+        let saved = SavedNotes2()
+        let registry = ToolRegistry(onRemember: { text in saved.add(text); return true })
+        let box = LoopPlanTests.SlowBoxShared()
+        func remember(_ text: String) async -> [String: Any] {
+            await registry.execute(name: "remember", arguments: ["text": AnyCodable(text)], sandboxID: "t", sandbox: box, secretStore: SecretStore())
+        }
+        let log = await remember("Asked Tai Lung about the tests and they said they pass.")
+        XCTAssertTrue((log["error"] as? String ?? "").contains("log of what happened"), "\(log)")
+        let rule = await remember("When deploying, run make release from main.")
+        XCTAssertEqual(rule["saved"] as? Bool, true)
+        XCTAssertEqual(saved.all.count, 1)
+    }
+}
+
+private final class SavedNotes2: @unchecked Sendable {
+    private let lock = NSLock(); private var items: [String] = []
+    func add(_ t: String) { lock.lock(); items.append(t); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return items }
+}

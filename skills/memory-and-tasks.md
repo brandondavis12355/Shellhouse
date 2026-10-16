@@ -22,17 +22,19 @@ lasting facts, `remember_task` for jobs with an end.
 
 ## remember
 - Save it the moment you learn it; don't wait to be asked.
-- Save the point, not the message. Boil what you learned down to the one or
-  two sentences you'll actually need later (the rule, the fact, the exact
-  value, path or command) and drop the rest: the story, the back-and-forth,
-  pasted logs or code. Under 300 characters; a longer note is refused and
-  you rewrite it shorter. If it holds several separate facts, save each
-  as its own note.
-- It must make sense on its own: "Prefers replies under five sentences",
-  not "short".
+- A note exists so you do the right thing at the right moment next time. Write it as an action: "When <situation>, <do this>", or
+  the one fact you'll need to act (an exact path, command, name, value).
+  - Good: "When deploying, run `make release` from main, never from a
+    feature branch."
+  - Good: "Sam wants replies under five sentences."
+  - Bad: "Asked Tai Lung about the tests and they said they pass."
+    (a log of what happened: it tells you nothing to do)
   - Bad: the user's whole paragraph about how deployments should work.
-  - Good: "Deploys: run `make release` from main, never from a feature
-    branch."
+- Only save what your skills don't already say. If a skill covers it, use
+  that; a note should hold what is specific to your user, repo, VM or tools.
+- Save the point, not the message: one or two sentences, under 300
+  characters (longer or log-style notes are refused: rewrite them as the
+  rule). Several separate rules are several notes.
 - Dates and names matter: keep them. Chatter, greetings and what you did
   step by step don't.
 - Your system prompt keeps three short blocks: user preferences, procedures
