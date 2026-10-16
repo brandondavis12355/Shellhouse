@@ -697,6 +697,14 @@ final class GroupChatSession: Identifiable {
                         ?? ["error": "group no longer available"]
                 }
             }
+            // A goal owner set not to check work itself is a pure coordinator: no files, shell or desktop in its goal
+            // turns, so it plans, assigns and unblocks through the goal tools and teammates instead of doing the work.
+            let coordinatorOnly = !bot.checksGoalWorkItself && !isIntakeTurn
+                && goal.map { $0.isLive && $0.ownerBotID == botID && $0.validatorName != nil } == true
+            if coordinatorOnly {
+                extraSuffix += "\n\nYou are the coordinator: this turn you have no file, shell or desktop tools. Assign, ask and unblock with "
+                    + "the goal tools, @mentions and message_bot; the member who holds a step reads the code and runs the tests, and the validator checks them."
+            }
             let mustAnswer = decision == .mustReply
             var reply: String?
             var usedQuickPath = false
@@ -761,6 +769,7 @@ final class GroupChatSession: Identifiable {
                     extraSuffix: extraSuffix,
                     goalHandler: handler,
                     untrustedInput: untrusted,
+                    withheldTools: coordinatorOnly ? Self.coordinatorWithheldTools : [],
                     // No goal work this turn: a substantial plain-text answer is the answer.
                     // No live streaming in group chats: each member's message appears once it's finished
                     // (the status strip shows who is responding). Streaming is for 1:1 chats only.
@@ -900,6 +909,11 @@ final class GroupChatSession: Identifiable {
         let ownerName = members.first(where: { $0.id == goal.ownerBotID })?.name ?? "unknown"
         return goal.promptBlock(ownerName: ownerName)
     }
+
+    static let coordinatorWithheldTools = [
+        "run_shell", "read_file", "write_file", "edit_file", "search_files", "find_files", "list_files", "check_job", "stop_job",
+        "screenshot", "click", "type_text", "type_secret", "press_key", "scroll", "open_app", "list_windows", "focus_window", "request_login",
+    ]
 
     private func goalPrompt(for goal: GroupGoal, botID: String) -> String {
         var text = goalBlockText(goal) + "\n\n"

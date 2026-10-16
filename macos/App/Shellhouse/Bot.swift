@@ -2283,6 +2283,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         extraSuffix: String = "",
         goalHandler: (@Sendable (String, [String: AnyCodable], Int) async -> [String: Any])? = nil,
         untrustedInput: Bool = false,
+        withheldTools: [String] = [],
         plainReplyEndsTurn: Bool = false,
         onDraft: (@MainActor (String?) -> Void)? = nil
     ) async -> String? {
@@ -2324,6 +2325,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         var outcome = await runIsolatedTaskResult(
             systemPromptSuffix: suffix, goal: transcriptSoFar, debugContext: "group: \(groupName)", goalHandler: goalHandler,
             untrustedInput: untrustedInput, plainReplyEndsTurn: plainReplyEndsTurn, allowBotMessaging: true,
+            withheldTools: withheldTools,
             onDraft: onDraft,
             followUp: { [weak self] result in
                 guard let self, !result.failed else { return nil }
@@ -2547,6 +2549,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         plainReplyEndsTurn: Bool = false,
         allowBotMessaging: Bool = false,
         initialTaint: [TaintSource] = [],
+        withheldTools: [String] = [],
         onDraft: (@MainActor (String?) -> Void)? = nil,
         followUp: (@MainActor (IsolatedResult) async -> String?)? = nil,
         imageGroupName: String? = nil
@@ -2792,9 +2795,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                 // A friend's text is in context: nothing that writes durable
                 // state is offered, so injected text can't plant a lasting
                 // instruction (memory, tasks, routines).
-                excludedTools: untrustedInput
+                excludedTools: Set(untrustedInput
                     ? ["remember", "remember_task", "create_routine", "edit_routine", "remove_routine"]
-                    : [],
+                    : []).union(withheldTools),
                 audit: AuditLog.shared,
                 inbox: PendingInboxStore.standard,
                 initialTaint: initialTaint,

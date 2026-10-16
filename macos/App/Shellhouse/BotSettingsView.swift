@@ -242,7 +242,7 @@ struct BotSettingsTab: View {
 
                 Card {
                     ToggleRow(title: "Checks submitted work itself",
-                              subtitle: "When this bot owns a group goal, it re-runs members' checks before marking steps done. Turn off for a manager that only coordinates: another member validates instead.",
+                              subtitle: "When this bot owns a group goal, it re-runs members' checks before marking steps done. Turn off for a manager that only coordinates: another member validates, and in goal turns this bot gets no file, shell or desktop tools, so it assigns and unblocks instead of doing the work.",
                               isOn: $bot.checksGoalWorkItself)
                 }
                 .padding(.top, 10)
