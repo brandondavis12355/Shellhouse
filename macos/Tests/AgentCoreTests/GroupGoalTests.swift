@@ -94,8 +94,8 @@ final class GroupGoalTests: XCTestCase {
 final class GoalValidationTests: XCTestCase {
     private let evidence = "ran `gh --version` and it printed 2.46.0 on the shared sandbox"
 
-    private func goal() -> GroupGoal {
-        GroupGoal(title: "Install gh", ownerBotID: "owner", steps: [GroupGoal.Step(text: "check"), GroupGoal.Step(text: "install")])
+    private func goal(steps: [String] = ["check", "install"]) -> GroupGoal {
+        GroupGoal(title: "Install gh", ownerBotID: "owner", steps: steps.map { GroupGoal.Step(text: $0) })
     }
 
     func testAMemberCanOnlySubmitNeverCompleteAStep() {
