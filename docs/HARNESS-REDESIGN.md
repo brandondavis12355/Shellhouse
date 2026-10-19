@@ -1,6 +1,6 @@
 # Harness redesign
 
-Status: proposal, October 2026. Internal Use Only. Drafted with AI assistance (Claude Code); review before acting on it.
+Status: proposal, October 2026. Phases 1 and 2 are implemented (see section 7). Internal Use Only. Drafted with AI assistance (Claude Code); review before acting on it.
 
 Sources are listed at the end. Most search results were summaries of the original posts, so details marked
 *(secondary)* should be checked against the original before they are quoted or relied on.
@@ -100,6 +100,28 @@ enum GuardAction { case nudge(String, escalation: Int), rewrite(Call), replaceRe
   the next run. This is the artifact the long-running-agent posts describe.
 - Compaction summaries become `condensed` events, and the progress note is the thing that survives them.
 
+### 3.4a Memory and note hygiene (context poisoning)
+
+Added after review; not built yet. A note or memory that is wrong, injected or stale is read as an instruction on every
+later run, so it is the longest-lived way to poison a bot. Rules, in the order they would be built:
+
+- **Provenance on every entry.** `MemoryEntry.source` already exists ("self", "user", "delegation", "goal", "import").
+  Add the run and event id that produced it and a trust class: `user` > `harness` > `self` > `delegation` / `import`
+  / anything derived from tool output or a friend's message. Notes written while the run was tainted (`ToolGate`
+  taint) are stored as `untrusted` and never pinned.
+- **Memory is data, not instructions.** `ContextView` renders recalled memories and progress notes in a delimited block
+  that names the source and age ("note from delegation, 3 days ago, unverified"), after the task, never inside the
+  system prefix. A standing instruction only enters the prefix when it is pinned by the user.
+- **Write gate.** A `remember` / `note_progress` call is a guard (`beforeTool`): refuse text that looks like an
+  instruction aimed at a future run when the run is tainted, cap size, and log a `stateNote` event with the source.
+- **Verify before relying.** A note that names a file, command or fact is a claim: the progress note carries the
+  command that proved it, and the next run re-checks the cheap ones first. Notes contradicted by a later tool result
+  are marked stale in the log rather than deleted.
+- **Expiry and review.** Untrusted and unverified notes expire; the user can see, filter by source and delete them.
+- **Test it.** Replay fixtures where a tainted tool result tries to plant a memory; the run must end with no new
+  trusted entry. Owner for the policy: security (information.security@allegiantair.com) should review the trust classes.
+
+
 ### 3.5 Multi-agent rules
 
 - **Single writer per repo and branch.** A step that writes to a repo takes a lock on `(repo, branch)`; others read
@@ -162,3 +184,16 @@ measured with the phase 6 suite, so start the fixtures (small, from existing log
 - tau-bench and pass^k: secondary write-ups only; check the original paper before citing numbers.
 - Codex CLI (approvals, sandbox, instruction files): secondary write-ups only; see github.com/openai/codex.
 - Existing repo docs: `docs/AGENT-CLI-COMPARISON.md`, `docs/RELIABILITY.md`, `docs/AGENT-LOOP-PLAN.md`.
+
+## 7. Implementation status (phases 1 and 2)
+
+- `RunLog` / `ContextView` (`macos/Sources/AgentCore/RunLoop/`): `AgentRuntime` appends events and never edits them.
+  Collapsing old output, dropping old screenshots, leaving out an announcement and summaries are view rules or
+  `condensed` events. Persisted as `<bot>.runlog.jsonl` beside the transcript (screenshots omitted); the old
+  transcript file is untouched. A tool call is stored inside its `modelReply`, not as a separate row.
+- `Guard` protocol with `beforeModel`, `afterReply`, `beforeTool`, `afterTool`, `afterTurn` and `beforeFinish`; guards
+  in `RunLoop/Guards/`, order fixed in `GuardSet.standard`. Every firing is a `nudge` event and a `loopEvent` counter.
+- Behavior differences, all small: the stale / same-result / failure aborts fire when their condition is met instead of
+  through a flag that survived into the next message; the screenshot turn now follows the alternation nudge instead
+  of preceding it; the trash warning now actually fires (the arguments were JSON-escaped, so `\/` hid the path);
+  new counters appear for the guards that had none (`missing_tool`, `repeat_call`, `same_result`, ...).
