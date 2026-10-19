@@ -29,12 +29,18 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
     /// A later result contradicted it, or the user doubts it. A stale note is never in the system prompt and is shown as stale.
     public var stale: Bool
     public var staleReason: String?
+    /// A read-only command that proved the note (see `MemoryCheck`), and when it last passed.
+    public var check: String?
+    public var verifiedAt: Date?
+    /// A tool result said a path this note names does not exist. A hint only: the note stays where it is.
+    public var staleHint: String?
 
     public init(id: String = UUID().uuidString, text: String, createdAt: Date = Date(), lastUsedAt: Date? = nil,
                 useCount: Int = 0, importance: Int = 3, pinned: Bool = false, source: String = "self",
                 embedding: [Float]? = nil, embeddingModel: String? = nil,
                 trust: MemoryTrust? = nil, runSession: String? = nil, eventID: Int? = nil,
-                stale: Bool = false, staleReason: String? = nil) {
+                stale: Bool = false, staleReason: String? = nil,
+                check: String? = nil, verifiedAt: Date? = nil, staleHint: String? = nil) {
         self.id = id
         self.text = text
         self.createdAt = createdAt
@@ -51,10 +57,13 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
         self.eventID = eventID
         self.stale = stale
         self.staleReason = staleReason
+        self.check = check
+        self.verifiedAt = verifiedAt
+        self.staleHint = staleHint
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, text, createdAt, lastUsedAt, useCount, importance, pinned, source, embedding, embeddingModel, trust, runSession, eventID, stale, staleReason
+        case id, text, createdAt, lastUsedAt, useCount, importance, pinned, source, embedding, embeddingModel, trust, runSession, eventID, stale, staleReason, check, verifiedAt, staleHint
     }
 
     public init(from decoder: Decoder) throws {
@@ -79,6 +88,9 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
         eventID = try c.decodeIfPresent(Int.self, forKey: .eventID)
         stale = try c.decodeIfPresent(Bool.self, forKey: .stale) ?? false
         staleReason = try c.decodeIfPresent(String.self, forKey: .staleReason)
+        check = try c.decodeIfPresent(String.self, forKey: .check)
+        verifiedAt = try c.decodeIfPresent(Date.self, forKey: .verifiedAt)
+        staleHint = try c.decodeIfPresent(String.self, forKey: .staleHint)
         // Notes saved before trust classes existed: derive from the source. Only the user pins a note, so a pin is the user's say-so.
         let derived = MemoryTrust.classify(source: source)
         trust = try c.decodeIfPresent(MemoryTrust.self, forKey: .trust) ?? (pinned ? max(derived, .user) : derived)
@@ -102,6 +114,9 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
         try c.encodeIfPresent(eventID, forKey: .eventID)
         if stale { try c.encode(true, forKey: .stale) }
         try c.encodeIfPresent(staleReason, forKey: .staleReason)
+        try c.encodeIfPresent(check, forKey: .check)
+        try c.encodeIfPresent(verifiedAt, forKey: .verifiedAt)
+        try c.encodeIfPresent(staleHint, forKey: .staleHint)
     }
 }
 
@@ -182,15 +197,19 @@ public struct MemoryBook: Codable, Equatable, Sendable {
     @discardableResult
     public mutating func add(_ text: String, importance: Int? = nil, source: String = "self", pinned: Bool = false,
                              embedding: [Float]? = nil, embeddingModel: String? = nil, now: Date = Date(),
-                             provenance: RunProvenance? = RunProvenance.current) -> AddOutcome {
+                             provenance: RunProvenance? = RunProvenance.current, check: String? = nil) -> AddOutcome {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .rejected }
         let rated = importance ?? Self.heuristicImportance(trimmed, source: source)
         let trust = MemoryTrust.classify(source: source, tainted: provenance?.tainted ?? false)
         let mayPin = pinned && trust.mayEnterPrefix
+        // A check is a command that will be run later: only for a note that is believed at least as far as the bot's own.
+        let keptCheck = trust >= .selfNote ? check.flatMap { MemoryCheck.isAllowed($0) ? $0.trimmingCharacters(in: .whitespacesAndNewlines) : nil } : nil
+        let proven = keptCheck == nil ? nil : now
         if let index = entries.firstIndex(where: { $0.text.caseInsensitiveCompare(trimmed) == .orderedSame }) {
             entries[index].lastUsedAt = now
             if mayPin && entries[index].trust.mayEnterPrefix { entries[index].pinned = true }
+            if let keptCheck, entries[index].trust >= .selfNote { entries[index].check = keptCheck; entries[index].verifiedAt = proven }
             return .duplicate
         }
         func closeness(_ i: Int) -> Double {
@@ -218,11 +237,14 @@ public struct MemoryBook: Codable, Equatable, Sendable {
             if !entries[index].trust.mayEnterPrefix { entries[index].pinned = false }
             entries[index].runSession = provenance?.session ?? entries[index].runSession
             entries[index].eventID = provenance?.eventID ?? entries[index].eventID
+            // New wording: the old proof no longer describes it.
+            entries[index].check = keptCheck; entries[index].verifiedAt = proven; entries[index].staleHint = nil
             return .updated(entries[index])
         }
         let entry = MemoryEntry(text: trimmed, createdAt: now, importance: rated, pinned: mayPin, source: source,
                                 embedding: embedding, embeddingModel: embeddingModel,
-                                trust: trust, runSession: provenance?.session, eventID: provenance?.eventID)
+                                trust: trust, runSession: provenance?.session, eventID: provenance?.eventID,
+                                check: keptCheck, verifiedAt: proven)
         entries.append(entry)
         return .added(entry)
     }
@@ -274,6 +296,34 @@ public struct MemoryBook: Codable, Equatable, Sendable {
         if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].stale = false; entries[i].staleReason = nil }
     }
 
+    /// The outcome of re-running a note's check. A pass refreshes it (and lifts a stale mark that a failed check set); a
+    /// failure marks it stale with the date, so it leaves the prompt prefix but is kept for the user to see.
+    public mutating func recordCheck(_ id: String, passed: Bool, now: Date = Date()) {
+        guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
+        if passed {
+            entries[i].verifiedAt = now
+            entries[i].staleHint = nil
+            if entries[i].stale, entries[i].staleReason?.hasPrefix("check failed") == true { entries[i].stale = false; entries[i].staleReason = nil }
+        } else {
+            entries[i].verifiedAt = nil
+            entries[i].stale = true
+            entries[i].staleReason = "check failed on " + ISO8601DateFormatter().string(from: now).prefix(10)
+            entries[i].pinned = false
+        }
+    }
+
+    /// Flags notes that name a path a tool result says is missing. Returns how many changed.
+    @discardableResult
+    public mutating func flagPossiblyStale(path: String) -> Int {
+        guard path.contains("/"), path.count >= 4 else { return 0 }
+        var changed = 0
+        for i in entries.indices where !entries[i].stale && entries[i].staleHint == nil && entries[i].text.contains(path) {
+            entries[i].staleHint = "\(path) was reported missing"
+            changed += 1
+        }
+        return changed
+    }
+
     /// The user has read the note and vouches for it: it becomes a user note. Only an app action, never a tool.
     public mutating func markReviewed(_ id: String) {
         if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].trust = .user }
@@ -292,6 +342,7 @@ public struct MemoryBook: Codable, Equatable, Sendable {
         if !entries[index].trust.mayEnterPrefix { entries[index].pinned = false }
         entries[index].runSession = provenance?.session ?? entries[index].runSession
         entries[index].eventID = provenance?.eventID ?? entries[index].eventID
+        entries[index].check = nil; entries[index].verifiedAt = nil; entries[index].staleHint = nil
         entries[index].text = trimmed
         entries[index].embedding = nil
         entries[index].embeddingModel = nil
@@ -512,7 +563,7 @@ public struct MemoryBook: Codable, Equatable, Sendable {
         // 3. notes nobody vouched for expire after a month (archived, not deleted); a stale note stays until the user removes it
         let expired = entries.filter { entry in
             guard !entry.pinned else { return false }
-            let days = now.timeIntervalSince(entry.createdAt) / 86_400
+            let days = now.timeIntervalSince(max(entry.createdAt, entry.verifiedAt ?? entry.createdAt)) / 86_400
             return entry.trust == .untrusted && days > Self.untrustedLifetimeDays
         }
         let dropped = stale + expired.filter { e in !stale.contains(where: { $0.id == e.id }) }

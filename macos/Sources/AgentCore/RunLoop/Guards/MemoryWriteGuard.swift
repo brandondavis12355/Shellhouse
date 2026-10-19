@@ -46,6 +46,25 @@ public final class MemoryWriteGuard: Guard {
                 + "and a note that tells a future run what to do could have come from it. Record a plain fact instead, or ask the user to add the rule."]),
                 kind: "memory_write_blocked")]
         }
-        return []
+        return checkActions(call, ctx)
+    }
+
+    /// A `check` is kept only when it is an allowed read-only command, this run saw it pass, and the run is clean.
+    /// Otherwise the note is saved without it (never refused for that) and the model is told once.
+    private func checkActions(_ call: ToolCall, _ ctx: RunContext) -> [GuardAction] {
+        guard call.name == "remember", let check = call.arguments["check"]?.asString,
+              !check.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        let why: String?
+        if !ctx.taintSources.isEmpty { why = "this run has read untrusted content" }
+        else if !MemoryCheck.isAllowed(check) { why = "it is not an allowed read-only check (test, grep -q, command -v, git rev-parse, ls, joined with &&)" }
+        else if !MemoryCheck.wasProven(check, in: ctx.messages) { why = "you have not run it in this run and seen it exit 0" }
+        else { why = nil }
+        guard let why else { return [] }
+        var arguments = call.arguments
+        arguments["check"] = nil
+        return [.rewrite(ToolCall(name: call.name, arguments: arguments)),
+                .nudge(Nudge(kind: "memory_check_rejected",
+                             text: "The note was saved without its check: \(why). To attach one, run the check with run_shell first, see it pass, then remember again with the same command.",
+                             escalation: .soft))]
     }
 }

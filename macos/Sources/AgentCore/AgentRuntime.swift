@@ -322,11 +322,12 @@ public actor AgentRuntime {
         answerEndsTurnAfterTools: Bool = false,
         seenResults: SeenResults = SeenResults(),
         runLogSink: (any RunLogSink)? = nil,
+        onMissingPath: (@Sendable (String) -> Void)? = nil,
         guards: [any Guard]? = nil
     ) {
         self.runLogSink = runLogSink
         self.log = RunLog(sink: runLogSink)
-        self.guards = guards ?? GuardSet.standard(plainReplyEndsTurn: plainReplyEndsTurn, answerEndsTurnAfterTools: answerEndsTurnAfterTools, seenResults: seenResults)
+        self.guards = guards ?? GuardSet.standard(plainReplyEndsTurn: plainReplyEndsTurn, answerEndsTurnAfterTools: answerEndsTurnAfterTools, seenResults: seenResults, onMissingPath: onMissingPath)
         self.plainReplyEndsTurn = plainReplyEndsTurn
         self.answerEndsTurnAfterTools = answerEndsTurnAfterTools
         self.alwaysRequireApproval = alwaysRequireApproval

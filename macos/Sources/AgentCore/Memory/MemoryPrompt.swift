@@ -22,6 +22,9 @@ public enum MemoryPrompt {
     /// One note as the model reads it, also in `recall_memory` results.
     public static func line(for entry: MemoryEntry, now: Date = Date()) -> String {
         var tags = [entry.source, entry.trust.label, age(of: entry.createdAt, now: now)]
+        if let check = entry.check, let verified = entry.verifiedAt { tags.append("verified \(shortAge(of: verified, now: now)) by `\(clean(check))`") }
+        else if entry.check != nil, !entry.stale { tags.append("check pending") }
+        if let hint = entry.staleHint, !entry.stale { tags.append("possibly stale: \(clean(hint))") }
         if entry.stale { tags.append("marked stale" + (entry.staleReason.map { ": \(clean($0))" } ?? "")) }
         return "[\(tags.joined(separator: ", "))] \(clean(entry.text))"
     }
@@ -34,6 +37,16 @@ public enum MemoryPrompt {
                 .replacingOccurrences(of: "</\(tag)", with: "‹/\(tag)", options: .caseInsensitive)
         }
         return out.count > maxNoteCharacters ? String(out.prefix(maxNoteCharacters)) + "…" : out
+    }
+
+    public static func shortAge(of date: Date, now: Date = Date()) -> String {
+        let minutes = Int(now.timeIntervalSince(date) / 60)
+        switch minutes {
+        case ..<2: return "just now"
+        case ..<120: return "\(minutes) min ago"
+        case ..<2_880: return "\(minutes / 60) h ago"
+        default: return age(of: date, now: now)
+        }
     }
 
     public static func age(of date: Date, now: Date = Date()) -> String {

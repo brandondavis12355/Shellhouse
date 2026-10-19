@@ -894,9 +894,9 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// attempt to judge which memory matters more than another.
     @discardableResult
     func addMemory(_ text: String, source: String = "self", importance: Int? = nil, pinned: Bool = false,
-                   provenance: RunProvenance? = RunProvenance.current) -> Bool {
+                   provenance: RunProvenance? = RunProvenance.current, check: String? = nil) -> Bool {
         let previousBook = memoryBook
-        let outcome = memoryBook.add(text, importance: importance, source: source, pinned: pinned, provenance: provenance)
+        let outcome = memoryBook.add(text, importance: importance, source: source, pinned: pinned, provenance: provenance, check: check)
         if outcome == .rejected { return false }
         let evicted = memoryBook.evictOverCapacity()
         // Persist before archiving: a failed save restores the book, and nothing is archived twice.
@@ -1026,6 +1026,32 @@ final class Bot: Identifiable, @unchecked Sendable {
         return (vector, model)
     }
 
+    /// Re-runs the checks of notes about to be shown (see `MemoryCheck`): a pass refreshes the note, a failure marks it
+    /// stale before the model reads it. Returns the notes as they now are. Needs a running VM; without one, no change.
+    private func recheckNotes(_ entries: [MemoryEntry]) async -> [MemoryEntry] {
+        guard let sandbox, let handle, entries.contains(where: { $0.isCheckDue() }) else { return entries }
+        let verdicts = await MemoryCheck.recheck(entries) { command in
+            guard let result = try? await sandbox.exec(handle.id, command: command, timeout: 5, env: nil), result.exitCode < 126 else { return nil }
+            return result.exitCode == 0
+        }
+        guard !verdicts.isEmpty else { return entries }
+        for verdict in verdicts {
+            memoryBook.recordCheck(verdict.id, passed: verdict.passed)
+            if !verdict.passed { Telemetry.recorder.loopEvent("memory_check_failed") }
+        }
+        BotMemoryStore.saveBook(id: id, memoryBook)
+        memories = memoryBook.texts
+        let byID = Dictionary(uniqueKeysWithValues: memoryBook.entries.map { ($0.id, $0) })
+        return entries.compactMap { byID[$0.id] }
+    }
+
+    /// A tool result said `path` does not exist: notes that name it get a "possibly stale" hint.
+    func flagNotesMentioning(path: String) {
+        guard memoryBook.flagPossiblyStale(path: path) > 0 else { return }
+        BotMemoryStore.saveBook(id: id, memoryBook)
+        Telemetry.recorder.loopEvent("memory_possibly_stale")
+    }
+
     /// The `recall_memory` tool's read side: exact substring matches first, then notes ranked by meaning + keywords
     /// + recency + importance, best first. An empty query lists the whole book.
     func recallMemory(matching query: String) async -> [String] {
@@ -1037,7 +1063,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         where !results.contains(where: { $0.id == scored.entry.id }) {
             results.append(scored.entry)
         }
-        let top = Array(results.prefix(12))
+        let top = await recheckNotes(Array(results.prefix(12)))
         noteMemoriesUsed(top.map(\.id))
         return top.map { MemoryPrompt.line(for: $0) }
     }
@@ -1051,7 +1077,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         let q = await memoryQueryVector(text)
         let ranked = memoryBook.rank(query: String(text.suffix(3_000)), queryEmbedding: q?.vector, queryModel: q?.model, limit: limit)
         noteMemoriesUsed(ranked.map(\.entry.id))
-        return ranked.map(\.entry)
+        return await recheckNotes(ranked.map(\.entry))
     }
 
     /// Prepended to whatever's actually sent to the model — never to what's shown in the transcript. A no-op when
@@ -2705,6 +2731,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                     onRemember: { [weak self] text in
                         await MainActor.run { self?.addMemory(text) ?? false }
                     },
+                    onRememberWithCheck: { [weak self] text, check in
+                        await MainActor.run { self?.addMemory(text, check: check) ?? false }
+                    },
                     onReplaceMemory: { [weak self] noteID, text in
                         await MainActor.run { self?.replaceMemory(id: noteID, text: text) ?? false }
                     },
@@ -2873,7 +2902,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 plainReplyEndsTurn: plainReplyEndsTurn,
                 // Goal work must still record its steps, so only without a goal.
                 answerEndsTurnAfterTools: goalHandler == nil,
-                seenResults: seenResults
+                seenResults: seenResults,
+                onMissingPath: { [weak self] path in Task { @MainActor in self?.flagNotesMentioning(path: path) } }
             )
 
             taintProbe.runtime = runtime
@@ -3399,6 +3429,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                         onRemember: { [weak self] text in
                             await MainActor.run { self?.addMemory(text) ?? false }
                         },
+                        onRememberWithCheck: { [weak self] text, check in
+                            await MainActor.run { self?.addMemory(text, check: check) ?? false }
+                        },
                         onReplaceMemory: { [weak self] noteID, text in
                             await MainActor.run { self?.replaceMemory(id: noteID, text: text) ?? false }
                         },
@@ -3523,7 +3556,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                         inbox: PendingInboxStore.standard,
                         answerEndsTurnAfterTools: true,
                         seenResults: seenResults,
-                        runLogSink: RunLogFileSink(url: TranscriptStore.runLogURL(for: id))
+                        runLogSink: RunLogFileSink(url: TranscriptStore.runLogURL(for: id)),
+                        onMissingPath: { [weak self] path in Task { @MainActor in self?.flagNotesMentioning(path: path) } }
                     )
                 }
                 runtime = newRuntime
