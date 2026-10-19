@@ -251,4 +251,44 @@ final class MemoryHygieneTests: XCTestCase {
         XCTAssertEqual(text.components(separatedBy: MemoryPrompt.openTag).count, 2)
         XCTAssertEqual(text.components(separatedBy: "\n").count, 4, "a note stays on one line")
     }
+
+    // MARK: expiry, stale, recall labels
+
+    func testUntrustedNotesExpireAfterAMonthUnlessReviewed() {
+        let now = Date()
+        var book = MemoryBook()
+        let old = now.addingTimeInterval(-40 * 86_400)
+        book.add("Fact from a delegation.", source: "delegation", now: old, provenance: nil)
+        book.add("Another outside fact.", source: "import", now: old, provenance: nil)
+        book.add("Vouched fact.", source: "import", now: old, provenance: nil)
+        book.add("My own old fact about builds.", importance: 5, source: "self", now: old, provenance: nil)
+        book.markReviewed(book.entries[2].id)
+        let report = book.consolidate(now: now)
+        XCTAssertEqual(Set(report.archived.map(\.text)), ["Fact from a delegation.", "Another outside fact."])
+        XCTAssertEqual(Set(book.entries.map(\.text)), ["Vouched fact.", "My own old fact about builds."])
+    }
+
+    func testAStaleNoteLeavesThePrefixAndSaysSo() {
+        var book = MemoryBook()
+        book.add("Deploys use make release.", source: "user", pinned: true, provenance: nil)
+        let id = book.entries[0].id
+        XCTAssertEqual(book.block(.user).count, 1)
+        book.markStale(id, reason: "the Makefile has no release target")
+        XCTAssertTrue(book.block(.user).isEmpty)
+        XCTAssertTrue(book.core().isEmpty)
+        XCTAssertFalse(book.entries[0].pinned)
+        let line = MemoryPrompt.line(for: book.entries[0])
+        XCTAssertTrue(line.contains("marked stale: the Makefile has no release target"))
+        book.clearStale(id)
+        XCTAssertFalse(book.entries[0].stale)
+        let back = try? JSONDecoder().decode(MemoryBook.self, from: JSONEncoder().encode(book))
+        XCTAssertEqual(back, book)
+    }
+
+    func testRecallLinesNameSourceTrustAndAge() {
+        let entry = MemoryEntry(text: "Use host b.", createdAt: Date().addingTimeInterval(-5 * 86_400), source: "import")
+        let line = MemoryPrompt.line(for: entry)
+        XCTAssertTrue(line.hasPrefix("[import, unverified"))
+        XCTAssertTrue(line.contains("5 days ago"))
+    }
 }

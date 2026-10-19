@@ -26,11 +26,15 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
     /// The run (`RunEvent.session`) and the model reply (`RunEvent.id`) that wrote it, when a run did.
     public var runSession: String?
     public var eventID: Int?
+    /// A later result contradicted it, or the user doubts it. A stale note is never in the system prompt and is shown as stale.
+    public var stale: Bool
+    public var staleReason: String?
 
     public init(id: String = UUID().uuidString, text: String, createdAt: Date = Date(), lastUsedAt: Date? = nil,
                 useCount: Int = 0, importance: Int = 3, pinned: Bool = false, source: String = "self",
                 embedding: [Float]? = nil, embeddingModel: String? = nil,
-                trust: MemoryTrust? = nil, runSession: String? = nil, eventID: Int? = nil) {
+                trust: MemoryTrust? = nil, runSession: String? = nil, eventID: Int? = nil,
+                stale: Bool = false, staleReason: String? = nil) {
         self.id = id
         self.text = text
         self.createdAt = createdAt
@@ -45,10 +49,12 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
         self.embeddingModel = embeddingModel
         self.runSession = runSession
         self.eventID = eventID
+        self.stale = stale
+        self.staleReason = staleReason
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, text, createdAt, lastUsedAt, useCount, importance, pinned, source, embedding, embeddingModel, trust, runSession, eventID
+        case id, text, createdAt, lastUsedAt, useCount, importance, pinned, source, embedding, embeddingModel, trust, runSession, eventID, stale, staleReason
     }
 
     public init(from decoder: Decoder) throws {
@@ -71,6 +77,8 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
         embeddingModel = try c.decodeIfPresent(String.self, forKey: .embeddingModel)
         runSession = try c.decodeIfPresent(String.self, forKey: .runSession)
         eventID = try c.decodeIfPresent(Int.self, forKey: .eventID)
+        stale = try c.decodeIfPresent(Bool.self, forKey: .stale) ?? false
+        staleReason = try c.decodeIfPresent(String.self, forKey: .staleReason)
         // Notes saved before trust classes existed: derive from the source. Only the user pins a note, so a pin is the user's say-so.
         let derived = MemoryTrust.classify(source: source)
         trust = try c.decodeIfPresent(MemoryTrust.self, forKey: .trust) ?? (pinned ? max(derived, .user) : derived)
@@ -92,6 +100,8 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
         try c.encode(trust, forKey: .trust)
         try c.encodeIfPresent(runSession, forKey: .runSession)
         try c.encodeIfPresent(eventID, forKey: .eventID)
+        if stale { try c.encode(true, forKey: .stale) }
+        try c.encodeIfPresent(staleReason, forKey: .staleReason)
     }
 }
 
@@ -134,6 +144,8 @@ public struct MemoryBook: Codable, Equatable, Sendable {
     public private(set) var entries: [MemoryEntry]
 
     public static let capacity = 200
+    /// Days an untrusted note is kept without a user review before it is archived.
+    public static let untrustedLifetimeDays = 30.0
     public static let nearDuplicate = 0.7
     public static let mergeThreshold = 0.75
     /// Recency half-life in days: a note untouched for 3 weeks counts half as "recent".
@@ -247,6 +259,19 @@ public struct MemoryBook: Codable, Equatable, Sendable {
     /// Pinning puts a note in the system prompt, so an untrusted note can't be pinned: review it first (`markReviewed`).
     public mutating func setPinned(_ id: String, _ pinned: Bool) {
         if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].pinned = pinned && entries[i].trust.mayEnterPrefix }
+    }
+
+    /// A note a later result contradicted (or the user doubts): it leaves the prompt prefix and is shown as stale. Not deleted.
+    public mutating func markStale(_ id: String, reason: String) {
+        if let i = entries.firstIndex(where: { $0.id == id }) {
+            entries[i].stale = true
+            entries[i].staleReason = reason
+            entries[i].pinned = false
+        }
+    }
+
+    public mutating func clearStale(_ id: String) {
+        if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].stale = false; entries[i].staleReason = nil }
     }
 
     /// The user has read the note and vouches for it: it becomes a user note. Only an app action, never a tool.
@@ -370,7 +395,7 @@ public struct MemoryBook: Codable, Equatable, Sendable {
 
     /// The block a note may be shown in as part of the system prompt: none for an untrusted note.
     public static func prefixBlock(for entry: MemoryEntry) -> MemoryBlock? {
-        entry.trust.mayEnterPrefix ? block(for: entry) : nil
+        entry.trust.mayEnterPrefix && !entry.stale ? block(for: entry) : nil
     }
 
     /// The notes for one core block, newest-useful first, inside a short character budget.
@@ -391,7 +416,7 @@ public struct MemoryBook: Codable, Equatable, Sendable {
     /// Pinned notes first, then the highest keep-scores, skipping trivia. The prompt uses `block` instead.
     public func core(now: Date = Date(), limit: Int = 12) -> [MemoryEntry] {
         entries
-            .filter { $0.trust.mayEnterPrefix && ($0.pinned || $0.importance >= 2) }
+            .filter { $0.trust.mayEnterPrefix && !$0.stale && ($0.pinned || $0.importance >= 2) }
             .sorted { keepScore($0, now: now) > keepScore($1, now: now) }
             .prefix(limit)
             .map { $0 }
@@ -484,9 +509,16 @@ public struct MemoryBook: Codable, Equatable, Sendable {
             default: return false
             }
         }
-        if !stale.isEmpty {
-            remove(ids: Set(stale.map(\.id)))
-            report.archived = stale
+        // 3. notes nobody vouched for expire after a month (archived, not deleted); a stale note stays until the user removes it
+        let expired = entries.filter { entry in
+            guard !entry.pinned else { return false }
+            let days = now.timeIntervalSince(entry.createdAt) / 86_400
+            return entry.trust == .untrusted && days > Self.untrustedLifetimeDays
+        }
+        let dropped = stale + expired.filter { e in !stale.contains(where: { $0.id == e.id }) }
+        if !dropped.isEmpty {
+            remove(ids: Set(dropped.map(\.id)))
+            report.archived.append(contentsOf: dropped)
         }
         return report
     }

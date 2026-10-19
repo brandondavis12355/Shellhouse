@@ -945,6 +945,20 @@ final class Bot: Identifiable, @unchecked Sendable {
         BotMemoryStore.saveBook(id: id, memoryBook)
     }
 
+    /// The user has read a note and vouches for it (it becomes a user note and may be pinned).
+    func reviewMemory(_ index: Int) {
+        guard memoryBook.entries.indices.contains(index) else { return }
+        memoryBook.markReviewed(memoryBook.entries[index].id)
+        BotMemoryStore.saveBook(id: id, memoryBook)
+    }
+
+    func setMemoryStale(_ index: Int, _ stale: Bool) {
+        guard memoryBook.entries.indices.contains(index) else { return }
+        let noteID = memoryBook.entries[index].id
+        if stale { memoryBook.markStale(noteID, reason: "marked by the user") } else { memoryBook.clearStale(noteID) }
+        BotMemoryStore.saveBook(id: self.id, memoryBook)
+    }
+
     func setMemoryImportance(_ index: Int, _ value: Int) {
         guard memoryBook.entries.indices.contains(index) else { return }
         memoryBook.setImportance(memoryBook.entries[index].id, value)
@@ -1016,7 +1030,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// + recency + importance, best first. An empty query lists the whole book.
     func recallMemory(matching query: String) async -> [String] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return memories }
+        guard !needle.isEmpty else { return memoryBook.entries.map { MemoryPrompt.line(for: $0) } }
         var results: [MemoryEntry] = memoryBook.entries.filter { $0.text.lowercased().contains(needle) }
         let q = await memoryQueryVector(query)
         for scored in memoryBook.rank(query: query, queryEmbedding: q?.vector, queryModel: q?.model, limit: 12)
@@ -1025,7 +1039,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         }
         let top = Array(results.prefix(12))
         noteMemoriesUsed(top.map(\.id))
-        return top.map(\.text)
+        return top.map { MemoryPrompt.line(for: $0) }
     }
 
     /// Notes relevant to an incoming message; `withRelevantMemoryContext` puts them in front of the model so it does
