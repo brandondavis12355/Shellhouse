@@ -1742,16 +1742,30 @@ final class Bot: Identifiable, @unchecked Sendable {
 
     struct RecentDelegation { let peerID: String; let message: String; let reply: String; let tainted: Bool; let checked: Bool; let at: Date }
     var recentDelegations: [RecentDelegation] = []
+    private var lastCheckoutRefresh = Date.distantPast
 
-    /// `git fetch` in every repository under /workspace, best effort: lets a review start from current remote state.
-    /// Returns a short note of what was fetched, or nil if there was nothing to do or it could not run.
-    func refreshCheckouts() async -> String? {
-        guard let sandbox, let handle else { return nil }
-        let command = "cd /workspace 2>/dev/null || exit 0; n=0; for d in */.git; do [ -e \"$d\" ] || continue; "
-            + "timeout 25 git -C \"${d%/.git}\" fetch --all --prune --quiet >/dev/null 2>&1; n=$((n+1)); done; echo $n"
-        guard let result = try? await sandbox.exec(handle.id, command: command, timeout: 60, env: nil),
-              let count = Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)), count > 0 else { return nil }
-        return "\(count) repo\(count == 1 ? "" : "s")"
+    /// Fetches every repository under /workspace and fast-forwards the ones that can safely move (see `CheckoutSync`),
+    /// so coding or review work starts from current remote state. Not more than once per `minInterval`.
+    /// Returns what the bot should be told, or nil when everything was already current, nothing could run, or it ran lately.
+    func refreshCheckouts(minInterval: TimeInterval = 60) async -> String? {
+        guard let sandbox, let handle, Date().timeIntervalSince(lastCheckoutRefresh) >= minInterval else { return nil }
+        lastCheckoutRefresh = Date()
+        // A private repository needs the saved GitHub token, the way a run_shell with use_secrets would pass it. It goes
+        // only into this command's environment; the script prints repository status lines, never the token.
+        let store = SecretStore()
+        var env: [String: String]?
+        if ((try? await store.list()) ?? []).contains(where: { $0.name == "GITHUB_TOKEN" }),
+           let token = try? await store.resolveOne(name: "GITHUB_TOKEN") { env = ["GITHUB_TOKEN": token] }
+        guard let result = try? await sandbox.exec(handle.id, command: CheckoutSync.script(), timeout: 120, env: env) else { return nil }
+        let report = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !report.isEmpty else { return nil }
+        return CheckoutSync.note(forReport: report)
+    }
+
+    /// The text for a run that may involve code: with a note on the state of the checkouts when they were behind.
+    func withFreshCheckouts(_ text: String) async -> String {
+        guard let note = await refreshCheckouts() else { return text }
+        return text + "\n\n" + note
     }
 
     func delegateToBot(named name: String, message: String, quickIfBusy: Bool = false, senderTainted: Bool = false, hop: Int = 0, originID: String? = nil) async -> [String: Any] {
@@ -2907,7 +2921,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             )
 
             taintProbe.runtime = runtime
-            let runGoal = await withRelevantMemoryContext(goal)
+            let runGoal = await withFreshCheckouts(await withRelevantMemoryContext(goal))
             let runPrompt = fullSystemPrompt(isolated: true) + "\n\n---\n\n" + systemPromptSuffix + "\n\n" + Self.isolatedReplyContract
             let telemetry = TelemetryContext(bot: name, purpose: debugContext)
             await Telemetry.$context.withValue(telemetry) { await runtime.start(systemPrompt: runPrompt, goal: runGoal) }
@@ -3413,7 +3427,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             }
             if let runtime {
                 lastOwnChatToolOutput = ""
-                let turnText = await withRelevantMemoryContext(queued.text)
+                let turnText = await withFreshCheckouts(await withRelevantMemoryContext(queued.text))
                 await Telemetry.$context.withValue(TelemetryContext(bot: name, purpose: "chat")) {
                     await runtime.send(turnText, images: queued.images)
                 }
@@ -3594,7 +3608,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                     history = displayMessages.dropLast().map { ChatMessage(role: $0.role, content: $0.text) }
                 }
                 await newRuntime.seed(systemPrompt: fullSystemPrompt(), history: Array(history))
-                await newRuntime.send(await withRelevantMemoryContext(queued.text), images: queued.images)
+                await newRuntime.send(await withFreshCheckouts(await withRelevantMemoryContext(queued.text)), images: queued.images)
             }
             BotActivity.shared.end(chatSpan)
             currentRunLockOwner = nil
