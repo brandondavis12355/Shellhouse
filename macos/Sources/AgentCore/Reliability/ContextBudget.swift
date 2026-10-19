@@ -46,9 +46,12 @@ public enum ContextBudget {
         GOAL: what you are trying to achieve, in one line.
         DONE AND VERIFIED: what was completed and how it was confirmed (command and result).
         FILES AND PATHS: files, directories, branches, URLs and names you created or rely on.
+        KEY FINDINGS: for each file or page you read, the facts you need from it (function names, line numbers, \
+        exact values, what is wrong), so you never have to read it again.
         WHAT WORKED: exact commands or steps that succeeded and will be needed again.
         DECISIONS: choices made and by whom.
-        OPEN: what is still in progress, blocked, or waiting on someone, and what's next.
+        OPEN: what is still in progress, blocked, or waiting on someone, and what's next. Never list reading a file \
+        you have already read as a next step: use KEY FINDINGS, and name only what you still do not know.
         Quote exact values (paths, versions, IDs, error text) rather than paraphrasing them. Never include \
         passwords, tokens or keys. Later tool results override earlier claims: drop anything a later result \
         contradicts, and don't list as done or decided what no tool result or message confirmed. This replaces \
