@@ -53,6 +53,22 @@ final class LoopPlanTests: XCTestCase {
             return replies.isEmpty ? ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [finish]), usage: nil) : replies.removeFirst()
         }
     }
+    /// Replays fixed assistant messages in order, then finishes.
+    final class ScriptedForRunLog: ModelBackend, @unchecked Sendable {
+        let name = "scripted"
+        private let lock = NSLock()
+        private var replies: [ChatMessage]
+        private(set) var seen: [[ChatMessage]] = []
+        init(_ replies: [ChatMessage]) { self.replies = replies }
+        func supportsVision(model: String?) async -> Bool { false }
+        func availableModels() async throws -> [String] { [] }
+        func chat(messages: [ChatMessage], tools: [ToolSchema], model: String?, temperature: Double) async throws -> ModelReply {
+            lock.lock(); defer { lock.unlock() }
+            seen.append(messages)
+            let next = replies.isEmpty ? ChatMessage(role: .assistant, content: "", toolCalls: [LoopPlanTests.finish]) : replies.removeFirst()
+            return ModelReply(message: next, usage: nil)
+        }
+    }
     static let finish = ToolCall(name: "finish_task", arguments: ["summary": AnyCodable("done"), "outcome": AnyCodable("done")])
 
     private func read(_ path: String) -> ToolCall { ToolCall(name: "read_file", arguments: ["path": AnyCodable(path)]) }

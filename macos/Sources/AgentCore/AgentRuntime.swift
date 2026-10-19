@@ -130,7 +130,21 @@ public actor AgentRuntime {
     /// and CLI runs never write to the user's real audit log or review inbox.
     private let gate: ToolGate
 
-    private var messages: [ChatMessage] = []
+    /// Everything that happened in this run, append-only. The prompt is `ContextView`'s reading of it.
+    private var log: RunLog
+    private let runLogSink: (any RunLogSink)?
+    private var viewCache: (count: Int, collapse: Bool, rendered: ContextView.Rendered)?
+    private var rendered: ContextView.Rendered {
+        let collapse = Reliability.isOn(.outputLimits)
+        if let cache = viewCache, cache.count == log.count, cache.collapse == collapse { return cache.rendered }
+        let fresh = ContextView(collapseOldOutput: collapse).render(log.events)
+        viewCache = (log.count, collapse, fresh)
+        return fresh
+    }
+    /// What the model is sent: the log read through `ContextView`.
+    private var messages: [ChatMessage] { rendered.messages }
+    /// The model reply appended last, so a guard can ask for it to be left out of the prompt.
+    private var lastReplyEventID: Int?
     private var iterations = 0
     private var tokensUsed = 0
     /// For local models, `maxTokens` counts new work: replies plus what was added to the conversation since
@@ -225,15 +239,7 @@ public actor AgentRuntime {
         "get_bot_instructions",
     ]
 
-    /// Screenshots dominate token cost once skills are lazy-loaded (see
-    /// ToolRegistry/ContentView) rather than dumped into the system prompt.
-    /// Keeping every screenshot in a long run burns the token budget on
-    /// stale images the model no longer needs — see Anthropic's
-    /// computer-use reference implementation, which prunes to the N most
-    /// recent images for the same reason. Older ones are replaced with a
-    /// text placeholder rather than dropped silently, so the model knows
-    /// why that context disappeared instead of being confused by a gap.
-    private static let maxRetainedImages = 2
+    /// Screenshots dominate token cost, so only the newest few stay in the prompt (see `ContextView`; the log keeps them all).
 
     /// The only way `loop()` will ever end a run — see `finishTaskSchema`.
     /// "The model returned no tool_calls" is deliberately NOT treated as
@@ -349,8 +355,11 @@ public actor AgentRuntime {
         initialTaint: [TaintSource] = [],
         plainReplyEndsTurn: Bool = false,
         answerEndsTurnAfterTools: Bool = false,
-        seenResults: SeenResults = SeenResults()
+        seenResults: SeenResults = SeenResults(),
+        runLogSink: (any RunLogSink)? = nil
     ) {
+        self.runLogSink = runLogSink
+        self.log = RunLog(sink: runLogSink)
         self.seenResults = seenResults
         self.plainReplyEndsTurn = plainReplyEndsTurn
         self.answerEndsTurnAfterTools = answerEndsTurnAfterTools
@@ -396,7 +405,11 @@ public actor AgentRuntime {
         tokensUsed = 0
         chargedThrough = 0
         callFingerprints = [:]
-        messages = [ChatMessage(role: .system, content: systemPrompt)] + history
+        log = RunLog(sink: runLogSink)
+        log.append(.stateNote("seeded with \(history.count) earlier messages"))
+        // The earlier turns were saved by the app's transcript, not by this log: keep them in memory only.
+        log.append(.system(systemPrompt), persist: false)
+        for message in history { log.append(Self.event(for: message), persist: false) }
         chargedThrough = messages.count
     }
 
@@ -410,10 +423,9 @@ public actor AgentRuntime {
         tokensUsed = 0
         chargedThrough = 0
         callFingerprints = [:]
-        messages = [
-            ChatMessage(role: .system, content: systemPrompt),
-            ChatMessage(role: .user, content: goal),
-        ]
+        log = RunLog(sink: runLogSink)
+        log.append(.system(systemPrompt))
+        log.append(.userMessage(content: goal, images: nil))
         currentGoal = goal
         await gate.setTask(goal)
         toolCallsThisTurn = 0
@@ -436,7 +448,7 @@ public actor AgentRuntime {
     /// `screenshot` tool result uses, just supplied by the user instead of
     /// the agent's own eyes.
     public func send(_ userMessage: String, images: [String] = []) async {
-        messages.append(ChatMessage(role: .user, content: userMessage, images: images.isEmpty ? nil : images))
+        log.append(.userMessage(content: userMessage, images: images.isEmpty ? nil : images))
         currentGoal = userMessage
         await gate.setTask(userMessage)
         toolCallsThisTurn = 0
@@ -492,19 +504,18 @@ public actor AgentRuntime {
                 return
             }
             await compactContextIfNeeded()
-            if Reliability.isOn(.outputLimits) { messages = ObservationPolicy.collapseStale(messages) }
             iterations += 1
             if Reliability.isOn(.taskFocus), let warning = StepBudget.warning(iteration: iterations, max: budgets.maxIterations), budgetWarningsSent.insert(warning.id).inserted {
-                messages.append(ChatMessage(role: .user, content: "[budget] " + warning.text))
+                appendNudge(kind: "budget_warning", "[budget] " + warning.text)
             }
             // Manus-style recitation: re-state the objective at the END of the context every few steps, where
             // the model pays the most attention, instead of trusting it to remember step 0.
             // Earlier reminders stay where they are: removing one shifts everything after it, which
             // makes the model server re-read the conversation from that point instead of reusing its cache.
             if Reliability.isOn(.taskFocus), iterations > 1, iterations % 5 == 0, !currentGoal.isEmpty {
-                messages.append(ChatMessage(role: .user, content: "[reminder] Your task: \(String(currentGoal.prefix(400))). "
+                appendNudge(kind: "reminder", "[reminder] Your task: \(String(currentGoal.prefix(400))). "
                     + "Step \(iterations) of \(budgets.maxIterations). Stay on this task; when it is answered, call finish_task."
-                    + (plan.isEmpty ? "" : "\nYour plan:\n" + planText)))
+                    + (plan.isEmpty ? "" : "\nYour plan:\n" + planText))
             }
             onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
 
@@ -556,7 +567,7 @@ public actor AgentRuntime {
             }
             chargeUsage(reply.usage)
             if loopBroken {
-                messages.append(reply.message)
+                lastReplyEventID = log.append(.modelReply(reply.message)).id
                 onEvent(.message(reply.message))
                 guard noteNoAction(nudge: "Your last reply repeated the same passage over and over and was cut off. "
                     + "Do not write it again. Call the one tool for your next real step now, or if you are blocked call finish_task with outcome blocked and say why.") else { return }
@@ -567,7 +578,7 @@ public actor AgentRuntime {
                 // The model wrote its tool call as text. Treat it as the call it meant to make.
                 reply = ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [recovered]), usage: reply.usage)
             }
-            messages.append(reply.message)
+            lastReplyEventID = log.append(.modelReply(reply.message)).id
             // After "I'll do X" with no tool call, the model usually repeats that sentence alongside the call:
             // show it once, not twice.
             let replyText = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -615,11 +626,8 @@ public actor AgentRuntime {
                 // "didn't produce a response" placeholder with no way to
                 // tell whether the bot actually finished the work).
                 guard !summary.isEmpty else {
-                    messages.append(ChatMessage(
-                        role: .user,
-                        content: "finish_task needs a non-empty `summary` — the actual result, or a clear "
-                            + "explanation of why you're blocked. Call it again with that filled in."
-                    ))
+                    appendNudge(kind: "empty_summary", "finish_task needs a non-empty `summary` — the actual result, or a clear "
+                        + "explanation of why you're blocked. Call it again with that filled in.")
                     continue
                 }
                 // "Done" with plan steps still open: refuse once (only when finish_task is the sole call,
@@ -694,18 +702,18 @@ public actor AgentRuntime {
             onEvent(.status(.aborted("\(error)")))
             return false
         case .nudge(let text):
-            if messages.last?.content != text { messages.append(ChatMessage(role: .user, content: text)) }
+            if messages.last?.content != text { appendNudge(kind: "monologue", text) }
             return true
         case .fine:
-            if messages.last?.content != nudge { messages.append(ChatMessage(role: .user, content: nudge)) }
+            if messages.last?.content != nudge { appendNudge(kind: "no_action", nudge) }
             return true
         }
     }
 
     /// Drops the announcement from the model context. The chat already showed it.
     private func removeAssistantAnnouncement(_ text: String) {
-        guard let index = messages.lastIndex(where: { $0.role == .assistant && $0.content == text && ($0.toolCalls ?? []).isEmpty }) else { return }
-        messages.remove(at: index)
+        guard let id = lastReplyEventID else { return }
+        log.append(.nudge(kind: "narration_dropped", text: "", escalation: 0, supersedes: id, inContext: false))
     }
 
     private static func cutRepeatedReply(_ text: String, onEvent: @escaping @Sendable (Event) -> Void) -> ModelReply {
@@ -786,7 +794,7 @@ public actor AgentRuntime {
             await execute(call, repeatCount: repeatCount, decision: decision)
             switch Reliability.isOn(.loopGuards) ? stuck.recordAction(Self.repeatFingerprint(for: call)) : .fine {
             case .abort(let why): abortForStuck = why
-            case .nudge(let text): messages.append(ChatMessage(role: .user, content: text))
+            case .nudge(let text): appendNudge(kind: "alternating", text)
             case .fine: break
             }
             if let why = abortForStuck {
@@ -836,8 +844,9 @@ public actor AgentRuntime {
         // The same look at the same thing, with the same answer, while the first answer is still in the conversation:
         // say so instead of pasting it again (it doubled the context and sent bots round in circles).
         let resultText = jsonString(shown)
+        let recentMessages = messages.suffix(40)
         if Reliability.isOn(.loopGuards), ObservationPolicy.isObservation(decision), resultText.count > 400,
-           messages.suffix(40).contains(where: { $0.role == .tool && $0.toolName == call.name && $0.content == resultText }) {
+           recentMessages.contains(where: { $0.role == .tool && $0.toolName == call.name && $0.content == resultText }) {
             appendToolResult(name: call.name, observation: ["unchanged": true, "note":
                 "Identical to your earlier \(call.name) result with the same arguments, which is still above in this conversation. "
                 + "Nothing changed. Use what you already have and take the next step; don't read it again."])
@@ -864,13 +873,11 @@ public actor AgentRuntime {
         if staleKey != nil {
             staleStreak = alreadySeen ? staleStreak + 1 : 0
             if staleStreak == Self.staleNudgeAt {
-                messages.append(ChatMessage(
-                    role: .user,
-                    content: "Your last \(staleStreak) results were all ones you had already seen (this turn or an earlier one): "
+                appendNudge(kind: "stale_results",
+                    "Your last \(staleStreak) results were all ones you had already seen (this turn or an earlier one): "
                         + "nothing has changed. Checking again won't change it. If you're waiting on someone (a push, a review, a "
                         + "decision), say in one line what you're waiting for and end your turn now; you'll be woken when they post. "
-                        + "If you're the one who should act, act on what you already know."
-                ))
+                        + "If you're the one who should act, act on what you already know.")
             } else if staleStreak >= Self.staleAbortAt {
                 abortForStale = true
             }
@@ -878,13 +885,11 @@ public actor AgentRuntime {
         if !Reliability.isOn(.loopGuards) {
             // same-result guard switched off
         } else if streak == Self.sameResultNudgeAt {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "\(call.name) has now returned the identical result \(streak) times in a row. Running it again, even "
+            appendNudge(kind: "same_result",
+                "\(call.name) has now returned the identical result \(streak) times in a row. Running it again, even "
                     + "reworded, will not change the answer. An empty or negative result is information: change your approach "
                     + "(for example, a package lookup that prints nothing usually means the package lists are not loaded: run "
-                    + "`sudo apt-get update` first), do what the result implies, or say plainly that you are blocked and what you need."
-            ))
+                    + "`sudo apt-get update` first), do what the result implies, or say plainly that you are blocked and what you need.")
         } else if streak >= Self.sameResultAbortAt {
             abortForSameResults = true
         }
@@ -907,22 +912,18 @@ public actor AgentRuntime {
         // stuck: checking whether something exists, finding it doesn't,
         // and re-checking instead of creating it.
         if repeatCount == 2 {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "You just called \(call.name) again with the exact same arguments — you already "
+            appendNudge(kind: "repeat_call",
+                "You just called \(call.name) again with the exact same arguments — you already "
                     + "have that result above, calling it again won't produce a different answer. If "
                     + "you're trying to verify something, act on what you already learned now instead of "
-                    + "re-checking; repeating this same call much more will end the run early with no result."
-            ))
+                    + "re-checking; repeating this same call much more will end the run early with no result.")
         } else if repeatCount == Self.loopRepeatThreshold {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "This is the SAME '\(call.name)' call for the \(repeatCount)rd time in a row, "
+            appendNudge(kind: "repeat_call_last",
+                "This is the SAME '\(call.name)' call for the \(repeatCount)rd time in a row, "
                     + "with no different action taken in between — ONE more repeat of it will end this "
                     + "run early with nothing accomplished. If you were checking whether something exists "
                     + "and the result says it doesn't, that IS your answer — take whatever action follows "
-                    + "from that now (e.g. create it) instead of checking a fourth time."
-            ))
+                    + "from that now (e.g. create it) instead of checking a fourth time.")
         }
 
         // Not just the `screenshot` tool: `click` and `type_text` now attach
@@ -931,36 +932,11 @@ public actor AgentRuntime {
         // ask for it — that used to be optional and was reliably skipped.
         guard let base64 = screenshotBase64 else { return }
         if await model.supportsVision(model: modelName) {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "Here is the current screenshot. Compare it against what you expected to happen — "
+            log.append(.screenshot(content: "Here is the current screenshot. Compare it against what you expected to happen — "
                     + "does it actually show the intended effect? Don't assume the previous action worked "
-                    + "just because it returned ok:true.",
-                images: [base64]
-            ))
-            pruneOldScreenshots()
+                    + "just because it returned ok:true.", images: [base64]))
         } else {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "(a screenshot was taken, but the active model has no vision support and cannot see it)"
-            ))
-        }
-    }
-
-    /// Keeps only the most recent `maxRetainedImages` screenshots in
-    /// context, replacing older ones with a text placeholder. Screenshots
-    /// are the dominant token cost in a long GUI-driving run — this is the
-    /// same image-pruning Anthropic's own computer-use reference
-    /// implementation does, for the same reason: a screenshot from 10 turns
-    /// ago that the model no longer needs still costs the same tokens as a
-    /// current one if left in context.
-    private func pruneOldScreenshots() {
-        let imageIndices = messages.indices.filter { !(messages[$0].images ?? []).isEmpty }
-        guard imageIndices.count > Self.maxRetainedImages else { return }
-        for index in imageIndices.dropLast(Self.maxRetainedImages) {
-            messages[index].images = nil
-            messages[index].content = "(an older screenshot was here; it's been removed to save context — "
-                + "take a fresh one if you need to see current state)"
+            log.append(.userMessage(content: "(a screenshot was taken, but the active model has no vision support and cannot see it)", images: nil))
         }
     }
 
@@ -1031,10 +1007,10 @@ public actor AgentRuntime {
         defer { lastCompactionMessageCount = messages.count }
         // Old tool output is usually most of it: dropping that first is free, a summary costs a model call.
         let before = max(estimatedTotal, reported)
-        let collapsed = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
-        let collapsedTokens = collapsed.reduce(0) { $0 + estimatedTokens(for: $1) }
+        let collapsedTokens = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
+            .reduce(0) { $0 + estimatedTokens(for: $1) }
         if collapsedTokens < Int(Double(threshold) * 0.7) {
-            messages = collapsed
+            log.append(.condensed(.collapse(keepLast: 4, minCharacters: 400, batch: 1)))
             lastPromptTokens = 0
             chargedThrough = messages.count
             onEvent(.contextTrimmed(detail: "collapsed old tool output (no summary needed): ~\(before) → ~\(collapsedTokens) tokens, limit \(threshold), \(messages.count) messages kept"))
@@ -1047,11 +1023,11 @@ public actor AgentRuntime {
         }
         // Aim well under the threshold so the next compaction isn't a few calls away.
         if messages.reduce(0, { $0 + estimatedTokens(for: $1) }) > Int(Double(threshold) * 0.7) {
-            messages = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
+            log.append(.condensed(.collapse(keepLast: 4, minCharacters: 400, batch: 1)))
         }
         // Still too big (a few huge recent tool results): shrink older results harder.
         if messages.reduce(0, { $0 + estimatedTokens(for: $1) }) > threshold {
-            messages = ObservationPolicy.collapseStale(messages, keepLast: 3, minCharacters: 400, batch: 1)
+            log.append(.condensed(.collapse(keepLast: 3, minCharacters: 400, batch: 1)))
         }
         let after = messages.reduce(0) { $0 + estimatedTokens(for: $1) }
         onEvent(.contextTrimmed(detail: "after compaction: ~\(before) → ~\(after) tokens, limit \(threshold), \(countBefore) → \(messages.count) messages"))
@@ -1098,8 +1074,9 @@ public actor AgentRuntime {
         // Too little old history to be worth a summary call: the size is in recent tool output instead,
         // which `compactContextIfNeeded` shrinks next.
         guard cutIndex - firstSummarized >= 4 else { return }
-        let toSummarize = Array(messages[firstSummarized..<cutIndex])
-        let kept = Array(messages[cutIndex...])
+        let current = rendered
+        let toSummarize = Array(current.messages[firstSummarized..<cutIndex])
+        let firstID = current.sourceIDs[firstSummarized], lastID = current.sourceIDs[cutIndex - 1]
         // Images stripped from the copies sent for summarizing — the
         // point is a text digest, not reproducing them, and this keeps
         // the summarization call itself cheap and working even when the
@@ -1128,12 +1105,7 @@ public actor AgentRuntime {
         guard !summaryText.isEmpty else { return }
 
         let droppedCount = toSummarize.count
-        let summaryMessage = ChatMessage(
-            role: .user,
-            content: "(Earlier conversation summarized to keep this within the model's context — "
-                + "nothing before this point is verbatim anymore:)\n\n\(summaryText)"
-        )
-        messages = [messages[0]] + (keepTask ? [taskMessage] : []) + [summaryMessage] + kept
+        log.append(.condensed(.summary(first: firstID, last: lastID, text: summaryText)))
         onEvent(.contextCompacted(summary: summaryText))
         Telemetry.recorder.compaction(dropped: droppedCount)
         // `.system` role specifically: `Bot.handleEvent`'s `.message`
@@ -1282,9 +1254,9 @@ public actor AgentRuntime {
         if sameFailureStreak >= FailureCheck.stopAfter || failureStreak >= FailureCheck.stopAfterAny {
             abortForFailures = true
         } else if kind == .blocked {
-            messages.append(ChatMessage(role: .user, content: FailureCheck.blockedNotice))
+            appendNudge(kind: "blocked", FailureCheck.blockedNotice)
         } else if kind == .hard || sameFailureStreak == 2 || failureStreak == FailureCheck.stopAfter {
-            messages.append(ChatMessage(role: .user, content: FailureCheck.stopNotice))
+            appendNudge(kind: "failure_stop", FailureCheck.stopNotice)
         }
     }
 
@@ -1323,15 +1295,15 @@ public actor AgentRuntime {
         let key = call.name + "|" + normalized
         errorCounts[key, default: 0] += 1
         guard errorCounts[key] == Self.sameErrorNudgeAt else { return }
-        messages.append(ChatMessage(role: .user, content:
+        appendNudge(kind: "same_error",
             "[stuck] \(call.name) has failed \(Self.sameErrorNudgeAt) times with the same error: \"\(String(error.prefix(240)))\". "
             + "Repeating it won't help. Read the error, check your assumptions (path, name, arguments, whether a tool is installed), "
-            + "and try a different approach; if you can't, finish_task with outcome \"blocked\" and say what you need."))
+            + "and try a different approach; if you can't, finish_task with outcome \"blocked\" and say what you need.")
     }
 
     private func appendToolResult(name: String, observation: [String: Any]) {
         let message = ChatMessage(role: .tool, content: jsonString(observation), toolName: name)
-        messages.append(message)
+        log.append(.toolResult(name: name, content: message.content))
         onEvent(.message(message))
     }
 
@@ -1363,6 +1335,21 @@ public actor AgentRuntime {
             + "Tools you can call: " + toolNames.sorted().prefix(30).joined(separator: ", ") + "."
         text += screenshotRoute(for: narration)
         return text
+    }
+
+    /// A correction shown to the model as the next user turn.
+    private func appendNudge(kind: String, _ text: String, escalation: Int = 0) {
+        log.append(.nudge(kind: kind, text: text, escalation: escalation, supersedes: nil, inContext: true))
+    }
+
+    /// A turn restored from a saved transcript, as the event it would have been.
+    private static func event(for message: ChatMessage) -> RunEvent.Kind {
+        switch message.role {
+        case .system: return .system(message.content)
+        case .user: return .userMessage(content: message.content, images: message.images)
+        case .assistant: return .modelReply(message)
+        case .tool: return .toolResult(name: message.toolName ?? "tool", content: message.content)
+        }
     }
 
     private func jsonString(_ dict: [String: Any]) -> String {
