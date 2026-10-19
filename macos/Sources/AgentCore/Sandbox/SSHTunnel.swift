@@ -204,6 +204,18 @@ public final class SSHTunnel: @unchecked Sendable {
         return pid
     }
 
+    /// Drops the current connection so it re-establishes at once (after the Mac wakes: a dead connection would
+    /// otherwise take up to 90 s of missed keep-alives to notice). A no-op if the tunnel isn't running.
+    public func reconnectNow() {
+        lock.lock()
+        let current = process
+        let wanted = !stopped
+        lastStart = lastStart.map { _ in Date(timeIntervalSinceNow: -60) }   // long-lived: restart quickly, not backed off
+        lock.unlock()
+        guard wanted else { return }
+        if let current { current.terminate() } else { scheduleRestart(quick: true) }
+    }
+
     public func stop() {
         lock.lock()
         stopped = true
