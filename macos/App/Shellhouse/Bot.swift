@@ -893,9 +893,10 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// theoretical. Oldest entries drop first — a FIFO cap, not an
     /// attempt to judge which memory matters more than another.
     @discardableResult
-    func addMemory(_ text: String, source: String = "self", importance: Int? = nil, pinned: Bool = false) -> Bool {
+    func addMemory(_ text: String, source: String = "self", importance: Int? = nil, pinned: Bool = false,
+                   provenance: RunProvenance? = RunProvenance.current) -> Bool {
         let previousBook = memoryBook
-        let outcome = memoryBook.add(text, importance: importance, source: source, pinned: pinned)
+        let outcome = memoryBook.add(text, importance: importance, source: source, pinned: pinned, provenance: provenance)
         if outcome == .rejected { return false }
         let evicted = memoryBook.evictOverCapacity()
         // Persist before archiving: a failed save restores the book, and nothing is archived twice.
@@ -1029,14 +1030,14 @@ final class Bot: Identifiable, @unchecked Sendable {
 
     /// Notes relevant to an incoming message; `withRelevantMemoryContext` puts them in front of the model so it does
     /// not have to notice them in a long list.
-    private func memoriesRelevant(to text: String, limit: Int = 5) async -> [String] {
+    private func memoriesRelevant(to text: String, limit: Int = 5) async -> [MemoryEntry] {
         // Core blocks are already in the prompt. Search only when something else is stored.
         let shown = Set(memoryBook.block(.user).map(\.id) + memoryBook.block(.procedures).map(\.id))
         guard memoryBook.entries.contains(where: { !shown.contains($0.id) }) else { return [] }
         let q = await memoryQueryVector(text)
         let ranked = memoryBook.rank(query: String(text.suffix(3_000)), queryEmbedding: q?.vector, queryModel: q?.model, limit: limit)
         noteMemoriesUsed(ranked.map(\.entry.id))
-        return ranked.map(\.entry.text)
+        return ranked.map(\.entry)
     }
 
     /// Prepended to whatever's actually sent to the model — never to what's shown in the transcript. A no-op when
@@ -1044,9 +1045,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     private func withRelevantMemoryContext(_ text: String) async -> String {
         let matches = await memoriesRelevant(to: text)
         guard !matches.isEmpty else { return text }
-        let context = "(From your own memory, possibly relevant here:\n"
-            + matches.map { "- \($0)" }.joined(separator: "\n") + ")\n\n"
-        return context + text
+        // After the task, as labelled data: a recalled note is a claim from an earlier run, never part of the request.
+        return text + "\n\n" + MemoryPrompt.render(matches)
     }
 
     func removeMemory(at offsets: IndexSet) {
@@ -3898,7 +3898,10 @@ extension Bot {
     func approvePending(_ item: PendingItem) {
         switch item.tool {
         case "remember":
-            if let text = item.arguments["text"]?.asString { _ = addMemory(text) }
+            // Approved from a tainted run: the user saw it, but it still came from untrusted content, so it stays data.
+            if let text = item.arguments["text"]?.asString {
+                _ = addMemory(text, provenance: RunProvenance(session: "approved-review", eventID: 0, tainted: !item.sources.isEmpty, taintSources: item.sources))
+            }
         case "create_routine":
             _ = createRoutineFromTool(item.arguments)
         case "edit_routine":

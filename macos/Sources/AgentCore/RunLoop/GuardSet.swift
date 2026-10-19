@@ -13,6 +13,7 @@ public enum GuardSet {
             NarrationGuard(plainReplyEndsTurn: plainReplyEndsTurn, answerEndsTurnAfterTools: answerEndsTurnAfterTools),
             RepeatedCallsGuard(stale: stale),
             ToolValidationGuard(),
+            MemoryWriteGuard(),
             TrashWarningGuard(),
             SameErrorGuard(),
             FailureStreakGuard(),

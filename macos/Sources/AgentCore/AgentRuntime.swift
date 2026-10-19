@@ -133,6 +133,8 @@ public actor AgentRuntime {
 
     /// Everything that happened in this run, append-only. The prompt is `ContextView`'s reading of it.
     private var log: RunLog
+    /// The gate's taint as of the last tool call, for guards (their hooks are not async).
+    private var taintSnapshot: [String] = []
     private let runLogSink: (any RunLogSink)?
     private var viewCache: (count: Int, collapse: Bool, rendered: ContextView.Rendered)?
     private var rendered: ContextView.Rendered {
@@ -428,6 +430,10 @@ public actor AgentRuntime {
 
     // MARK: - The loop
 
+    private var currentReplyEventID: Int {
+        log.events.last(where: { if case .modelReply = $0.kind { return true } else { return false } })?.id ?? 0
+    }
+
     /// What the guards are shown: the run as it stands now.
     private func makeContext() -> RunContext {
         var ctx = RunContext()
@@ -445,6 +451,9 @@ public actor AgentRuntime {
         ctx.schemaTokens = schemaTokens
         ctx.lastPromptTokens = lastPromptTokens
         ctx.lastCompactionMessageCount = lastCompactionMessageCount
+        ctx.taintSources = taintSnapshot
+        ctx.session = log.session
+        ctx.replyEventID = currentReplyEventID
         return ctx
     }
 
@@ -669,6 +678,7 @@ public actor AgentRuntime {
         // malformed or unknown call, a shell syntax error: a precise correction instead of an approval prompt for
         // something that cannot work), or stop the run (the same call too many times).
         var call = original
+        taintSnapshot = await gate.taintSources
         for guardian in guards {
             for action in guardian.beforeTool(call, makeContext()) {
                 switch action {
@@ -746,9 +756,14 @@ public actor AgentRuntime {
         if let early = prefetched.removeValue(forKey: Self.repeatFingerprint(for: call)) {
             observation = await early.value.value
         } else {
-            observation = await tools.execute(
-                name: call.name, arguments: call.arguments, sandboxID: sandboxID, sandbox: sandbox, secretStore: secretStore
-            )
+            // A tool that saves state can tell which run, and which reply, it was called from (see `MemoryBook.add`).
+            let provenance = RunProvenance(session: log.session, eventID: currentReplyEventID,
+                                           tainted: !taintSnapshot.isEmpty, taintSources: taintSnapshot)
+            observation = await RunProvenance.$current.withValue(provenance) {
+                await tools.execute(
+                    name: call.name, arguments: call.arguments, sandboxID: sandboxID, sandbox: sandbox, secretStore: secretStore
+                )
+            }
         }
         let screenshotBase64 = observation.removeValue(forKey: "_base64") as? String
         // What the model reads (and the console shows): bounded, with grounded warnings/hints added.

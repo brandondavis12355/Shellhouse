@@ -102,7 +102,7 @@ enum GuardAction { case nudge(String, escalation: Int), rewrite(Call), replaceRe
 
 ### 3.4a Memory and note hygiene (context poisoning)
 
-Added after review; not built yet. A note or memory that is wrong, injected or stale is read as an instruction on every
+Added after review. First slice built (provenance and trust class, data-block rendering, write gate, replay tests); verify-before-relying and expiry/review UI are not. A note or memory that is wrong, injected or stale is read as an instruction on every
 later run, so it is the longest-lived way to poison a bot. Rules, in the order they would be built:
 
 - **Provenance on every entry.** `MemoryEntry.source` already exists ("self", "user", "delegation", "goal", "import").

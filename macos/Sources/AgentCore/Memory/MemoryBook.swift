@@ -21,24 +21,34 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
     /// Semantic vector of `text` and the model that made it. Vectors from different models are never compared.
     public var embedding: [Float]?
     public var embeddingModel: String?
+    /// How far it may be believed (see `MemoryTrust`). Untrusted notes are never pinned.
+    public var trust: MemoryTrust
+    /// The run (`RunEvent.session`) and the model reply (`RunEvent.id`) that wrote it, when a run did.
+    public var runSession: String?
+    public var eventID: Int?
 
     public init(id: String = UUID().uuidString, text: String, createdAt: Date = Date(), lastUsedAt: Date? = nil,
                 useCount: Int = 0, importance: Int = 3, pinned: Bool = false, source: String = "self",
-                embedding: [Float]? = nil, embeddingModel: String? = nil) {
+                embedding: [Float]? = nil, embeddingModel: String? = nil,
+                trust: MemoryTrust? = nil, runSession: String? = nil, eventID: Int? = nil) {
         self.id = id
         self.text = text
         self.createdAt = createdAt
         self.lastUsedAt = lastUsedAt
         self.useCount = useCount
         self.importance = min(5, max(1, importance))
-        self.pinned = pinned
+        let level = trust ?? MemoryTrust.classify(source: source)
+        self.trust = level
+        self.pinned = pinned && level.mayEnterPrefix
         self.source = source
         self.embedding = embedding
         self.embeddingModel = embeddingModel
+        self.runSession = runSession
+        self.eventID = eventID
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, text, createdAt, lastUsedAt, useCount, importance, pinned, source, embedding, embeddingModel
+        case id, text, createdAt, lastUsedAt, useCount, importance, pinned, source, embedding, embeddingModel, trust, runSession, eventID
     }
 
     public init(from decoder: Decoder) throws {
@@ -59,6 +69,12 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
             embedding = nil
         }
         embeddingModel = try c.decodeIfPresent(String.self, forKey: .embeddingModel)
+        runSession = try c.decodeIfPresent(String.self, forKey: .runSession)
+        eventID = try c.decodeIfPresent(Int.self, forKey: .eventID)
+        // Notes saved before trust classes existed: derive from the source. Only the user pins a note, so a pin is the user's say-so.
+        let derived = MemoryTrust.classify(source: source)
+        trust = try c.decodeIfPresent(MemoryTrust.self, forKey: .trust) ?? (pinned ? max(derived, .user) : derived)
+        if !trust.mayEnterPrefix { pinned = false }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -73,6 +89,9 @@ public struct MemoryEntry: Codable, Equatable, Identifiable, Sendable {
         try c.encode(source, forKey: .source)
         if let embedding { try c.encode(VectorMath.data(from: embedding), forKey: .embedding) }
         try c.encodeIfPresent(embeddingModel, forKey: .embeddingModel)
+        try c.encode(trust, forKey: .trust)
+        try c.encodeIfPresent(runSession, forKey: .runSession)
+        try c.encodeIfPresent(eventID, forKey: .eventID)
     }
 }
 
@@ -146,15 +165,20 @@ public struct MemoryBook: Codable, Equatable, Sendable {
         case rejected
     }
 
+    /// `provenance` defaults to the run the call is made from (`RunProvenance.current`); a note written by a tainted run
+    /// is `untrusted` whatever its source says, and an untrusted note is never pinned.
     @discardableResult
     public mutating func add(_ text: String, importance: Int? = nil, source: String = "self", pinned: Bool = false,
-                             embedding: [Float]? = nil, embeddingModel: String? = nil, now: Date = Date()) -> AddOutcome {
+                             embedding: [Float]? = nil, embeddingModel: String? = nil, now: Date = Date(),
+                             provenance: RunProvenance? = RunProvenance.current) -> AddOutcome {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .rejected }
         let rated = importance ?? Self.heuristicImportance(trimmed, source: source)
+        let trust = MemoryTrust.classify(source: source, tainted: provenance?.tainted ?? false)
+        let mayPin = pinned && trust.mayEnterPrefix
         if let index = entries.firstIndex(where: { $0.text.caseInsensitiveCompare(trimmed) == .orderedSame }) {
             entries[index].lastUsedAt = now
-            if pinned { entries[index].pinned = true }
+            if mayPin && entries[index].trust.mayEnterPrefix { entries[index].pinned = true }
             return .duplicate
         }
         func closeness(_ i: Int) -> Double {
@@ -167,7 +191,8 @@ public struct MemoryBook: Codable, Equatable, Sendable {
         }
         if let index = entries.indices
             .map({ ($0, closeness($0)) })
-            .filter({ $0.1 >= Self.nearDuplicate })
+            // A note that can't be believed never rewrites one that can: it is stored beside it instead.
+            .filter({ $0.1 >= Self.nearDuplicate && (trust > .untrusted || entries[$0.0].trust == .untrusted) })
             .max(by: { $0.1 < $1.1 })?.0 {
             // Same fact, newer wording: keep one note, the newest text, the stronger importance.
             entries[index].text = trimmed
@@ -175,11 +200,17 @@ public struct MemoryBook: Codable, Equatable, Sendable {
             entries[index].embeddingModel = embedding == nil ? nil : embeddingModel
             entries[index].importance = max(entries[index].importance, min(5, max(1, rated)))
             entries[index].lastUsedAt = now
-            if pinned { entries[index].pinned = true }
+            // The text is now this writer's wording, so the note is no more trusted than the weaker of the two.
+            entries[index].trust = min(entries[index].trust, trust)
+            if mayPin && entries[index].trust.mayEnterPrefix { entries[index].pinned = true }
+            if !entries[index].trust.mayEnterPrefix { entries[index].pinned = false }
+            entries[index].runSession = provenance?.session ?? entries[index].runSession
+            entries[index].eventID = provenance?.eventID ?? entries[index].eventID
             return .updated(entries[index])
         }
-        let entry = MemoryEntry(text: trimmed, createdAt: now, importance: rated, pinned: pinned, source: source,
-                                embedding: embedding, embeddingModel: embeddingModel)
+        let entry = MemoryEntry(text: trimmed, createdAt: now, importance: rated, pinned: mayPin, source: source,
+                                embedding: embedding, embeddingModel: embeddingModel,
+                                trust: trust, runSession: provenance?.session, eventID: provenance?.eventID)
         entries.append(entry)
         return .added(entry)
     }
@@ -213,15 +244,29 @@ public struct MemoryBook: Codable, Equatable, Sendable {
     public var embeddedCount: Int { entries.filter { $0.embedding != nil }.count }
 
     public mutating func remove(ids: Set<String>) { entries.removeAll { ids.contains($0.id) } }
-    public mutating func setPinned(_ id: String, _ pinned: Bool) { if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].pinned = pinned } }
+    /// Pinning puts a note in the system prompt, so an untrusted note can't be pinned: review it first (`markReviewed`).
+    public mutating func setPinned(_ id: String, _ pinned: Bool) {
+        if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].pinned = pinned && entries[i].trust.mayEnterPrefix }
+    }
+
+    /// The user has read the note and vouches for it: it becomes a user note. Only an app action, never a tool.
+    public mutating func markReviewed(_ id: String) {
+        if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].trust = .user }
+    }
     public mutating func setImportance(_ id: String, _ value: Int) { if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].importance = min(5, max(1, value)) } }
 
     /// Rewrites one existing note in place. Returns false when the id is missing or the text is empty.
     @discardableResult
-    public mutating func replace(id: String, text: String) -> Bool {
+    public mutating func replace(id: String, text: String, source: String = "self",
+                                 provenance: RunProvenance? = RunProvenance.current) -> Bool {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        // The new wording is the rewriter's: the note keeps the weaker of the two classes, and loses its pin if that is untrusted.
+        entries[index].trust = min(entries[index].trust, MemoryTrust.classify(source: source, tainted: provenance?.tainted ?? false))
+        if !entries[index].trust.mayEnterPrefix { entries[index].pinned = false }
+        entries[index].runSession = provenance?.session ?? entries[index].runSession
+        entries[index].eventID = provenance?.eventID ?? entries[index].eventID
         entries[index].text = trimmed
         entries[index].embedding = nil
         entries[index].embeddingModel = nil
@@ -323,9 +368,14 @@ public struct MemoryBook: Codable, Equatable, Sendable {
         }
     }
 
+    /// The block a note may be shown in as part of the system prompt: none for an untrusted note.
+    public static func prefixBlock(for entry: MemoryEntry) -> MemoryBlock? {
+        entry.trust.mayEnterPrefix ? block(for: entry) : nil
+    }
+
     /// The notes for one core block, newest-useful first, inside a short character budget.
     public func block(_ kind: MemoryBlock, limit: Int = 8, characterBudget: Int = 1_200, now: Date = Date()) -> [MemoryEntry] {
-        let matching = entries.filter { Self.block(for: $0) == kind }
+        let matching = entries.filter { Self.prefixBlock(for: $0) == kind }
             .sorted { keepScore($0, now: now) > keepScore($1, now: now) }
         var used = 0
         var chosen: [MemoryEntry] = []
@@ -341,7 +391,7 @@ public struct MemoryBook: Codable, Equatable, Sendable {
     /// Pinned notes first, then the highest keep-scores, skipping trivia. The prompt uses `block` instead.
     public func core(now: Date = Date(), limit: Int = 12) -> [MemoryEntry] {
         entries
-            .filter { $0.pinned || $0.importance >= 2 }
+            .filter { $0.trust.mayEnterPrefix && ($0.pinned || $0.importance >= 2) }
             .sorted { keepScore($0, now: now) > keepScore($1, now: now) }
             .prefix(limit)
             .map { $0 }
@@ -416,6 +466,7 @@ public struct MemoryBook: Codable, Equatable, Sendable {
                 keep.useCount = a.useCount + b.useCount
                 keep.lastUsedAt = [a.lastUsedAt, b.lastUsedAt].compactMap { $0 }.max()
                 keep.createdAt = min(a.createdAt, b.createdAt)
+                keep.trust = min(a.trust, b.trust)
                 entries[keepA ? pair.i : pair.j] = keep
                 entries.remove(at: keepA ? pair.j : pair.i)
                 report.merged.append(Merge(kept: keep.text, removed: drop.text))
