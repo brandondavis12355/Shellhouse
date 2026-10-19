@@ -622,9 +622,13 @@ final class GroupChatSession: Identifiable {
             }
             if !isIntakeTurn, let live = goal, live.isLive {
                 extraSuffix = goalPrompt(for: live, botID: botID)
+                // Coding or judging work from a stale checkout was a repeated failure: bring every repo up to date first
+                // (once a minute at most), and tell the bot where one could not be moved.
+                if let note = await bot.refreshCheckouts(minInterval: 60) {
+                    debugLog(bot, "checkouts: brought up to date before work; note added")
+                    extraSuffix += "\n\n" + note
+                }
                 if ownerReviewTurn || resumeTurn, let work = reviewWork(live, botID: botID) {
-                    // Judging a teammate's work from a stale checkout was a repeated failure: refresh every repo first.
-                    if let refreshed = await bot.refreshCheckouts() { debugLog(bot, "fetched before reviewing: \(refreshed)") }
                     extraSuffix += "\n\n" + work
                 }
                 if goalAdditionTurn {
