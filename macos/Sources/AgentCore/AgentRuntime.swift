@@ -112,6 +112,7 @@ public actor AgentRuntime {
     private let sandbox: any SandboxProvider
     private let sandboxID: String
     private let tools: ToolRegistry
+    private let toolNames: Set<String>
     private let secretStore: SecretStore
     private let permissions: RunShellPermissions
     private let budgets: Budgets
@@ -130,7 +131,21 @@ public actor AgentRuntime {
     /// and CLI runs never write to the user's real audit log or review inbox.
     private let gate: ToolGate
 
-    private var messages: [ChatMessage] = []
+    /// Everything that happened in this run, append-only. The prompt is `ContextView`'s reading of it.
+    private var log: RunLog
+    private let runLogSink: (any RunLogSink)?
+    private var viewCache: (count: Int, collapse: Bool, rendered: ContextView.Rendered)?
+    private var rendered: ContextView.Rendered {
+        let collapse = Reliability.isOn(.outputLimits)
+        if let cache = viewCache, cache.count == log.count, cache.collapse == collapse { return cache.rendered }
+        let fresh = ContextView(collapseOldOutput: collapse).render(log.events)
+        viewCache = (log.count, collapse, fresh)
+        return fresh
+    }
+    /// What the model is sent: the log read through `ContextView`.
+    private var messages: [ChatMessage] { rendered.messages }
+    /// The model reply appended last, so a guard can ask for it to be left out of the prompt.
+    private var lastReplyEventID: Int?
     private var iterations = 0
     private var tokensUsed = 0
     /// For local models, `maxTokens` counts new work: replies plus what was added to the conversation since
@@ -146,7 +161,6 @@ public actor AgentRuntime {
     private var startedAt = Date()
     /// Time spent waiting for a person to answer an approval card: it does not count against the wall-clock budget.
     private var secondsWaitingForHuman: TimeInterval = 0
-    private var callFingerprints: [String: Int] = [:]
     /// Read-only calls from one reply, started together so their waits overlap (see `prefetchReads`).
     private var prefetched: [String: Task<UncheckedBox<[String: Any]>, Never>] = [:]
     static let parallelReadTools: Set<String> = ["read_file", "list_files", "search_files", "find_files"]
@@ -168,28 +182,15 @@ public actor AgentRuntime {
         public let status: Status
     }
     private(set) var plan: [PlanItem] = []
-    private var finishGuardUsed = false
-    private var verifyGuardUsed = false
-    /// Set when code or config was written and nothing has been run since; cleared by any shell command or screenshot.
-    private var unverifiedChange = false
-    /// Identical errors per tool this turn; the third gets one message naming it (OpenHands).
-    private var errorCounts: [String: Int] = [:]
-    static let sameErrorNudgeAt = 3
     var openPlanItems: [PlanItem] { plan.filter { $0.status == .pending || $0.status == .in_progress } }
-    static let plainReplyMinLength = 25
-    private static let loopRepeatThreshold = 3
-    private var lastResultKey = ""
-    private var sameResultStreak = 0
-    /// Same tool, same result this many times in a row ends the run (nudged at `sameResultNudgeAt`).
-    static let sameResultNudgeAt = 3
-    static let sameResultAbortAt = 5
-    private var abortForSameResults = false
-    /// Failed actions in a row (see `FailureCheck`); any success resets it.
-    private var failureStreak = 0
-    private var abortForFailures = false
-    /// The same failure (same error text) repeating: no new information, unlike a test that fails differently.
-    private var sameFailureStreak = 0
-    private var lastFailureKey = ""
+    /// The rules of the loop, each with its own state (see `GuardSet`).
+    private let guards: [any Guard]
+    static let sameErrorNudgeAt = SameErrorGuard.nudgeAt
+    static let plainReplyMinLength = NarrationGuard.plainReplyMinLength
+    static let sameResultNudgeAt = RepeatedCallsGuard.sameResultNudgeAt
+    static let sameResultAbortAt = RepeatedCallsGuard.sameResultAbortAt
+    static let staleNudgeAt = StaleResultsGuard.nudgeAt
+    static let staleAbortAt = StaleResultsGuard.abortAt
     private var githubTokenSaved: Bool?
 
     private func hasSavedGitHubToken() async -> Bool {
@@ -198,22 +199,9 @@ public actor AgentRuntime {
         githubTokenSaved = saved
         return saved
     }
-    private var stuck = StuckDetector()
     private var currentGoal = ""
-    private var budgetWarningsSent: Set<Int> = []
-    private var abortForStuck: String?
-    /// The text of a reply that announced a step without taking it (see the loop's narration nudge).
-    private var lastNarration: String?
-    /// Results this bot already saw, in this run or a recent one (shared across its runs). A run getting back
-    /// nothing but already-seen results is waiting or polling, whatever the commands look like, and side
-    /// effects (a `git fetch`, a checkout) don't reset it the way they reset the other loop guards.
-    private let seenResults: SeenResults
-    private var staleStreak = 0
     /// How many messages the conversation had after the last compaction (see `compactContextIfNeeded`).
     private var lastCompactionMessageCount: Int?
-    private var abortForStale = false
-    static let staleNudgeAt = 4
-    static let staleAbortAt = 7
 
     /// Tools that may still run without approval during an untrusted run:
     /// they only read this bot's own state or update shared bookkeeping.
@@ -225,15 +213,7 @@ public actor AgentRuntime {
         "get_bot_instructions",
     ]
 
-    /// Screenshots dominate token cost once skills are lazy-loaded (see
-    /// ToolRegistry/ContentView) rather than dumped into the system prompt.
-    /// Keeping every screenshot in a long run burns the token budget on
-    /// stale images the model no longer needs — see Anthropic's
-    /// computer-use reference implementation, which prunes to the N most
-    /// recent images for the same reason. Older ones are replaced with a
-    /// text placeholder rather than dropped silently, so the model knows
-    /// why that context disappeared instead of being confused by a gap.
-    private static let maxRetainedImages = 2
+    /// Screenshots dominate token cost, so only the newest few stay in the prompt (see `ContextView`; the log keeps them all).
 
     /// The only way `loop()` will ever end a run — see `finishTaskSchema`.
     /// "The model returned no tool_calls" is deliberately NOT treated as
@@ -273,18 +253,7 @@ public actor AgentRuntime {
     }
 
     /// The plan as the model and the reminder show it.
-    var planText: String {
-        plan.map { item in
-            let mark: String
-            switch item.status {
-            case .done: mark = "[x]"
-            case .in_progress: mark = "[~]"
-            case .blocked: mark = "[!]"
-            case .pending: mark = "[ ]"
-            }
-            return "\(mark) \(item.text)"
-        }.joined(separator: "\n")
-    }
+    var planText: String { PlanItem.text(of: plan) }
 
     private func updatePlan(_ call: ToolCall) -> [String: Any] {
         guard let raw = call.arguments["steps"]?.value as? [Any], !raw.isEmpty else {
@@ -349,9 +318,13 @@ public actor AgentRuntime {
         initialTaint: [TaintSource] = [],
         plainReplyEndsTurn: Bool = false,
         answerEndsTurnAfterTools: Bool = false,
-        seenResults: SeenResults = SeenResults()
+        seenResults: SeenResults = SeenResults(),
+        runLogSink: (any RunLogSink)? = nil,
+        guards: [any Guard]? = nil
     ) {
-        self.seenResults = seenResults
+        self.runLogSink = runLogSink
+        self.log = RunLog(sink: runLogSink)
+        self.guards = guards ?? GuardSet.standard(plainReplyEndsTurn: plainReplyEndsTurn, answerEndsTurnAfterTools: answerEndsTurnAfterTools, seenResults: seenResults)
         self.plainReplyEndsTurn = plainReplyEndsTurn
         self.answerEndsTurnAfterTools = answerEndsTurnAfterTools
         self.alwaysRequireApproval = alwaysRequireApproval
@@ -368,6 +341,7 @@ public actor AgentRuntime {
         self.sandbox = sandbox
         self.sandboxID = sandboxID
         self.tools = excludedTools.isEmpty ? tools : tools.removing(excludedTools)
+        self.toolNames = self.tools.names()
         self.secretStore = secretStore
         self.permissions = permissions
         self.budgets = budgets
@@ -390,13 +364,15 @@ public actor AgentRuntime {
     public func seed(systemPrompt: String, history: [ChatMessage]) {
         startedAt = Date()
         secondsWaitingForHuman = 0
-        stuck = StuckDetector(); abortForStuck = nil
-        staleStreak = 0; abortForStale = false
+        guards.forEach { $0.reset(.conversation) }
         iterations = 0
         tokensUsed = 0
         chargedThrough = 0
-        callFingerprints = [:]
-        messages = [ChatMessage(role: .system, content: systemPrompt)] + history
+        log = RunLog(sink: runLogSink)
+        log.append(.stateNote("seeded with \(history.count) earlier messages"))
+        // The earlier turns were saved by the app's transcript, not by this log: keep them in memory only.
+        log.append(.system(systemPrompt), persist: false)
+        for message in history { log.append(Self.event(for: message), persist: false) }
         chargedThrough = messages.count
     }
 
@@ -404,27 +380,18 @@ public actor AgentRuntime {
     public func start(systemPrompt: String, goal: String) async {
         startedAt = Date()
         secondsWaitingForHuman = 0
-        stuck = StuckDetector(); abortForStuck = nil
-        staleStreak = 0; abortForStale = false
+        guards.forEach { $0.reset(.conversation) }
         iterations = 0
         tokensUsed = 0
         chargedThrough = 0
-        callFingerprints = [:]
-        messages = [
-            ChatMessage(role: .system, content: systemPrompt),
-            ChatMessage(role: .user, content: goal),
-        ]
+        log = RunLog(sink: runLogSink)
+        log.append(.system(systemPrompt))
+        log.append(.userMessage(content: goal, images: nil))
         currentGoal = goal
         await gate.setTask(goal)
         toolCallsThisTurn = 0
         plan = []
-        finishGuardUsed = false
-        verifyGuardUsed = false
-        unverifiedChange = false
-        errorCounts = [:]
-        failureStreak = 0; abortForFailures = false; abortForSameResults = false; sameResultStreak = 0
-        sameFailureStreak = 0; lastFailureKey = ""
-        budgetWarningsSent = []
+        guards.forEach { $0.reset(.turn); $0.reset(.run) }
         stopReason = nil
         await loop()
         Telemetry.recorder.runEnded(stoppedBecause: stopReason)
@@ -436,30 +403,14 @@ public actor AgentRuntime {
     /// `screenshot` tool result uses, just supplied by the user instead of
     /// the agent's own eyes.
     public func send(_ userMessage: String, images: [String] = []) async {
-        messages.append(ChatMessage(role: .user, content: userMessage, images: images.isEmpty ? nil : images))
+        log.append(.userMessage(content: userMessage, images: images.isEmpty ? nil : images))
         currentGoal = userMessage
         await gate.setTask(userMessage)
         toolCallsThisTurn = 0
         plan = []
-        finishGuardUsed = false
-        verifyGuardUsed = false
-        unverifiedChange = false
-        errorCounts = [:]
-        failureStreak = 0; abortForFailures = false; abortForSameResults = false; sameResultStreak = 0
-        sameFailureStreak = 0; lastFailureKey = ""
-        // Loop-detection is meant to catch a model stuck repeating the
-        // SAME call within one reasoning task, not across entirely
-        // separate turns — without this reset, `callFingerprints`
-        // accumulated for the whole lifetime of this `AgentRuntime`
-        // (one bot's own chat can now live for a long time, across
-        // relaunches, thanks to context compaction/the summary cache).
-        // A tool like `list_routines()` — no arguments, so an identical
-        // fingerprint every time — legitimately called a few times
-        // across separate days would eventually cross
-        // `loopRepeatThreshold` and get permanently refused for the
-        // rest of this runtime's life, even though nothing was actually
-        // looping.
-        callFingerprints = [:]
+        // Loop-detection is meant to catch a model stuck repeating the SAME call within one reasoning task, not across
+        // entirely separate turns: a call with no arguments, made legitimately on separate days, must not add up.
+        guards.forEach { $0.reset(.turn) }
         stopReason = nil
         await loop()
         Telemetry.recorder.runEnded(stoppedBecause: stopReason)
@@ -477,10 +428,75 @@ public actor AgentRuntime {
 
     // MARK: - The loop
 
+    /// What the guards are shown: the run as it stands now.
+    private func makeContext() -> RunContext {
+        var ctx = RunContext()
+        ctx.iteration = iterations
+        ctx.maxIterations = budgets.maxIterations
+        ctx.goal = currentGoal
+        ctx.plan = plan
+        ctx.toolNames = toolNames
+        ctx.registrySchemas = tools.schemas
+        ctx.validationSchemas = tools.schemas + [Self.finishTaskSchema]
+        ctx.messages = messages
+        ctx.toolCallsThisTurn = toolCallsThisTurn
+        ctx.compactionThresholdTokens = budgets.compactionThresholdTokens
+        ctx.contextWindow = contextWindow
+        ctx.schemaTokens = schemaTokens
+        ctx.lastPromptTokens = lastPromptTokens
+        ctx.lastCompactionMessageCount = lastCompactionMessageCount
+        return ctx
+    }
+
+    /// A correction reaches the model as the next user turn, and is counted.
+    private func apply(_ nudge: Nudge) {
+        Telemetry.recorder.loopEvent(nudge.kind)
+        let repeated = nudge.skipIfRepeat && messages.last?.content == nudge.text
+        log.append(.nudge(kind: nudge.kind, text: nudge.text, escalation: nudge.escalation.rawValue, supersedes: nil, inContext: !repeated))
+    }
+
+    /// A guard acted without adding a turn to the prompt (it answered a call or changed a result): still logged and counted.
+    private func recordFiring(kind: String, detail: String) {
+        Telemetry.recorder.loopEvent(kind)
+        log.append(.nudge(kind: kind, text: detail, escalation: Escalation.specific.rawValue, supersedes: nil, inContext: false))
+    }
+
+    private func stopRun(_ why: String) {
+        let error = RuntimeError.repeated(why)
+        emitAbortMessage(for: error)
+        onEvent(.status(.aborted("\(error)")))
+    }
+
+    private enum LoopStep { case carryOn, endRun }
+
+    /// Does what guards asked for after a reply or a batch of calls. Only nudges, drops and stops are expected here.
+    private func applyAfterReply(_ actions: [GuardAction]) -> LoopStep {
+        for action in actions {
+            switch action {
+            case .dropReply:
+                if let id = lastReplyEventID {
+                    log.append(.nudge(kind: "narration_dropped", text: "", escalation: 0, supersedes: id, inContext: false))
+                }
+            case .nudge(let nudge):
+                apply(nudge)
+            case .endTurn(let text):
+                onEvent(.message(ChatMessage(role: .assistant, content: text, isTaskSummary: true)))
+                onEvent(.status(.completed))
+                return .endRun
+            case .abort(let why):
+                stopRun(why)
+                return .endRun
+            default:
+                break
+            }
+        }
+        return .carryOn
+    }
+
     private func loop() async {
         onEvent(.status(.planning))
         // Group goal turns already have the goal's checklist; a second plan would compete with it.
-        let offersPlan = !tools.names().contains("update_goal_step")
+        let offersPlan = !toolNames.contains("update_goal_step")
         let toolSchemas = tools.schemas + [Self.finishTaskSchema] + (offersPlan ? [Self.updatePlanSchema] : [])
         schemaTokens = ContextBudget.estimatedTokens(ofSchemas: toolSchemas)
         while true {
@@ -491,20 +507,16 @@ public actor AgentRuntime {
                 onEvent(.status(.aborted("\(error)")))
                 return
             }
-            await compactContextIfNeeded()
-            if Reliability.isOn(.outputLimits) { messages = ObservationPolicy.collapseStale(messages) }
             iterations += 1
-            if Reliability.isOn(.taskFocus), let warning = StepBudget.warning(iteration: iterations, max: budgets.maxIterations), budgetWarningsSent.insert(warning.id).inserted {
-                messages.append(ChatMessage(role: .user, content: "[budget] " + warning.text))
-            }
-            // Manus-style recitation: re-state the objective at the END of the context every few steps, where
-            // the model pays the most attention, instead of trusting it to remember step 0.
-            // Earlier reminders stay where they are: removing one shifts everything after it, which
-            // makes the model server re-read the conversation from that point instead of reusing its cache.
-            if Reliability.isOn(.taskFocus), iterations > 1, iterations % 5 == 0, !currentGoal.isEmpty {
-                messages.append(ChatMessage(role: .user, content: "[reminder] Your task: \(String(currentGoal.prefix(400))). "
-                    + "Step \(iterations) of \(budgets.maxIterations). Stay on this task; when it is answered, call finish_task."
-                    + (plan.isEmpty ? "" : "\nYour plan:\n" + planText)))
+            for guardian in guards {
+                for action in guardian.beforeModel(makeContext()) {
+                    switch action {
+                    case .condense(let threshold, let size): await condense(threshold: threshold, before: size)
+                    case .nudge(let nudge): apply(nudge)
+                    case .abort(let why): stopRun(why); return
+                    default: break
+                    }
+                }
             }
             onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
 
@@ -555,101 +567,41 @@ public actor AgentRuntime {
                 }
             }
             chargeUsage(reply.usage)
-            if loopBroken {
-                messages.append(reply.message)
-                onEvent(.message(reply.message))
-                guard noteNoAction(nudge: "Your last reply repeated the same passage over and over and was cut off. "
-                    + "Do not write it again. Call the one tool for your next real step now, or if you are blocked call finish_task with outcome blocked and say why.") else { return }
-                continue
+
+            // The guards read the reply before it is recorded: a call written as text becomes the call it meant.
+            var queued: [GuardAction] = []
+            for guardian in guards {
+                for action in guardian.afterReply(reply, cutOff: loopBroken, makeContext()) {
+                    if case .rewrite(let call) = action {
+                        reply = ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [call]), usage: reply.usage)
+                    } else {
+                        queued.append(action)
+                    }
+                }
             }
-            if Reliability.isOn(.callChecks), (reply.message.toolCalls ?? []).isEmpty,
-               let recovered = ToolCallRecovery.extract(from: reply.message.content, toolNames: Set(tools.names()), schemas: tools.schemas) {
-                // The model wrote its tool call as text. Treat it as the call it meant to make.
-                reply = ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [recovered]), usage: reply.usage)
-            }
-            messages.append(reply.message)
+            lastReplyEventID = log.append(.modelReply(reply.message)).id
             // After "I'll do X" with no tool call, the model usually repeats that sentence alongside the call:
             // show it once, not twice.
-            let replyText = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let narrated = lastNarration, !replyText.isEmpty, replyText == narrated, !(reply.message.toolCalls ?? []).isEmpty {
+            if queued.contains(where: { if case .hideReplyText = $0 { return true } else { return false } }) {
                 var shown = reply.message; shown.content = ""
                 onEvent(.message(shown))
             } else {
                 onEvent(.message(reply.message))
             }
-            lastNarration = nil
+            if applyAfterReply(queued) == .endRun { return }
 
-            guard let calls = reply.message.toolCalls, !calls.isEmpty else {
-                let plain = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                let announced = ReplyQuality.isAnnouncement(plain)
-                // An announcement is not an answer, including on a chat turn that otherwise accepts prose.
-                let isAnswer = plain.count >= Self.plainReplyMinLength && !plain.hasSuffix(":") && !announced
-                let answeredAfterWork = answerEndsTurnAfterTools && toolCallsThisTurn > 0
-                if isAnswer, plainReplyEndsTurn || answeredAfterWork, openPlanItems.isEmpty {
-                    onEvent(.message(ChatMessage(role: .assistant, content: plain, isTaskSummary: true)))
-                    onEvent(.status(.completed))
-                    return
-                }
-                if announced {
-                    // Left in the context, that sentence is what a local model copies on the next try.
-                    lastNarration = plain
-                    removeAssistantAnnouncement(plain)
-                    let next = stuck.plainReplyCount + 1
-                    Telemetry.recorder.loopEvent(next >= 2 ? "narration_escalated" : "narration")
-                }
-                let nudge = announced
-                    ? Self.narrationNudge(count: stuck.plainReplyCount + 1, narration: plain, toolNames: Array(tools.names()))
-                    : Self.missingToolNudge
-                guard noteNoAction(nudge: nudge) else { return }
-                continue
-            }
+            guard let calls = reply.message.toolCalls, !calls.isEmpty else { continue }
 
             if let finishCall = calls.first(where: { $0.name == Self.finishTaskName }) {
                 let summary = finishCall.arguments["summary"]?.asString ?? reply.message.content
                 let outcome = finishCall.arguments["outcome"]?.asString ?? "done"
-                // `summary` is `required` in the schema, but some models
-                // hand back tool calls that skip required fields anyway —
-                // completing with nothing here is worse than a retry: it
-                // silently ends the whole task with no result at all (the
-                // caller — e.g. `Bot.runIsolatedTask` — falls back to a
-                // "didn't produce a response" placeholder with no way to
-                // tell whether the bot actually finished the work).
-                guard !summary.isEmpty else {
-                    messages.append(ChatMessage(
-                        role: .user,
-                        content: "finish_task needs a non-empty `summary` — the actual result, or a clear "
-                            + "explanation of why you're blocked. Call it again with that filled in."
-                    ))
-                    continue
-                }
-                // "Done" with plan steps still open: refuse once (only when finish_task is the sole call,
-                // so every call in the turn still gets an answer). A second attempt goes through.
-                if outcome == "done", calls.count == 1, !openPlanItems.isEmpty, !finishGuardUsed {
-                    finishGuardUsed = true
-                    appendToolResult(name: Self.finishTaskName, observation: [
-                        "error": "Not finished: your plan still has open steps:\n"
-                            + openPlanItems.map { "- \($0.text) (\($0.status.rawValue))" }.joined(separator: "\n")
-                            + "\nDo them, or call update_plan marking each done or blocked (with the reason), then finish.",
-                    ])
-                    continue
-                }
-                // "Done" right after changing code, with nothing run since: ask for the check once.
-                if outcome == "done", calls.count == 1, unverifiedChange, !verifyGuardUsed, Reliability.isOn(.taskFocus) {
-                    verifyGuardUsed = true
-                    Telemetry.recorder.loopEvent("unverified_done")
-                    appendToolResult(name: Self.finishTaskName, observation: [
-                        "error": "Not finished: you changed files and ran nothing afterwards to check them. Run the test, command or request that "
-                            + "shows it works (or take a screenshot), read the output, fix what it shows, then call finish_task with that output "
-                            + "as evidence. If nothing can be run, say so in the summary.",
-                    ])
-                    continue
-                }
+                let request = FinishRequest(summary: summary, outcome: outcome, callCount: calls.count)
+                if refusesFinish(request) { continue }
                 onEvent(.message(ChatMessage(role: .assistant, content: summary, isTaskSummary: true)))
                 onEvent(.status(outcome == "done" ? .completed : .aborted(outcome)))
                 return
             }
 
-            var seenThisTurn = Set<String>()
             var ranSomething = false
             prefetchReads(calls)
             for call in calls {
@@ -660,13 +612,7 @@ public actor AgentRuntime {
                     onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(result)))
                     continue
                 }
-                // The same call twice in one assistant turn runs once; the second still gets an answer.
-                let key = Self.repeatFingerprint(for: call)
-                if Reliability.isOn(.callChecks), !seenThisTurn.insert(key).inserted {
-                    appendToolResult(name: call.name, observation: ["note": "Duplicate of an identical call in this same turn; it was run once, see the result above."])
-                    continue
-                }
-                switch await handle(Reliability.isOn(.callChecks) ? ToolCallValidator.coerced(call, schemas: tools.schemas) : call) {
+                switch await handle(call) {
                 case .stop: return
                 case .ran:
                     ranSomething = true
@@ -674,82 +620,73 @@ public actor AgentRuntime {
                 case .skipped: break
                 }
             }
-            // A plan rewrite or a call that never executed is the same as saying the step without doing it.
-            if !ranSomething {
-                guard noteNoAction(nudge: "Those calls did not run. Call a tool with valid arguments, or call finish_task if you are done or blocked.") else { return }
+            var afterTurn: [GuardAction] = []
+            for guardian in guards { afterTurn += guardian.afterTurn(ranTools: ranSomething, makeContext()) }
+            if applyAfterReply(afterTurn) == .endRun { return }
+        }
+    }
+
+    /// The model asked to finish: a guard may answer the call instead (the first to do so wins).
+    private func refusesFinish(_ request: FinishRequest) -> Bool {
+        for guardian in guards {
+            for action in guardian.beforeFinish(request, makeContext()) {
+                switch action {
+                case .nudge(let nudge):
+                    apply(nudge)
+                    return true
+                case .replaceResult(let json, let kind):
+                    recordFiring(kind: kind, detail: json)
+                    appendToolResult(name: Self.finishTaskName, content: json)
+                    return true
+                default:
+                    break
+                }
             }
         }
+        return false
     }
 
     /// What one tool call did. `.ran` is the only result that clears the no-action counter.
     private enum StepEffect { case stop, ran, skipped }
 
-    /// Counts a model step that ran no tool. The fifth one aborts. On the third, `StuckDetector` supplies the nudge.
-    @discardableResult
-    private func noteNoAction(nudge: String) -> Bool {
-        switch Reliability.isOn(.loopGuards) ? stuck.recordPlainReply() : StuckDetector.Verdict.fine {
-        case .abort(let why):
-            let error = RuntimeError.repeated(why)
-            emitAbortMessage(for: error)
-            onEvent(.status(.aborted("\(error)")))
-            return false
-        case .nudge(let text):
-            if messages.last?.content != text { messages.append(ChatMessage(role: .user, content: text)) }
-            return true
-        case .fine:
-            if messages.last?.content != nudge { messages.append(ChatMessage(role: .user, content: nudge)) }
-            return true
-        }
-    }
-
-    /// Drops the announcement from the model context. The chat already showed it.
-    private func removeAssistantAnnouncement(_ text: String) {
-        guard let index = messages.lastIndex(where: { $0.role == .assistant && $0.content == text && ($0.toolCalls ?? []).isEmpty }) else { return }
-        messages.remove(at: index)
-    }
-
     private static func cutRepeatedReply(_ text: String, onEvent: @escaping @Sendable (Event) -> Void) -> ModelReply {
         let once = RepetitionGuard.collapsed(text)
         onEvent(.contextTrimmed(detail: "reply cut off: the model was repeating itself (\(text.count) characters)"))
-        Telemetry.recorder.loopEvent("repetition_cut")
         return ModelReply(message: ChatMessage(role: .assistant, content: once), usage: nil)
     }
 
     /// Runs one tool call to completion.
-    private func handle(_ call: ToolCall) async -> StepEffect {
-        let repeatCount: Int
+    private func handle(_ original: ToolCall) async -> StepEffect {
         do {
             try checkBudgets()
-            repeatCount = try checkRepeat(call)
         } catch {
             emitAbortMessage(for: error)
             onEvent(.status(.aborted("\(error)")))
             return .stop
         }
 
-        // A malformed call gets a precise correction (missing field, wrong type, "did you mean run_shell?")
-        // instead of a confusing failure or an approval prompt for something that cannot work.
-        // An unknown tool is never run. With the call checks on, the model also gets "did you mean run_shell?".
-        guard tools.names().contains(call.name) else {
-            let message = Reliability.isOn(.callChecks)
-                ? (ToolCallValidator.problem(with: call, schemas: tools.schemas + [Self.finishTaskSchema]) ?? "unknown tool '\(call.name)'")
-                : "unknown tool '\(call.name)'"
-            appendToolResult(name: call.name, observation: ["error": message])
-            return .skipped
-        }
-        if Reliability.isOn(.callChecks), let problem = ToolCallValidator.problem(with: call, schemas: tools.schemas + [Self.finishTaskSchema]) {
-            appendToolResult(name: call.name, observation: ["error": problem])
-            return .skipped
-        }
-        if Reliability.isOn(.callChecks), call.name == "run_shell", let command = call.arguments["command"]?.asString, let problem = ShellLint.problem(in: command) {
-            appendToolResult(name: call.name, observation: ["error": problem])
-            return .skipped
+        // Before it runs, a guard may fix the call (string numbers, a text-written call), answer it (a duplicate, a
+        // malformed or unknown call, a shell syntax error: a precise correction instead of an approval prompt for
+        // something that cannot work), or stop the run (the same call too many times).
+        var call = original
+        for guardian in guards {
+            for action in guardian.beforeTool(call, makeContext()) {
+                switch action {
+                case .rewrite(let rewritten): call = rewritten
+                case .replaceResult(let json, let kind):
+                    recordFiring(kind: kind, detail: json)
+                    appendToolResult(name: call.name, content: json)
+                    return .skipped
+                case .nudge(let nudge): apply(nudge)
+                case .abort(let why): stopRun(why); return .stop
+                default: break
+                }
+            }
         }
 
         // A plain GitHub git/gh network command with no secret attached: bots often forget use_secrets and get
         // "could not read Username". When a GITHUB_TOKEN is saved, attach it (it only ever reaches github.com
         // through gh's credential helper, and the guardrails still judge the call with it attached).
-        var call = call
         if call.name == "run_shell", (call.arguments["use_secrets"]?.asStringArray ?? []).isEmpty,
            let command = call.arguments["command"]?.asString, ActionClassifier.isGitHubNetworkCommand(command),
            await hasSavedGitHubToken() {
@@ -771,8 +708,18 @@ public actor AgentRuntime {
             return .stop
         case .refuse(let message):
             appendToolResult(name: call.name, observation: ["error": message])
-            noteFailure(FailureCheck.kind(["error": message]), key: call.name + message)
-            if abortForFailures { _ = stopForFailures(); return .stop }
+            let refused = ToolOutcome(kind: .refused, raw: ["error": message], shown: ["error": message])
+            var stop: String?
+            for guardian in guards {
+                for action in guardian.afterTool(call, refused, makeContext()) {
+                    switch action {
+                    case .nudge(let nudge): apply(nudge)
+                    case .abort(let why): stop = stop ?? why
+                    default: break
+                    }
+                }
+            }
+            if let why = stop { stopRun(why); return .stop }
             return .skipped
         case .held(let note, let stored):
             onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
@@ -783,36 +730,16 @@ public actor AgentRuntime {
             if askedHuman {
                 onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
             }
-            await execute(call, repeatCount: repeatCount, decision: decision)
-            switch Reliability.isOn(.loopGuards) ? stuck.recordAction(Self.repeatFingerprint(for: call)) : .fine {
-            case .abort(let why): abortForStuck = why
-            case .nudge(let text): messages.append(ChatMessage(role: .user, content: text))
-            case .fine: break
-            }
-            if let why = abortForStuck {
-                let error = RuntimeError.repeated(why)
-                emitAbortMessage(for: error)
-                onEvent(.status(.aborted("\(error)")))
-                return .stop
-            }
-            if abortForFailures { _ = stopForFailures(); return .stop }
-            if abortForStale {
-                let error = RuntimeError.repeated("nothing new came back for \(staleStreak) calls in a row: it was waiting, not working")
-                emitAbortMessage(for: error)
-                onEvent(.status(.aborted("\(error)")))
-                return .stop
-            }
-            if abortForSameResults {
-                let error = RuntimeError.repeated("'\(call.name)' kept returning the same result; the run was going in circles")
-                emitAbortMessage(for: error)
-                onEvent(.status(.aborted("\(error)")))
+            if let why = await execute(call, decision: decision) {
+                stopRun(why)
                 return .stop
             }
             return .ran
         }
     }
 
-    private func execute(_ call: ToolCall, repeatCount: Int, decision: GuardrailDecision) async {
+    /// Runs the tool and records its result. Returns why the run should stop, if a guard said so.
+    private func execute(_ call: ToolCall, decision: GuardrailDecision) async -> String? {
         onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
         let toolStarted = Date()
         var observation: [String: Any]
@@ -827,141 +754,57 @@ public actor AgentRuntime {
         // What the model reads (and the console shows): bounded, with grounded warnings/hints added.
         var shown = observation
         if Reliability.isOn(.outputLimits) { shown = ObservationPolicy.bounded(shown, limit: call.name == "read_file" ? PagedRead.defaultCharacterBudget + 500 : ObservationPolicy.maxFieldCharacters) }
-        if Reliability.isOn(.failureHints) {
-            shown = ObservationPolicy.annotate(tool: call.name, observation: shown)
-            if shown["warning"] == nil, let trash = ObservationPolicy.trashWarning(forArguments: jsonString(call.arguments.mapValues(\.value))) {
-                shown["warning"] = trash
+        if Reliability.isOn(.failureHints) { shown = ObservationPolicy.annotate(tool: call.name, observation: shown) }
+
+        // The guards look at the result, in order. Annotations and replacements shape what the model reads;
+        // nudges and stops come after it in the prompt.
+        var result = ToolOutcome(kind: .executed(isObservation: ObservationPolicy.isObservation(decision)), raw: observation, shown: shown)
+        var replacement: String?
+        var queued: [GuardAction] = []
+        for guardian in guards {
+            for action in guardian.afterTool(call, result, makeContext()) {
+                switch action {
+                case .annotate(let key, let value):
+                    result.shown[key] = value
+                    recordFiring(kind: guardian.id, detail: "\(key): \(value)")
+                case .replaceResult(let json, let kind):
+                    replacement = json
+                    recordFiring(kind: kind, detail: json)
+                default:
+                    queued.append(action)
+                }
             }
         }
-        // The same look at the same thing, with the same answer, while the first answer is still in the conversation:
-        // say so instead of pasting it again (it doubled the context and sent bots round in circles).
-        let resultText = jsonString(shown)
-        if Reliability.isOn(.loopGuards), ObservationPolicy.isObservation(decision), resultText.count > 400,
-           messages.suffix(40).contains(where: { $0.role == .tool && $0.toolName == call.name && $0.content == resultText }) {
-            appendToolResult(name: call.name, observation: ["unchanged": true, "note":
-                "Identical to your earlier \(call.name) result with the same arguments, which is still above in this conversation. "
-                + "Nothing changed. Use what you already have and take the next step; don't read it again."])
-        } else {
-            appendToolResult(name: call.name, observation: shown)
-        }
+        let resultText = jsonString(result.shown)
+        appendToolResult(name: call.name, content: replacement ?? resultText)
         onEvent(.toolCompleted(name: call.name, resultJSON: resultText))
-        let staleKey = Reliability.isOn(.loopGuards) ? staleKey(call, observation: observation) : nil
-        let alreadySeen = staleKey.map { seenResults.saw($0) } ?? false
-        // Something changed on the machine (an install, a write, a command with side effects): checking again
-        // is now a different question, so earlier identical checks no longer count as a loop. Unless it printed
-        // exactly what it printed before (`git checkout` of the branch you're on): then nothing changed.
-        if !ObservationPolicy.isObservation(decision), !alreadySeen {
-            callFingerprints.removeAll()
-            lastResultKey = ""
-            sameResultStreak = 0
-            stuck.reset()
-        }
-        noteVerification(call, observation: observation)
-        noteError(call, observation: observation)
-        noteFailure(FailureCheck.kind(shown), key: call.name + FailureCheck.key(shown))
-        Telemetry.recorder.toolRun(call.name, seconds: Date().timeIntervalSince(toolStarted), failed: FailureCheck.kind(shown) != .ok)
-        let streak = noteResult(call, observation: observation)
-        if staleKey != nil {
-            staleStreak = alreadySeen ? staleStreak + 1 : 0
-            if staleStreak == Self.staleNudgeAt {
-                messages.append(ChatMessage(
-                    role: .user,
-                    content: "Your last \(staleStreak) results were all ones you had already seen (this turn or an earlier one): "
-                        + "nothing has changed. Checking again won't change it. If you're waiting on someone (a push, a review, a "
-                        + "decision), say in one line what you're waiting for and end your turn now; you'll be woken when they post. "
-                        + "If you're the one who should act, act on what you already know."
-                ))
-            } else if staleStreak >= Self.staleAbortAt {
-                abortForStale = true
-            }
-        }
-        if !Reliability.isOn(.loopGuards) {
-            // same-result guard switched off
-        } else if streak == Self.sameResultNudgeAt {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "\(call.name) has now returned the identical result \(streak) times in a row. Running it again, even "
-                    + "reworded, will not change the answer. An empty or negative result is information: change your approach "
-                    + "(for example, a package lookup that prints nothing usually means the package lists are not loaded: run "
-                    + "`sudo apt-get update` first), do what the result implies, or say plainly that you are blocked and what you need."
-            ))
-        } else if streak >= Self.sameResultAbortAt {
-            abortForSameResults = true
-        }
+        Telemetry.recorder.toolRun(call.name, seconds: Date().timeIntervalSince(toolStarted), failed: FailureCheck.kind(result.shown) != .ok)
 
         // Whatever this call brought into context may be attacker-controlled.
         if let notice = await gate.didExecute(call, decision: decision, observation: observation) {
             onEvent(.message(ChatMessage(role: .system, content: notice)))
         }
-
-        // Escalating nudges before `checkRepeat`'s own hard abort at
-        // `loopRepeatThreshold` — that only ever fires silently-until-
-        // aborted with no chance for the model to course-correct first.
-        // A soft one at the SECOND identical call; observed in practice
-        // (a local model re-querying `list_routines`/`recall_memory`
-        // instead of acting on what it already has) to sometimes not be
-        // enough on its own, so the LAST allowed repeat before the hard
-        // cutoff gets a much more insistent one — spelling out that an
-        // empty/negative result IS the answer, not a reason to check
-        // again, since that's specifically the case observed getting
-        // stuck: checking whether something exists, finding it doesn't,
-        // and re-checking instead of creating it.
-        if repeatCount == 2 {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "You just called \(call.name) again with the exact same arguments — you already "
-                    + "have that result above, calling it again won't produce a different answer. If "
-                    + "you're trying to verify something, act on what you already learned now instead of "
-                    + "re-checking; repeating this same call much more will end the run early with no result."
-            ))
-        } else if repeatCount == Self.loopRepeatThreshold {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "This is the SAME '\(call.name)' call for the \(repeatCount)rd time in a row, "
-                    + "with no different action taken in between — ONE more repeat of it will end this "
-                    + "run early with nothing accomplished. If you were checking whether something exists "
-                    + "and the result says it doesn't, that IS your answer — take whatever action follows "
-                    + "from that now (e.g. create it) instead of checking a fourth time."
-            ))
+        var stop: String?
+        for action in queued {
+            switch action {
+            case .nudge(let nudge): apply(nudge)
+            case .abort(let why): stop = stop ?? why
+            default: break
+            }
         }
 
-        // Not just the `screenshot` tool: `click` and `type_text` now attach
-        // their own verification screenshot too (see ToolRegistry), so the
-        // model sees the result of an action whether or not it thought to
-        // ask for it — that used to be optional and was reliably skipped.
-        guard let base64 = screenshotBase64 else { return }
-        if await model.supportsVision(model: modelName) {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "Here is the current screenshot. Compare it against what you expected to happen — "
+        // Not just the `screenshot` tool: `click` and `type_text` attach their own verification screenshot too (see
+        // ToolRegistry), so the model sees the result of an action whether or not it thought to ask for it.
+        if let base64 = screenshotBase64 {
+            if await model.supportsVision(model: modelName) {
+                log.append(.screenshot(content: "Here is the current screenshot. Compare it against what you expected to happen — "
                     + "does it actually show the intended effect? Don't assume the previous action worked "
-                    + "just because it returned ok:true.",
-                images: [base64]
-            ))
-            pruneOldScreenshots()
-        } else {
-            messages.append(ChatMessage(
-                role: .user,
-                content: "(a screenshot was taken, but the active model has no vision support and cannot see it)"
-            ))
+                    + "just because it returned ok:true.", images: [base64]))
+            } else {
+                log.append(.userMessage(content: "(a screenshot was taken, but the active model has no vision support and cannot see it)", images: nil))
+            }
         }
-    }
-
-    /// Keeps only the most recent `maxRetainedImages` screenshots in
-    /// context, replacing older ones with a text placeholder. Screenshots
-    /// are the dominant token cost in a long GUI-driving run — this is the
-    /// same image-pruning Anthropic's own computer-use reference
-    /// implementation does, for the same reason: a screenshot from 10 turns
-    /// ago that the model no longer needs still costs the same tokens as a
-    /// current one if left in context.
-    private func pruneOldScreenshots() {
-        let imageIndices = messages.indices.filter { !(messages[$0].images ?? []).isEmpty }
-        guard imageIndices.count > Self.maxRetainedImages else { return }
-        for index in imageIndices.dropLast(Self.maxRetainedImages) {
-            messages[index].images = nil
-            messages[index].content = "(an older screenshot was here; it's been removed to save context — "
-                + "take a fresh one if you need to see current state)"
-        }
+        return stop
     }
 
     // MARK: - Budgets and loop detection
@@ -989,52 +832,16 @@ public actor AgentRuntime {
 
     // MARK: - Context compaction
 
-    /// No real tokenizer available client-side for an arbitrary backend
-    /// (Ollama, an OpenAI-compatible endpoint, whatever model a bot is
-    /// configured with) — this is the same rough ~4-characters-per-token
-    /// heuristic most context-management guidance uses. Not meant to be
-    /// exact, just enough to catch "getting close to a model's context
-    /// window" before that window gets hit for real.
-    private func estimatedTokens(for message: ChatMessage) -> Int {
-        // utf8.count is O(1) for native strings; .count walks every character.
-        var characters = message.content.utf8.count
-        if let toolCalls = message.toolCalls {
-            for call in toolCalls {
-                characters += call.name.count + jsonString(call.arguments.mapValues(\.value)).count
-            }
-        }
-        // Images cost far more than their small base64 byte count would
-        // suggest under this character heuristic — a single screenshot
-        // can be worth thousands of real tokens — so they get their own
-        // flat per-image estimate instead of falling through the /4 math
-        // above, which would badly undercount them.
-        let imageTokens = (message.images?.count ?? 0) * 1_100
-        return characters / 4 + imageTokens
-    }
+    private func estimatedTokens(for message: ChatMessage) -> Int { ContextBudget.estimatedTokens(for: message) }
 
-    /// Checked once per loop iteration, same cadence as `checkBudgets`.
-    /// A no-op unless the running estimate crosses
-    /// `budgets.compactionThresholdTokens`.
-    private func compactContextIfNeeded() async {
-        let threshold = budgets.compactionThresholdTokens > 0 ? budgets.compactionThresholdTokens
-            : ContextBudget.threshold(window: contextWindow, schemaTokens: schemaTokens,
-                                      fixedPrefixTokens: messages.first.map { estimatedTokens(for: $0) } ?? 0)
-        let estimatedTotal = messages.reduce(0) { $0 + estimatedTokens(for: $1) }
-        // The server's own count of the last prompt catches what the estimate misses (tool definitions,
-        // formatting); it includes the schemas, so compare it against the whole usable window.
-        let reported = lastPromptTokens - schemaTokens
-        guard max(estimatedTotal, reported) > threshold else { return }
-        // Just compacted: unless the context is close to the window itself, let the bot work a few steps first.
-        // Compacting every step is slow and each summary of a summary loses more of what it had found.
-        let hardLimit = Int(Double(contextWindow - schemaTokens - ContextBudget.replyReserve) * 0.9)
-        if let last = lastCompactionMessageCount, messages.count < last + 8, max(estimatedTotal, reported) < hardLimit { return }
+    /// The context guard asked for a smaller prompt. Old tool output is usually most of it: stubbing that first is
+    /// free, a summary costs a model call. Both are events in the log; nothing is edited.
+    private func condense(threshold: Int, before: Int) async {
         defer { lastCompactionMessageCount = messages.count }
-        // Old tool output is usually most of it: dropping that first is free, a summary costs a model call.
-        let before = max(estimatedTotal, reported)
-        let collapsed = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
-        let collapsedTokens = collapsed.reduce(0) { $0 + estimatedTokens(for: $1) }
+        let collapsedTokens = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
+            .reduce(0) { $0 + estimatedTokens(for: $1) }
         if collapsedTokens < Int(Double(threshold) * 0.7) {
-            messages = collapsed
+            log.append(.condensed(.collapse(keepLast: 4, minCharacters: 400, batch: 1)))
             lastPromptTokens = 0
             chargedThrough = messages.count
             onEvent(.contextTrimmed(detail: "collapsed old tool output (no summary needed): ~\(before) → ~\(collapsedTokens) tokens, limit \(threshold), \(messages.count) messages kept"))
@@ -1047,11 +854,11 @@ public actor AgentRuntime {
         }
         // Aim well under the threshold so the next compaction isn't a few calls away.
         if messages.reduce(0, { $0 + estimatedTokens(for: $1) }) > Int(Double(threshold) * 0.7) {
-            messages = ObservationPolicy.collapseStale(messages, keepLast: 4, minCharacters: 400, batch: 1)
+            log.append(.condensed(.collapse(keepLast: 4, minCharacters: 400, batch: 1)))
         }
         // Still too big (a few huge recent tool results): shrink older results harder.
         if messages.reduce(0, { $0 + estimatedTokens(for: $1) }) > threshold {
-            messages = ObservationPolicy.collapseStale(messages, keepLast: 3, minCharacters: 400, batch: 1)
+            log.append(.condensed(.collapse(keepLast: 3, minCharacters: 400, batch: 1)))
         }
         let after = messages.reduce(0) { $0 + estimatedTokens(for: $1) }
         onEvent(.contextTrimmed(detail: "after compaction: ~\(before) → ~\(after) tokens, limit \(threshold), \(countBefore) → \(messages.count) messages"))
@@ -1098,8 +905,9 @@ public actor AgentRuntime {
         // Too little old history to be worth a summary call: the size is in recent tool output instead,
         // which `compactContextIfNeeded` shrinks next.
         guard cutIndex - firstSummarized >= 4 else { return }
-        let toSummarize = Array(messages[firstSummarized..<cutIndex])
-        let kept = Array(messages[cutIndex...])
+        let current = rendered
+        let toSummarize = Array(current.messages[firstSummarized..<cutIndex])
+        let firstID = current.sourceIDs[firstSummarized], lastID = current.sourceIDs[cutIndex - 1]
         // Images stripped from the copies sent for summarizing — the
         // point is a text digest, not reproducing them, and this keeps
         // the summarization call itself cheap and working even when the
@@ -1128,12 +936,7 @@ public actor AgentRuntime {
         guard !summaryText.isEmpty else { return }
 
         let droppedCount = toSummarize.count
-        let summaryMessage = ChatMessage(
-            role: .user,
-            content: "(Earlier conversation summarized to keep this within the model's context — "
-                + "nothing before this point is verbatim anymore:)\n\n\(summaryText)"
-        )
-        messages = [messages[0]] + (keepTask ? [taskMessage] : []) + [summaryMessage] + kept
+        log.append(.condensed(.summary(first: firstID, last: lastID, text: summaryText)))
         onEvent(.contextCompacted(summary: summaryText))
         Telemetry.recorder.compaction(dropped: droppedCount)
         // `.system` role specifically: `Bot.handleEvent`'s `.message`
@@ -1167,7 +970,6 @@ public actor AgentRuntime {
     /// Returns how many times (including this one) `call` has been made
     /// with these exact arguments in this run — `execute` uses it to
     /// nudge the model once, well before the hard abort below.
-    @discardableResult
     /// Starts the reads of one multi-call reply together: each still goes through the same checks, gate and
     /// result handling in order, but the waits on the sandbox overlap instead of adding up. A read the gate
     /// then refuses is simply never used.
@@ -1183,23 +985,6 @@ public actor AgentRuntime {
                 UncheckedBox(value: await backend.execute(name: call.name, arguments: call.arguments, sandboxID: id, sandbox: box, secretStore: store))
             }
         }
-    }
-
-    private func checkRepeat(_ call: ToolCall) throws -> Int {
-        let key = Self.repeatFingerprint(for: call)
-        // A read whose earlier result has since been collapsed out of the context is not a repeat: the model no
-        // longer has that text, so asking again is the right move.
-        if Self.parallelReadTools.contains(call.name), callFingerprints[key] != nil,
-           let path = call.arguments["path"]?.asString,
-           !messages.contains(where: { $0.role == .tool && $0.toolName == call.name && !$0.content.hasPrefix("[earlier output") && $0.content.contains(path) }) {
-            callFingerprints[key] = 0
-        }
-        let count = (callFingerprints[key] ?? 0) + 1
-        callFingerprints[key] = count
-        if count > Self.loopRepeatThreshold {
-            throw RuntimeError.repeated("repeated the same '\(call.name)' call too many times")
-        }
-        return count
     }
 
     /// What counts as "the same call". Exact argument equality missed a model re-running one check with
@@ -1239,138 +1024,37 @@ public actor AgentRuntime {
         return Array(Set(parts)).sorted().joined(separator: " ; ")
     }
 
-    /// A tool returning the very same result again and again means the model is going in circles,
-    /// whatever the arguments look like.
-    private func noteResult(_ call: ToolCall, observation: [String: Any]) -> Int {
-        let key = call.name + "|" + jsonString(observation)
-        if key == lastResultKey { sameResultStreak += 1 } else { lastResultKey = key; sameResultStreak = 1 }
-        return sameResultStreak
-    }
-
-    /// What a result says, for `seenResults`: shell output without echo labels or checkout chatter. `nil` for
-    /// tiny or write-type results, which neither count nor reset the streak.
-    private func staleKey(_ call: ToolCall, observation: [String: Any]) -> String? {
-        if ["update_user", "post_to_group", "message_bot", "write_file", "edit_file", "remember", "finish_task"].contains(call.name) { return nil }
-        let text: String
-        if call.name == "run_shell" {
-            let raw = ["stdout", "stderr", "error"].compactMap { observation[$0] as? String }.joined(separator: "\n")
-            text = raw.split(separator: "\n").filter { line in
-                let t = line.trimmingCharacters(in: .whitespaces)
-                return !(t.hasPrefix("---") || t.hasPrefix("===") || t.hasPrefix("Already on ") || t.hasPrefix("Switched to branch "))
-            }.joined(separator: "\n")
-        } else {
-            text = jsonString(observation)
-        }
-        guard text.count >= 40 else { return nil }
-        return call.name + "|" + text
-    }
-
     // MARK: - Transcript helpers
 
-    /// The third identical error from one tool this turn gets a single message naming it, before the
-    /// loop guards would stop the run.
-    /// The user wants to hear about a problem before the bot takes more actions on it: a hard failure,
-    /// or two failures in a row, tell it to stop and report; a third in a row ends the run.
-    private func noteFailure(_ kind: FailureCheck.Kind, key: String) {
-        guard Reliability.isOn(.loopGuards) else { return }
-        guard kind != .ok else { failureStreak = 0; sameFailureStreak = 0; lastFailureKey = ""; return }
-        failureStreak += 1
-        sameFailureStreak = key == lastFailureKey ? sameFailureStreak + 1 : 1
-        lastFailureKey = key
-        // Stop on the same failure three times (nothing new is being learned), or six failures of any kind.
-        // A test that fails differently each run is debugging, not a loop.
-        if sameFailureStreak >= FailureCheck.stopAfter || failureStreak >= FailureCheck.stopAfterAny {
-            abortForFailures = true
-        } else if kind == .blocked {
-            messages.append(ChatMessage(role: .user, content: FailureCheck.blockedNotice))
-        } else if kind == .hard || sameFailureStreak == 2 || failureStreak == FailureCheck.stopAfter {
-            messages.append(ChatMessage(role: .user, content: FailureCheck.stopNotice))
-        }
-    }
-
-    private func stopForFailures() -> Bool {
-        let error = RuntimeError.repeated(sameFailureStreak >= FailureCheck.stopAfter
-            ? "the same action failed \(sameFailureStreak) times in a row, so it stopped to check with you before trying anything else"
-            : "\(failureStreak) actions in a row failed, so it stopped to check with you before trying anything else")
-        emitAbortMessage(for: error)
-        onEvent(.status(.aborted("\(error)")))
-        return false
-    }
-
-    private static let docExtensions: Set<String> = ["md", "txt", "rst", "csv", "log"]
-
-    /// Tracks "changed code, then ran nothing" for the finish check.
-    private func noteVerification(_ call: ToolCall, observation: [String: Any]) {
-        switch call.name {
-        case "write_file", "edit_file":
-            guard observation["error"] == nil, let path = call.arguments["path"]?.asString else { return }
-            if !Self.docExtensions.contains((path as NSString).pathExtension.lowercased()) { unverifiedChange = true }
-        case "run_shell", "screenshot", "check_job":
-            unverifiedChange = false
-        default:
-            break
-        }
-    }
-
-    private func noteError(_ call: ToolCall, observation: [String: Any]) {
-        guard Reliability.isOn(.loopGuards) else { return }
-        var error = observation["error"] as? String ?? ""
-        if error.isEmpty, let code = observation["exit_code"] as? Int, code != 0 {
-            error = (observation["stderr"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard !error.isEmpty else { return }
-        let normalized = String(error.prefix(300)).replacingOccurrences(of: "[0-9]+", with: "#", options: .regularExpression)
-        let key = call.name + "|" + normalized
-        errorCounts[key, default: 0] += 1
-        guard errorCounts[key] == Self.sameErrorNudgeAt else { return }
-        messages.append(ChatMessage(role: .user, content:
-            "[stuck] \(call.name) has failed \(Self.sameErrorNudgeAt) times with the same error: \"\(String(error.prefix(240)))\". "
-            + "Repeating it won't help. Read the error, check your assumptions (path, name, arguments, whether a tool is installed), "
-            + "and try a different approach; if you can't, finish_task with outcome \"blocked\" and say what you need."))
-    }
-
     private func appendToolResult(name: String, observation: [String: Any]) {
-        let message = ChatMessage(role: .tool, content: jsonString(observation), toolName: name)
-        messages.append(message)
-        onEvent(.message(message))
+        appendToolResult(name: name, content: jsonString(observation))
     }
 
-    /// Points a screenshot announcement at the tools and the skill, without a shell recipe.
-    static func screenshotRoute(for narration: String) -> String {
-        let lowered = narration.lowercased()
-        guard lowered.contains("screenshot") || lowered.contains("picture") || lowered.contains("capture") else { return "" }
-        return " To show the screen, call screenshot, then post_screenshot. Load use_skill(\"desktop-control\") before a GUI action, "
-            + "or use_skill(\"sharing-screenshots\") when the user should see the image."
+    private func appendToolResult(name: String, content: String) {
+        log.append(.toolResult(name: name, content: content))
+        onEvent(.message(ChatMessage(role: .tool, content: content, toolName: name)))
     }
 
-    static let missingToolNudge = "You did not call a tool. Plain text alone never ends the task — if you are "
-        + "not finished, call the next tool you need right now. If the message you just "
-        + "wrote already WAS your complete answer, call finish_task right now with that "
-        + "SAME content as the summary — do not write a different, shorter, or more "
-        + "hesitant response instead of it. Only report being blocked if you genuinely "
-        + "are; don't downgrade a complete answer into a \"blocked\" one just because you "
-        + "forgot to call finish_task the first time."
-
-    /// First miss asks for the call. From the second miss, name the tools. The count is `plainReplyCount`.
+    static func screenshotRoute(for narration: String) -> String { NarrationGuard.screenshotRoute(for: narration) }
+    static var missingToolNudge: String { NarrationGuard.missingToolNudge }
     static func narrationNudge(count: Int, narration: String, toolNames: [String]) -> String {
-        if count >= 2 { return escalatedNarrationNudge(narration: narration, toolNames: toolNames) }
-        return "Make the tool call for your next step now. No sentence about it first: just the call."
-            + screenshotRoute(for: narration)
+        NarrationGuard.narrationNudge(count: count, narration: narration, toolNames: toolNames)
     }
-
     static func escalatedNarrationNudge(narration: String, toolNames: [String]) -> String {
-        var text = "You have described the next step \(2) times without calling a tool. Do not write another sentence: reply with ONLY a tool call. "
-            + "Tools you can call: " + toolNames.sorted().prefix(30).joined(separator: ", ") + "."
-        text += screenshotRoute(for: narration)
-        return text
+        NarrationGuard.escalatedNarrationNudge(narration: narration, toolNames: toolNames)
     }
 
-    private func jsonString(_ dict: [String: Any]) -> String {
-        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]) else {
-            return "{\"error\":\"failed to encode tool result\"}"
+    /// A turn restored from a saved transcript, as the event it would have been.
+    private static func event(for message: ChatMessage) -> RunEvent.Kind {
+        switch message.role {
+        case .system: return .system(message.content)
+        case .user: return .userMessage(content: message.content, images: message.images)
+        case .assistant: return .modelReply(message)
+        case .tool: return .toolResult(name: message.toolName ?? "tool", content: message.content)
         }
-        return String(data: data, encoding: .utf8) ?? "{}"
     }
+
+    private func jsonString(_ dict: [String: Any]) -> String { runJSONString(dict) }
 }
 
 /// Carries a value across a task boundary that Swift can't prove safe; used for tool results that are plain data.

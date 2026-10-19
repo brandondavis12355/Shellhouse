@@ -3508,7 +3508,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                         audit: AuditLog.shared,
                         inbox: PendingInboxStore.standard,
                         answerEndsTurnAfterTools: true,
-                        seenResults: seenResults
+                        seenResults: seenResults,
+                        runLogSink: RunLogFileSink(url: TranscriptStore.runLogURL(for: id))
                     )
                 }
                 runtime = newRuntime

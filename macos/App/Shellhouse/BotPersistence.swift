@@ -234,6 +234,11 @@ enum TranscriptStore {
         dir("transcripts").appendingPathComponent("\(id).json")
     }
 
+    /// The run log (`RunLog`): one JSON event per line, beside the transcript. The transcript file keeps its format.
+    static func runLogURL(for id: String) -> URL {
+        dir("transcripts").appendingPathComponent("\(id).runlog.jsonl")
+    }
+
     static func load(id: String) -> [TranscriptEntry] {
         guard let data = try? Data(contentsOf: fileURL(for: id)) else { return [] }
         return (try? JSONDecoder().decode([TranscriptEntry].self, from: data)) ?? []
@@ -264,7 +269,10 @@ enum TranscriptStore {
     }
 
     static func delete(id: String) {
-        writeQueue.async { try? FileManager.default.removeItem(at: fileURL(for: id)) }
+        writeQueue.async {
+            try? FileManager.default.removeItem(at: fileURL(for: id))
+            try? FileManager.default.removeItem(at: runLogURL(for: id))
+        }
     }
 }
 
