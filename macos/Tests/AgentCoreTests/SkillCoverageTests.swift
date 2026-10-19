@@ -12,7 +12,7 @@ final class SkillCoverageTests: XCTestCase {
         // Every optional tool switched on.
         let registry = ToolRegistry(
             skills: skills,
-            onRemember: { _ in true }, onRecallMemory: { _ in [] },
+            onRemember: { _ in true }, onReplaceMemory: { _, _ in true }, onRecallMemory: { _ in [] },
             onRememberTask: { _ in [:] }, onCompleteTask: { _ in [:] }, onListTasks: { [] },
             onCreateRoutine: { _ in [:] }, onEditRoutine: { _ in [:] }, onRemoveRoutine: { _ in [:] }, onListRoutines: { [] },
             onGetProfile: { [:] }, onListBots: { [] }, onMessageBot: { _, _ in [:] }, onCreateBot: { _, _, _ in [:] },
@@ -25,6 +25,33 @@ final class SkillCoverageTests: XCTestCase {
         let uncovered = tools.filter { name in text.range(of: "\\b\(name)\\b", options: .regularExpression) == nil }.sorted()
         XCTAssertEqual(uncovered, [], "tools no skill explains: \(uncovered)")
         XCTAssertGreaterThanOrEqual(tools.count, 40, "registry should expose the full tool set here")
+    }
+}
+
+final class SkillIndexTests: XCTestCase {
+    func testTheIndexKeepsEachWhenLine() {
+        let skills = [
+            Skill(id: "desktop-control", name: "Desktop", description: "Before your first GUI action in a task.", content: ""),
+            Skill(id: "sharing-screenshots", name: "Share", description: "When the user should see an image.", content: ""),
+        ]
+        let index = SkillLibrary.promptIndex(skills)
+        XCTAssertTrue(index.contains("- desktop-control: Before your first GUI action in a task."))
+        XCTAssertTrue(index.contains("- sharing-screenshots: When the user should see an image."))
+    }
+}
+
+final class DelegationAndProcessTests: XCTestCase {
+    func testAHopStopsAtTheAskerOrABusyBotAndCannotPassOn() {
+        XCTAssertEqual(DelegationHop.decision(hop: 0, recipientID: "b", originID: nil, recipientBusy: false), .run(allowFurther: true))
+        XCTAssertEqual(DelegationHop.decision(hop: 1, recipientID: "c", originID: "a", recipientBusy: false), .run(allowFurther: false))
+        XCTAssertEqual(DelegationHop.decision(hop: 1, recipientID: "a", originID: "a", recipientBusy: false), .skip(.origin))
+        XCTAssertEqual(DelegationHop.decision(hop: 1, recipientID: "c", originID: "a", recipientBusy: true), .skip(.busy))
+        XCTAssertEqual(DelegationHop.decision(hop: 2, recipientID: "d", originID: "a", recipientBusy: false), .skip(.passedOn))
+    }
+
+    func testARepeatableCommandBecomesOneProcessLine() {
+        XCTAssertEqual(ProcessNote.command(in: "It was down. I ran `systemctl restart nginx` and it came back."), "systemctl restart nginx")
+        XCTAssertNil(ProcessNote.command(in: "Tai said the service is fine."))
     }
 }
 

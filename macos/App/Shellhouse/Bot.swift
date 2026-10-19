@@ -881,6 +881,19 @@ final class Bot: Identifiable, @unchecked Sendable {
         return true
     }
 
+    /// Rewrites one core note. Does not add a second copy.
+    func replaceMemory(id noteID: String, text: String) -> Bool {
+        let previousBook = memoryBook
+        guard memoryBook.replace(id: noteID, text: text) else { return false }
+        guard BotMemoryStore.saveBook(id: id, memoryBook) else {
+            memoryBook = previousBook
+            return false
+        }
+        memories = memoryBook.texts
+        Task { @MainActor [weak self] in await self?.embedPendingMemories() }
+        return true
+    }
+
     /// Merges near-duplicate notes and archives stale, low-value, never-used ones (see `MemoryBook.consolidate`).
     /// At most once a day unless forced. Returns what changed.
     @discardableResult
@@ -987,13 +1000,10 @@ final class Bot: Identifiable, @unchecked Sendable {
 
     /// Notes relevant to an incoming message; `withRelevantMemoryContext` puts them in front of the model so it does
     /// not have to notice them in a long list.
-    /// How many notes the system prompt already lists in full (see `fullSystemPrompt`).
-    static let coreMemoryLimit = 12
-
     private func memoriesRelevant(to text: String, limit: Int = 5) async -> [String] {
-        // Every note is already in the system prompt: ranking them again would only cost
-        // an embedding call on the shared model server.
-        guard memoryBook.entries.count > Self.coreMemoryLimit else { return [] }
+        // Core blocks are already in the prompt. Search only when something else is stored.
+        let shown = Set(memoryBook.block(.user).map(\.id) + memoryBook.block(.procedures).map(\.id))
+        guard memoryBook.entries.contains(where: { !shown.contains($0.id) }) else { return [] }
         let q = await memoryQueryVector(text)
         let ranked = memoryBook.rank(query: String(text.suffix(3_000)), queryEmbedding: q?.vector, queryModel: q?.model, limit: limit)
         noteMemoriesUsed(ranked.map(\.entry.id))
@@ -1661,7 +1671,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// recipient's own chat is untouched by any of this.
     static let delegationBootWaitSeconds = 90
 
-    struct RecentDelegation { let peerID: String; let message: String; let reply: String; let tainted: Bool; let at: Date }
+    struct RecentDelegation { let peerID: String; let message: String; let reply: String; let tainted: Bool; let checked: Bool; let at: Date }
     var recentDelegations: [RecentDelegation] = []
 
     /// `git fetch` in every repository under /workspace, best effort: lets a review start from current remote state.
@@ -1675,10 +1685,24 @@ final class Bot: Identifiable, @unchecked Sendable {
         return "\(count) repo\(count == 1 ? "" : "s")"
     }
 
-    func delegateToBot(named name: String, message: String, quickIfBusy: Bool = false, senderTainted: Bool = false) async -> [String: Any] {
+    func delegateToBot(named name: String, message: String, quickIfBusy: Bool = false, senderTainted: Bool = false, hop: Int = 0, originID: String? = nil) async -> [String: Any] {
         guard let recipient = botDirectory.bot(named: name, excluding: id) else {
             return ["error": "No other bot named '\(name)'. Use list_bots to see who's available."]
         }
+        let hopDecision = DelegationHop.decision(hop: hop, recipientID: recipient.id, originID: originID, recipientBusy: recipient.isBusy)
+        if case .skip(let reason) = hopDecision {
+            let note: String
+            switch reason {
+            case .origin:
+                note = "\(recipient.name) is who asked you. Don't message them back. Answer from what you already have."
+            case .busy:
+                note = "\(recipient.name) is busy, so this was not checked. Don't wait on them."
+            case .passedOn:
+                note = "This check was already passed along once. Don't pass it further."
+            }
+            return ["from": recipient.name, "reply": "", "checked": false, "note": note]
+        }
+        let allowFurther = if case .run(let further) = hopDecision { further } else { false }
         // A bot that was just created (or the app just launched) is still booting its sandbox: wait
         // for it rather than failing and leaving the model to retry in a loop. A failed boot answers at once.
         var waited = 0
@@ -1700,6 +1724,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         recentDelegations = recentDelegations.filter { now.timeIntervalSince($0.at) < 600 }
         if let earlier = recentDelegations.last(where: { $0.peerID == recipient.id && ReplyQuality.isDuplicate(message, of: [$0.message], threshold: 0.8) }) {
             return ["from": recipient.name, "reply": earlier.reply, "_tainted": earlier.tainted, "already_asked": true,
+                    "checked": earlier.checked,
                     "note": "You asked \(recipient.name) this \(Int(now.timeIntervalSince(earlier.at))) s ago; this is the answer you got, not a new run. "
                         + "Do not ask again. Act on it, or ask something different (what changed, a specific file or command)."]
         }
@@ -1715,37 +1740,35 @@ final class Bot: Identifiable, @unchecked Sendable {
         // its run could deadlock (two bots waiting on each other) or stall the group, so it answers right
         // away from what it already knows instead.
         let answeredQuickly = quickIfBusy && recipient.isBusy
-        let (reply, replyTainted) = answeredQuickly
-            ? await recipient.answerFromWhatIKnow(fromBotName: self.name, question: message, senderTainted: senderTainted)
-            : await recipient.handleDelegatedTask(fromBotName: self.name, message: message, senderTainted: senderTainted)
+        let reply: String
+        let replyTainted: Bool
+        let toolCalls: Int
+        if answeredQuickly {
+            let quick = await recipient.answerFromWhatIKnow(fromBotName: self.name, question: message, senderTainted: senderTainted)
+            reply = quick.text
+            replyTainted = quick.tainted
+            toolCalls = 0
+        } else {
+            let full = await recipient.handleDelegatedTask(fromBotName: self.name, message: message, senderTainted: senderTainted, fromBotID: id, allowOneHop: allowFurther)
+            reply = full.text
+            replyTainted = full.tainted
+            toolCalls = full.toolCalls
+        }
         InterBotStore.append(InterBotMessage(fromBotID: recipient.id, fromBotName: recipient.name, toBotID: id, toBotName: self.name, text: reply))
 
-        // Written to BOTH sides' own durable memory (`remember`'s same
-        // mechanism, `addMemory`) unconditionally, not left to either
-        // bot's own judgment — a delegation crossing between two bots
-        // is exactly the kind of fact that's easy for either side to
-        // lose track of, especially since each one only ever sees this
-        // from its own half of the exchange. Truncated on both ends:
-        // this is a "we talked about this, here's the gist" pointer,
-        // not a second copy of the full exchange (that already lives in
-        // `InterBotStore`, reachable via the "Messaged <name>…" notice).
-        // Gated on `isSubstantiveDelegationReply` — a failed/aborted/
-        // silent delegation isn't a fact worth remembering, and without
-        // this check it'd get written verbatim, e.g. "they answered:
-        // (stopped early: repeated the same 'X' call too many times)",
-        // as if that error text were a real answer.
-        // A reply produced by a run that read untrusted content could carry
-        // injected instructions; don't write it into either bot's durable
-        // memory (docs/GUARDRAILS.md, L2).
-        if !replyTainted, Self.isSubstantiveDelegationReply(reply) {
-            addMemory("Asked \(recipient.name): \"\(Self.truncatedForMemory(message))\" — they answered: \"\(Self.truncatedForMemory(reply))\"", source: "delegation")
-            recipient.addMemory("\(self.name) asked me: \"\(Self.truncatedForMemory(message))\" — I answered: \"\(Self.truncatedForMemory(reply))\"", source: "delegation")
+        // checked is true only when the other bot actually ran a tool. A busy answer, a repeated
+        // question, or a reply with no tool behind it is not written into either memory book.
+        // A checked run that names a command worth reusing saves that process, not the transcript.
+        let checked = !answeredQuickly && toolCalls > 0 && !replyTainted && Self.isSubstantiveDelegationReply(reply)
+        if checked, let command = ProcessNote.command(in: reply) {
+            recipient.addMemory("When asked to \(Self.truncatedForMemory(message, limit: 80)), run `\(command)`.", source: "process", importance: 4)
+            addMemory("Ask \(recipient.name) to run `\(command)`.", source: "process", importance: 3)
         }
 
         if !answeredQuickly, Self.isSubstantiveDelegationReply(reply) {
-            recentDelegations.append(RecentDelegation(peerID: recipient.id, message: message, reply: reply, tainted: replyTainted, at: Date()))
+            recentDelegations.append(RecentDelegation(peerID: recipient.id, message: message, reply: reply, tainted: replyTainted, checked: checked, at: Date()))
         }
-        var result: [String: Any] = ["from": recipient.name, "reply": reply, "_tainted": replyTainted]
+        var result: [String: Any] = ["from": recipient.name, "reply": reply, "_tainted": replyTainted, "checked": checked]
         if answeredQuickly {
             result["note"] = "\(recipient.name) was busy with another task, so this answer comes from what it already knew "
                 + "(no new commands were run). If you need it to check or do something, ask again once it's free, or @mention it in the group."
@@ -1932,16 +1955,6 @@ final class Bot: Identifiable, @unchecked Sendable {
         return ["posted": true, "group": group.name]
     }
 
-    /// Runs one isolated task on behalf of another bot's delegation — a
-    /// fresh `AgentRuntime` using THIS bot's own system prompt, skills,
-    /// model, and sandbox, seeded with no history (a delegated ask is its
-    /// own thing, not mixed into whatever this bot's own user is
-    /// separately chatting about) and no `list_bots`/`message_bot` of its
-    /// own, so a delegation can't recurse into a loop.
-    ///
-    /// Waits behind whatever else this bot is currently doing (own chat,
-    /// another delegation, a group turn) — see `runIsolatedTask`'s run
-    /// lock — before it actually starts.
     /// Answers another bot's question without a run (and without this bot's run lock): one fast-model call
     /// over what it already knows — role, memory, tasks, routines and its latest tool results.
     func answerFromWhatIKnow(fromBotName senderName: String, question: String, senderTainted: Bool = false) async -> (text: String, tainted: Bool) {
@@ -1959,14 +1972,19 @@ final class Bot: Identifiable, @unchecked Sendable {
         return (reply ?? "(\(name) is busy with another task and couldn't answer from what it knows; ask again shortly.)", tainted)
     }
 
-    func handleDelegatedTask(fromBotName senderName: String, message: String, senderTainted: Bool = false) async -> (text: String, tainted: Bool) {
-        let suffix = "You're handling this as a delegated request from another bot (\(senderName)), not a "
+    /// A delegated ask on this bot's own runtime. When `allowOneHop` is set, it may message one other bot.
+    func handleDelegatedTask(fromBotName senderName: String, message: String, senderTainted: Bool = false, fromBotID: String? = nil, allowOneHop: Bool = false) async -> (text: String, tainted: Bool, toolCalls: Int) {
+        var suffix = "You're handling this as a delegated request from another bot (\(senderName)), not a "
             + "direct message from your own user. Answer it directly and completely — \(senderName) will "
             + "relay your answer back to their user."
+        if allowOneHop {
+            suffix += " You may message_bot one other bot to check a fact. Do not message \(senderName) back, and do not ask that bot to ask someone else."
+        }
         // A request from a bot that has read untrusted content may carry injected instructions: this run starts untrusted too.
         let result = await runIsolatedTaskResult(systemPromptSuffix: suffix, goal: message, debugContext: "delegated from \(senderName)",
-                                                 initialTaint: senderTainted ? [.peerBot] : [])
-        return (result.text, result.tainted)
+                                                 allowBotMessaging: allowOneHop, initialTaint: senderTainted ? [.peerBot] : [],
+                                                 messagingHop: allowOneHop ? 1 : 0, messagingOriginID: fromBotID)
+        return (result.text, result.tainted, result.toolCalls)
     }
 
     /// Cheap pre-check for an un-@mentioned group turn: one tiny tool-less
@@ -2337,7 +2355,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 }
                 guard Reliability.isOn(.replyChecks), text != "[[silent]]", !text.hasPrefix("(stopped early") else { return nil }
                 // A reply that only announces what the bot is about to do is not an answer.
-                if ReplyQuality.looksLikeNarration(result.text) {
+                if ReplyQuality.isAnnouncement(result.text) {
                     return "Your reply was only an announcement (\"" + String(result.text.prefix(80)) + "…\"). Do the work now with "
                         + "your tools if needed, then call finish_task with the actual result as its summary: facts, numbers and outputs, not intentions."
                 }
@@ -2358,7 +2376,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             let still = ClaimCheck.unsupported(in: outcome.text, sources: allowed)
             if !still.isEmpty {
                 let cleaned = ClaimCheck.removingLines(stating: still, from: outcome.text)
-                if !cleaned.isEmpty { outcome = IsolatedResult(text: cleaned, failed: false, tainted: outcome.tainted) }
+                if !cleaned.isEmpty { outcome = IsolatedResult(text: cleaned, failed: false, tainted: outcome.tainted, toolCalls: outcome.toolCalls) }
             }
         }
         // Stopped early (budget, loop, guardrail freeze): say honestly what was verified instead of a bare error.
@@ -2368,11 +2386,11 @@ final class Bot: Identifiable, @unchecked Sendable {
             let update = await stopUpdate(reason: reason, evidence: lastTurnObservations, transcript: String(transcriptSoFar.suffix(2_500)),
                                           audience: "the group \"\(groupName)\" (members: \(otherMembers.joined(separator: ", ")))",
                                           includeMemory: !untrustedInput)
-            outcome = IsolatedResult(text: update, failed: false, tainted: outcome.tainted)
+            outcome = IsolatedResult(text: update, failed: false, tainted: outcome.tainted, toolCalls: outcome.toolCalls)
         }
         // The model server being down is an infrastructure problem, never something to post as the bot's reply.
         if !outcome.failed, outcome.text.hasPrefix(ModelConnection.unreachablePrefix) {
-            outcome = IsolatedResult(text: "the model server (Ollama) isn't reachable", failed: true, tainted: outcome.tainted)
+            outcome = IsolatedResult(text: "the model server (Ollama) isn't reachable", failed: true, tainted: outcome.tainted, toolCalls: outcome.toolCalls)
         }
         // Infrastructure failures ("no sandbox", "cancelled", "no response")
         // are never posted as if the bot had said them.
@@ -2533,6 +2551,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         let failed: Bool
         /// The run read untrusted content, so the asker must not memorize or trust the reply.
         var tainted = false
+        var toolCalls = 0
     }
 
     /// `followUp` sees each result while the run (and this bot's run lock) is
@@ -2549,6 +2568,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         plainReplyEndsTurn: Bool = false,
         allowBotMessaging: Bool = false,
         initialTaint: [TaintSource] = [],
+        messagingHop: Int = 0,
+        messagingOriginID: String? = nil,
         withheldTools: [String] = [],
         onDraft: (@MainActor (String?) -> Void)? = nil,
         followUp: (@MainActor (IsolatedResult) async -> String?)? = nil,
@@ -2621,10 +2642,12 @@ final class Bot: Identifiable, @unchecked Sendable {
                 listBotsForRun = { [weak self] in
                     await MainActor.run { self?.listOtherBots() ?? [] }
                 }
+                let hop = messagingHop
+                let origin = messagingOriginID
                 messageBotForRun = { [weak self] to, message in
                     guard let self else { return ["error": "bot no longer available"] }
                     let tainted = await taintProbe.runtime?.isTainted ?? false
-                    return await self.delegateToBot(named: to, message: message, quickIfBusy: true, senderTainted: tainted)
+                    return await self.delegateToBot(named: to, message: message, quickIfBusy: true, senderTainted: tainted, hop: hop, originID: origin)
                 }
             }
             let runtime = AgentRuntime(
@@ -2638,6 +2661,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                     // so injected text can't plant a persistent instruction.
                     onRemember: { [weak self] text in
                         await MainActor.run { self?.addMemory(text) ?? false }
+                    },
+                    onReplaceMemory: { [weak self] noteID, text in
+                        await MainActor.run { self?.replaceMemory(id: noteID, text: text) ?? false }
                     },
                     onRecallMemory: { [weak self] query in
                         await self?.recallMemory(matching: query) ?? []
@@ -2796,7 +2822,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 // state is offered, so injected text can't plant a lasting
                 // instruction (memory, tasks, routines).
                 excludedTools: Set(untrustedInput
-                    ? ["remember", "remember_task", "create_routine", "edit_routine", "remove_routine"]
+                    ? ["remember", "replace_memory", "remember_task", "create_routine", "edit_routine", "remove_routine"]
                     : []).union(withheldTools),
                 audit: AuditLog.shared,
                 inbox: PendingInboxStore.standard,
@@ -2818,7 +2844,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 lastTurnToolCalls = toolCallCounter.value
                 let picked = replyPicker.result
                 let resultText = picked ?? "(\(name) didn't produce a response.)"
-                return IsolatedResult(text: isSilent ? "[[silent]]" : resultText, failed: picked == nil && !isSilent, tainted: runTainted)
+                return IsolatedResult(text: isSilent ? "[[silent]]" : resultText, failed: picked == nil && !isSilent, tainted: runTainted, toolCalls: toolCallCounter.value)
             }
             var result = await currentResult()
             let reviewTainted = result.tainted || untrustedInput
@@ -2990,44 +3016,24 @@ final class Bot: Identifiable, @unchecked Sendable {
             result += "\n\n---\n\nAdditional instructions from the user for this bot (in addition to everything above):\n\n" + custom
         }
         let selected = availableSkills.filter { selectedSkillIDs.contains($0.id) }
-        if !selected.isEmpty {
-            if isolated {
-                // Group turns/delegations/routines: names only. The one-line
-                // descriptions were ~1.5k tokens re-processed on EVERY member's
-                // turn — and with several bots sharing one local model, that
-                // prompt processing (not generation) is what makes them take
-                // turns instead of running side by side.
-                let alreadyInThisPrompt: Set<String> = ["goal-driven-work"]
-                let loadable = selected.map(\.id).filter { !alreadyInThisPrompt.contains($0) }
-                result += "\n\n---\n\nPlaybooks you can load with use_skill(name) when one clearly fits what you're doing: "
-                    + loadable.joined(separator: ", ") + ". The rules for group chats and shared goals are already in this prompt; do not load those playbooks."
-            } else {
-                result += "\n\n---\n\nSkills available via the use_skill tool. Each is a playbook for a specific "
-                    + "task — call use_skill(name: \"<name>\") to load one's full instructions ONLY when its "
-                    + "description actually matches what you're about to do:\n\n"
-                for skill in selected {
-                    result += "- \(skill.id): \(skill.description.isEmpty ? skill.name : skill.description)\n"
-                }
+        result += SkillLibrary.promptIndex(selected)
+        let userNotes = memoryBook.block(.user)
+        let procedures = memoryBook.block(.procedures)
+        if !userNotes.isEmpty || !procedures.isEmpty {
+            result += "\n\n---\n\nCore memory. These notes stay in the prompt. Everything else is found with recall_memory. "
+                + "To change one, call replace_memory with its id.\n"
+            if !userNotes.isEmpty {
+                result += "\nUser:\n"
+                for memory in userNotes { result += "- [\(memory.id)] \(memory.text)\n" }
             }
-        }
-        if !memoryBook.entries.isEmpty {
-            let core = memoryBook.core(limit: Self.coreMemoryLimit)
-            result += "\n\n---\n\nYour most important notes from earlier conversations — follow "
-                + "these unless the current conversation says otherwise:\n\n"
-            for memory in core {
-                result += "- \(memory.text)\n"
-            }
-            let more = memoryBook.entries.count - core.count
-            if more > 0 {
-                result += "\n(\(more) more notes are stored. The ones relevant to each message are shown with it; "
-                    + "search the rest with recall_memory.)\n"
+            if !procedures.isEmpty {
+                result += "\nProcedures:\n"
+                for memory in procedures { result += "- [\(memory.id)] \(memory.text)\n" }
             }
         }
         if !tasks.isEmpty {
-            result += "\n\n---\n\nOne-shot tasks you're currently carrying (see remember_task/complete_task) "
-                + "— these follow you into a group turn or a delegation, which otherwise have no access to "
-                + "your own conversation history, so this is how you stay aware of them there too. Call "
-                + "complete_task the moment one is actually done — don't leave finished tasks sitting here:\n\n"
+            result += "\n\n---\n\nWork (open tasks, one line each). These follow you into a group turn or a delegation. "
+                + "Call complete_task the moment one is actually done:\n\n"
             for task in tasks {
                 result += "- \(task.text)\n"
             }
@@ -3349,6 +3355,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                         skills: selectedSkills,
                         onRemember: { [weak self] text in
                             await MainActor.run { self?.addMemory(text) ?? false }
+                        },
+                        onReplaceMemory: { [weak self] noteID, text in
+                            await MainActor.run { self?.replaceMemory(id: noteID, text: text) ?? false }
                         },
                         onRecallMemory: { [weak self] query in
                             await self?.recallMemory(matching: query) ?? []

@@ -392,6 +392,24 @@ final class OpenAIEmbedderTests: XCTestCase {
         XCTAssertFalse(ModelTiers.looksLikeOllama(URL(string: "https://api.openai.com/v1")!))
     }
 
+    func testReplaceRewritesOneNote() {
+        var book = MemoryBook()
+        guard case .added(let entry) = book.add("Prefers metric.") else { return XCTFail() }
+        XCTAssertTrue(book.replace(id: entry.id, text: "Prefers imperial."))
+        XCTAssertEqual(book.entries.count, 1)
+        XCTAssertEqual(book.entries[0].text, "Prefers imperial.")
+        XCTAssertFalse(book.replace(id: "missing", text: "nope"))
+    }
+
+    func testProceduresStayOutOfTheUserBlock() {
+        var book = MemoryBook()
+        book.add("Ask Tai Lung to run `systemctl restart nginx`.", source: "process")
+        book.add("Name is Sam.", source: "user")
+        book.add("Asked Tai: they answered the transcript.", source: "delegation")
+        XCTAssertEqual(book.block(.user).map(\.text), ["Name is Sam."])
+        XCTAssertEqual(book.block(.procedures).map(\.text), ["Ask Tai Lung to run `systemctl restart nginx`."])
+    }
+
     func testNotesNeedReindexingWhenTheModelChanges() {
         var book = MemoryBook()
         _ = book.add("the gh tool is installed", embedding: [1, 0], embeddingModel: "qwen3-embedding:8b")

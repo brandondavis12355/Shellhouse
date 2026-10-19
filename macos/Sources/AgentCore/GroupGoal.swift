@@ -372,19 +372,22 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         guard trimmed.count >= Self.minEvidenceLength else {
             return .rejected("Marking a step done needs evidence (at least \(Self.minEvidenceLength) characters): what you ran or checked and what it showed.")
         }
+        guard turnHadToolCalls else {
+            if current == .review {
+                return .rejected("Validate before accepting: run your own check this turn (re-run the command, read the file, test the result) and then mark it done with what YOU saw.")
+            }
+            return .rejected("Marking a step done needs evidence that matches a tool result from this turn. Quote the real output, then update again.")
+        }
         if !byOwner {
             steps[index].status = .review
             steps[index].evidence = trimmed
             steps[index].verified = false
             return .submitted
         }
-        if current == .review, !turnHadToolCalls {
-            return .rejected("Validate before accepting: run your own check this turn (re-run the command, read the file, test the result) and then mark it done with what YOU saw.")
-        }
         let alreadyDone = steps[index].status == .done
         steps[index].status = .done
         steps[index].evidence = trimmed
-        steps[index].verified = turnHadToolCalls
+        steps[index].verified = true
         if turnHadToolCalls && !alreadyDone {
             messagesSinceProgress = 0
             return .progress
@@ -414,7 +417,9 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         guard trimmed.count >= Self.minEvidenceLength else {
             return .rejected("Checking in needs evidence (at least \(Self.minEvidenceLength) characters): what you ran or checked and what it showed.")
         }
-        guard turnHadToolCalls else { return .recorded }
+        guard turnHadToolCalls else {
+            return .rejected("Checking in needs a tool result from this turn. Quote the real output, then update again.")
+        }
         var byMember = steps[index].memberEvidence ?? [:]
         let alreadyIn = byMember[member] != nil
         byMember[member] = trimmed
@@ -433,11 +438,24 @@ public struct GroupGoal: Codable, Sendable, Equatable {
         return .memberCheckedIn(remaining: remaining)
     }
 
+    /// The single next step that is open and not waiting on another step, and who holds it.
+    public func nextActionLine() -> String? {
+        for (offset, step) in steps.enumerated() {
+            guard step.status == .open || step.status == .inProgress else { continue }
+            if !unmetDependencies(of: step.id).isEmpty { continue }
+            let who = (step.assigneeName?.isEmpty == false) ? (step.assigneeName ?? "unassigned") : "unassigned"
+            return "Next open step: \(offset + 1) (\(who)): \(Self.displayText(step.text))"
+        }
+        return nil
+    }
+
     /// Call for every bot-authored message while active. Returns `true` if
-    /// this message tipped the goal into `.paused`.
+    /// this message tipped the goal into `.paused`. A step in review does not
+    /// count: waiting on a check is not a stall.
     @discardableResult
     public mutating func noteBotMessage() -> Bool {
         guard status == .active else { return false }
+        if steps.contains(where: { $0.status == .review }) { return false }
         messagesSinceProgress += 1
         if messagesSinceProgress >= stallLimit {
             status = .paused

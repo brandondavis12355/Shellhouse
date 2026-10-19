@@ -61,7 +61,9 @@ final class GroupGoalPerMemberTests: XCTestCase {
     func testCheckInNeedsToolsAndEvidence() {
         var g = goal()
         let id = g.steps[0].id
-        XCTAssertEqual(g.updateStep(id: id, status: .done, evidence: evidence, assigneeName: nil, turnHadToolCalls: false, actorName: "Cleo"), .recorded)
+        if case .rejected = g.updateStep(id: id, status: .done, evidence: evidence, assigneeName: nil, turnHadToolCalls: false, actorName: "Cleo") {} else {
+            XCTFail("a check-in with no tool result stays open")
+        }
         XCTAssertNil(g.steps[0].memberEvidence)
         guard case .rejected = g.updateStep(id: id, status: .done, evidence: "ok", assigneeName: nil, turnHadToolCalls: true, actorName: "Cleo") else {
             return XCTFail("short evidence should be rejected")

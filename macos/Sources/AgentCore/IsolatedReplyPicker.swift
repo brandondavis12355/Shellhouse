@@ -34,7 +34,7 @@ public struct IsolatedReplyPicker: Sendable {
         }
         let calls = message.toolCalls ?? []
         let isPlainTurn = calls.isEmpty || calls.contains { $0.name == "finish_task" }
-        if isPlainTurn, !ReasoningText.looksLikeDeliberation(text) { plainCandidates.append(text) }
+        if isPlainTurn, !ReasoningText.looksLikeDeliberation(text), !ReplyQuality.isAnnouncement(text) { plainCandidates.append(text) }
     }
 
     public var result: String? {

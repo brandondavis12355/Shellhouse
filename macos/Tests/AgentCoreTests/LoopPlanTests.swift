@@ -53,7 +53,7 @@ final class LoopPlanTests: XCTestCase {
             return replies.isEmpty ? ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [finish]), usage: nil) : replies.removeFirst()
         }
     }
-    private static let finish = ToolCall(name: "finish_task", arguments: ["summary": AnyCodable("done"), "outcome": AnyCodable("done")])
+    static let finish = ToolCall(name: "finish_task", arguments: ["summary": AnyCodable("done"), "outcome": AnyCodable("done")])
 
     private func read(_ path: String) -> ToolCall { ToolCall(name: "read_file", arguments: ["path": AnyCodable(path)]) }
 
@@ -105,7 +105,9 @@ final class LoopPlanTests: XCTestCase {
     }
 
     func testFirstNarrationNudgeCarriesTheScreenshotRoute() {
-        XCTAssertTrue(AgentRuntime.screenshotRoute(for: "Let me take a screenshot of the site.").contains("--screenshot="))
+        let route = AgentRuntime.screenshotRoute(for: "Let me take a screenshot of the site.")
+        XCTAssertTrue(route.contains("screenshot") && route.contains("use_skill(\"desktop-control\")"))
+        XCTAssertFalse(route.contains("chromium"))
         XCTAssertEqual(AgentRuntime.screenshotRoute(for: "Let me read the file."), "")
     }
 }
@@ -155,6 +157,118 @@ final class GroupLoopPlanTests: XCTestCase {
         XCTAssertTrue(goal.validates("Owner", isOwner: true, step: goal.steps[0]), "falls to the owner")
         XCTAssertTrue(goal.validates("Tester", isOwner: false, step: goal.steps[1]))
         XCTAssertFalse(goal.validates("Owner", isOwner: true, step: goal.steps[1]))
+    }
+
+    private final class Ended: @unchecked Sendable { var value = "" }
+
+    private final class Lines: ModelBackend, @unchecked Sendable {
+        let name = "lines"
+        private let lock = NSLock()
+        private var replies: [ChatMessage]
+        private(set) var calls = 0
+        init(_ replies: [ChatMessage]) { self.replies = replies }
+        func supportsVision(model: String?) async -> Bool { false }
+        func availableModels() async throws -> [String] { [] }
+        func chat(messages: [ChatMessage], tools: [ToolSchema], model: String?, temperature: Double) async throws -> ModelReply {
+            lock.lock(); defer { lock.unlock() }
+            calls += 1
+            let message = replies.isEmpty
+                ? ChatMessage(role: .assistant, content: "", toolCalls: [LoopPlanTests.finish])
+                : replies.removeFirst()
+            return ModelReply(message: message, usage: nil)
+        }
+    }
+
+    private func say(_ text: String) -> ChatMessage { ChatMessage(role: .assistant, content: text) }
+    private func call(_ name: String, _ arguments: [String: Any] = [:]) -> ChatMessage {
+        ChatMessage(role: .assistant, content: "", toolCalls: [ToolCall(name: name, arguments: arguments.mapValues { AnyCodable($0) })])
+    }
+
+    private func run(_ model: Lines, plainReplyEndsTurn: Bool = false, answerEndsTurnAfterTools: Bool = false, maxIterations: Int = 12) async -> String {
+        let ended = Ended()
+        let runtime = AgentRuntime(
+            model: model, sandbox: LoopPlanTests.SlowBoxShared(), sandboxID: "t",
+            budgets: AgentRuntime.Budgets(maxIterations: maxIterations),
+            onEvent: { event in
+                if case .status(let status) = event {
+                    switch status {
+                    case .aborted(let why): ended.value = "aborted \(why)"
+                    case .completed: ended.value = "completed"
+                    case .failed(let why): ended.value = "failed \(why)"
+                    default: break
+                    }
+                }
+            },
+            requestApproval: { _ in .approve },
+            plainReplyEndsTurn: plainReplyEndsTurn,
+            answerEndsTurnAfterTools: answerEndsTurnAfterTools
+        )
+        await runtime.start(systemPrompt: "system", goal: "do the thing")
+        let transcript = await runtime.transcript()
+        if transcript.contains(where: { $0.role == .assistant && $0.content == "Let me take a screenshot of the site now." }) {
+            ended.value += " announcement-left"
+        }
+        return ended.value
+    }
+
+    func testFiveNarrationsAbortAndDropTheAnnouncement() async {
+        let line = "Let me take a screenshot of the site now."
+        let model = Lines(Array(repeating: say(line), count: 8))
+        let ended = await run(model)
+        XCTAssertEqual(model.calls, 5)
+        XCTAssertTrue(ended.hasPrefix("aborted"))
+        XCTAssertFalse(ended.contains("announcement-left"))
+    }
+
+    func testFiveUnknownToolsAbort() async {
+        let model = Lines((1...8).map { call("missing_tool_\($0)", ["n": $0]) })
+        let ended = await run(model)
+        XCTAssertEqual(model.calls, 5)
+        XCTAssertTrue(ended.hasPrefix("aborted"))
+    }
+
+    func testFivePlanOnlyRepliesAbort() async {
+        let model = Lines((1...8).map { call("update_plan", ["steps": [["text": "step \($0)", "status": "pending"]]]) })
+        let ended = await run(model)
+        XCTAssertEqual(model.calls, 5)
+        XCTAssertTrue(ended.hasPrefix("aborted"))
+    }
+
+    func testARealShellClearsTheNoActionStreak() async {
+        let line = "Let me take a screenshot of the site now."
+        var replies = Array(repeating: say(line), count: 4)
+        replies.append(call("run_shell", ["command": "echo hi"]))
+        replies.append(contentsOf: Array(repeating: say(line), count: 4))
+        replies.append(ChatMessage(role: .assistant, content: "", toolCalls: [LoopPlanTests.finish]))
+        let model = Lines(replies)
+        let ended = await run(model, maxIterations: 16)
+        XCTAssertEqual(model.calls, 10)
+        XCTAssertEqual(ended, "completed")
+    }
+
+    func testARepeatingReplyAbortsByFive() async {
+        let unit = "Let me check the server logs. "
+        let model = Lines(Array(repeating: say(String(repeating: unit, count: 8)), count: 12))
+        let ended = await run(model, maxIterations: 20)
+        XCTAssertEqual(model.calls, 5)
+        XCTAssertTrue(ended.hasPrefix("aborted"))
+    }
+
+    func testPlainReplyDoesNotEndOnAnAnnouncement() async {
+        let model = Lines([
+            say("Let me take a screenshot of the site now."),
+            ChatMessage(role: .assistant, content: "", toolCalls: [LoopPlanTests.finish]),
+        ])
+        let ended = await run(model, plainReplyEndsTurn: true)
+        XCTAssertEqual(model.calls, 2)
+        XCTAssertEqual(ended, "completed")
+    }
+
+    func testAFactualPlainReplyEndsTheTurn() async {
+        let model = Lines([say("There are four files in the workspace today.")])
+        let ended = await run(model, plainReplyEndsTurn: true)
+        XCTAssertEqual(model.calls, 1)
+        XCTAssertEqual(ended, "completed")
     }
 }
 

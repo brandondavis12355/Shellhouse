@@ -672,7 +672,8 @@ final class NarrationNudgeTests: XCTestCase {
         let nudge = AgentRuntime.escalatedNarrationNudge(narration: "Let me take a screenshot of the page.",
                                                          toolNames: ["run_shell", "post_screenshot", "list_files"])
         XCTAssertTrue(nudge.contains("post_screenshot") && nudge.contains("run_shell") && nudge.contains("list_files"))
-        XCTAssertTrue(nudge.contains("chromium --headless") && nudge.contains("--screenshot="))
+        XCTAssertTrue(nudge.contains("use_skill(\"desktop-control\")") || nudge.contains("use_skill(\"sharing-screenshots\")"))
+        XCTAssertFalse(nudge.contains("chromium"))
         let plain = AgentRuntime.escalatedNarrationNudge(narration: "Let me read the file.", toolNames: ["read_file"])
         XCTAssertFalse(plain.contains("chromium"))
     }

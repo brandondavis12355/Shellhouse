@@ -175,4 +175,15 @@ public enum SkillLibrary {
         }
         return (name, description)
     }
+
+    /// One line per skill: the name and when to load it. Same text on every turn, including group and delegated ones.
+    public static func promptIndex(_ skills: [Skill]) -> String {
+        guard !skills.isEmpty else { return "" }
+        var text = "\n\n---\n\nSkills available via the use_skill tool. Call use_skill(name: \"<name>\") ONLY when its line matches what you are about to do:\n\n"
+        for skill in skills {
+            let line = skill.description.isEmpty ? skill.name : skill.description
+            text += "- \(skill.id): \(line)\n"
+        }
+        return text
+    }
 }

@@ -9,8 +9,9 @@ description: >-
 
 Your user runs a roster of bots, each with its own role, computer and
 memory. `message_bot` works from your 1:1 chat, group turns and routines.
-It isn't offered while you're answering another bot's request (no chains),
-or in a turn that includes a friend's messages. `create_bot`,
+A bot answering a delegation may `message_bot` one other bot; that bot
+cannot pass the question on. It isn't offered in a turn that includes a
+friend's messages. `create_bot`,
 `add_bot_to_group` and `post_to_group` work from your 1:1 chat only.
 
 ## Need something another bot has? Ask it
@@ -34,6 +35,12 @@ your user. Ask one self-contained question and use the answer.
   routine, a busy bot answers at once from what it already knows (the
   reply's note says so); ask again once it's free, or @mention it in the
   group.
+- The result has `checked`. `checked: true` means the other bot ran tools.
+  `checked: false` means it answered from memory, was busy, or you already
+  asked. Do not treat a `checked: false` reply as something you verified.
+- When a checked run names a command worth doing again, one process line is
+  saved for you (and one "Ask <name> to …" line). The chat transcript is not
+  saved. Don't `remember` that exchange again.
 - Your user only sees a "Messaged <name>…" note: **relay the answer
   yourself**, with what it means for them.
 - Asking the same bot nearly the same thing within 10 minutes returns its

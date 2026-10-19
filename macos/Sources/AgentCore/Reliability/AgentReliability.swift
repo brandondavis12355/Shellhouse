@@ -189,6 +189,8 @@ public struct StuckDetector: Sendable {
 
     private var recent: [String] = []
     private var plainRepliesInARow = 0
+    /// How many replies in a row have not run a tool. The loop uses this to pick the nudge.
+    public var plainReplyCount: Int { plainRepliesInARow }
     private var nudgedAlternation = false
 
     public init() {}
@@ -344,6 +346,11 @@ public enum ReplyQuality {
         let intents = ["let me ", "i'll ", "i will ", "i’ll ", "i am going to ", "i'm going to ", "i’m going to ",
                        "next, i", "now i", "i need to ", "i should ", "i'm now ", "i am now "]
         return intents.contains { last.hasPrefix($0) || last.contains(" " + $0) || last.contains(", " + $0.trimmingCharacters(in: .whitespaces)) }
+    }
+
+    /// A reply that announces work instead of doing it or answering.
+    public static func isAnnouncement(_ text: String) -> Bool {
+        looksLikeNarration(text) || endsWithIntent(text)
     }
 
     public static func looksLikeNarration(_ text: String) -> Bool {
