@@ -1,0 +1,29 @@
+{
+  "name": "mlx qwen3-14b + 0.6b draft x3",
+  "model": "mlx-community/Qwen3-14B-4bit",
+  "speed": {
+    "chat": {
+      "ttft_s": 0.10978507995605469,
+      "tps": 65.41211532389458,
+      "total_s": 3.090884208679199,
+      "prompt_tokens": 56
+    },
+    "code": {
+      "ttft_s": 0.1314558982849121,
+      "tps": 88.1364205613902,
+      "total_s": 1.175490140914917,
+      "prompt_tokens": 66
+    },
+    "long_prompt": {
+      "ttft_s": 4.3797149658203125,
+      "tps": 81.16423730207492,
+      "total_s": 4.80742073059082,
+      "prompt_tokens": 4675
+    }
+  },
+  "accuracy": {
+    "qa": "5/6",
+    "json": true,
+    "tool_call": true
+  }
+}

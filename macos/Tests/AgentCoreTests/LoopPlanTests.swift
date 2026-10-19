@@ -293,3 +293,37 @@ private final class SavedNotes: @unchecked Sendable {
     func add(_ text: String) { lock.lock(); items.append(text); lock.unlock() }
     var all: [String] { lock.lock(); defer { lock.unlock() }; return items }
 }
+
+final class DelegationLogCleanupTests: XCTestCase {
+    func testOldAskedBotNotesAreArchivedAndRealNotesStay() {
+        var book = MemoryBook()
+        _ = book.add("Asked Tai Lung: \"fix the tests\" — they answered: \"done\"", source: "delegation")
+        _ = book.add("Mr. Smith asked me: \"status?\" — I answered: \"all green\"", source: "self")
+        _ = book.add("Deploys run from main with make release.", source: "self")
+        let report = book.consolidate()
+        XCTAssertEqual(report.archived.count, 2)
+        XCTAssertEqual(book.texts, ["Deploys run from main with make release."])
+    }
+}
+
+final class ActionableNoteTests: XCTestCase {
+    func testLogStyleNotesAreRefusedAndRulesAreSaved() async {
+        let saved = SavedNotes2()
+        let registry = ToolRegistry(onRemember: { text in saved.add(text); return true })
+        let box = LoopPlanTests.SlowBoxShared()
+        func remember(_ text: String) async -> [String: Any] {
+            await registry.execute(name: "remember", arguments: ["text": AnyCodable(text)], sandboxID: "t", sandbox: box, secretStore: SecretStore())
+        }
+        let log = await remember("Asked Tai Lung about the tests and they said they pass.")
+        XCTAssertTrue((log["error"] as? String ?? "").contains("log of what happened"), "\(log)")
+        let rule = await remember("When deploying, run make release from main.")
+        XCTAssertEqual(rule["saved"] as? Bool, true)
+        XCTAssertEqual(saved.all.count, 1)
+    }
+}
+
+private final class SavedNotes2: @unchecked Sendable {
+    private let lock = NSLock(); private var items: [String] = []
+    func add(_ t: String) { lock.lock(); items.append(t); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return items }
+}

@@ -125,6 +125,12 @@ public struct ToolRegistry: Sendable {
                 // structural gap `create_routine` had (see its own doc
                 // comments) before this was noticed too.
                 // A note is a summary, not a copy of the message: ask for the point in a sentence or two.
+                let lowered = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                if ["asked ", "i asked", "we discussed", "i discussed", "today ", "just now", "i ran ", "i did ", "i checked", "the user said", "user asked"]
+                    .contains(where: { lowered.hasPrefix($0) }) {
+                    return ["error": "That reads as a log of what happened, not something to act on. Save only the lesson, as a rule for the right "
+                        + "moment: \"When <situation>, <do this>\" (or the exact fact you'll need). If there is no such lesson, don't save anything."]
+                }
                 if text.count > Self.maxNoteCharacters {
                     return ["error": "That note is \(text.count) characters: too long. Don't save the message itself. Summarize only the "
                         + "parts you'll need again (the rule, the fact, the exact value or command) in one or two sentences under "
@@ -371,17 +377,17 @@ public struct ToolRegistry: Sendable {
     private static var rememberSchema: ToolSchema {
         ToolSchema(
             name: "remember",
-            description: "Save one short, durable note (a summary of the key point in one or two sentences, never the whole message): a correction or standing preference from the user, or a lesson "
-                + "you learned that your skills don't cover (a fix that worked, a quirk of this VM, repo or tool, a needed "
-                + "command), written as a rule for next time. It's shown "
-                + "to the user in this bot's settings. Preferences land in your user block; a reusable command lands in procedures. "
+            description: "Save one short note that will make you act correctly at the right moment next time: a rule shaped "
+                + "\"When <situation>, <do this>\" (or a fact you'll need to act on), covering something your skills do NOT already say: "
+                + "a correction or standing preference from the user, a fix that worked, a quirk of this VM, repo or tool, a needed command. "
+                + "One or two sentences, never the message itself and never a log of what happened. It's shown to the user in this bot's "
+                + "settings. Preferences land in your user block; a reusable command lands in procedures. "
                 + "To change a note already in those blocks, call replace_memory with its id instead of saving a second copy. "
-                + "Don't use this for task-specific facts that only matter to what you're doing right "
-                + "now — those belong in your own reasoning, not here. Up to 200 notes are kept (the least important are dropped first) — check "
-                + "recall_memory first so you don't save a near-duplicate of something you already have.",
+                + "Not for task-specific facts that only matter right now (use your reasoning or remember_task). "
+                + "Up to 200 notes are kept (the least important are dropped first); check recall_memory first so you don't save a near-duplicate.",
             parameters: [
                 "type": "object",
-                "properties": ["text": ["type": "string", "description": "The key point only, in plain language, under 300 characters: the rule, fact, value or command, not the surrounding message."]],
+                "properties": ["text": ["type": "string", "description": "A rule to act on, e.g. \"When deploying, run make release from main.\" Under 300 characters; not a summary of what happened."]],
                 "required": ["text"],
             ]
         )

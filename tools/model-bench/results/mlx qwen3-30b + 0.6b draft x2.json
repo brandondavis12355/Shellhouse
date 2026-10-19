@@ -1,0 +1,29 @@
+{
+  "name": "mlx qwen3-30b + 0.6b draft x2",
+  "model": "lmstudio-community/Qwen3-30B-A3B-MLX-4bit",
+  "speed": {
+    "chat": {
+      "ttft_s": 0.10727286338806152,
+      "tps": 93.54868404767096,
+      "total_s": 1.6254551410675049,
+      "prompt_tokens": 55
+    },
+    "code": {
+      "ttft_s": 0.11459612846374512,
+      "tps": 132.17509141205844,
+      "total_s": 0.8484711647033691,
+      "prompt_tokens": 63
+    },
+    "long_prompt": {
+      "ttft_s": 1.5585427284240723,
+      "tps": 136.6708049437748,
+      "total_s": 1.703645944595337,
+      "prompt_tokens": 4676
+    }
+  },
+  "accuracy": {
+    "qa": "4/6",
+    "json": true,
+    "tool_call": true
+  }
+}

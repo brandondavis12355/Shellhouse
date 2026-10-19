@@ -1,0 +1,29 @@
+{
+  "name": "mlx qwen3-32b + 1.7b draft x3",
+  "model": "mlx-community/Qwen3-32B-4bit",
+  "speed": {
+    "chat": {
+      "ttft_s": 0.47099781036376953,
+      "tps": 18.53974039153833,
+      "total_s": 10.793524980545044,
+      "prompt_tokens": 55
+    },
+    "code": {
+      "ttft_s": 0.47755885124206543,
+      "tps": 29.114951993228882,
+      "total_s": 4.466106176376343,
+      "prompt_tokens": 67
+    },
+    "long_prompt": {
+      "ttft_s": 14.160903930664062,
+      "tps": 31.9297753644903,
+      "total_s": 14.849915981292725,
+      "prompt_tokens": 4675
+    }
+  },
+  "accuracy": {
+    "qa": "5/6",
+    "json": true,
+    "tool_call": true
+  }
+}

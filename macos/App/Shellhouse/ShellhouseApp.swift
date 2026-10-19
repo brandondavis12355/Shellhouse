@@ -74,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         tunnel.start()
         ollama.start()
+        BackgroundGuard.shared.start { [weak self] in self?.tunnel.reconnectNow() }
         setUpStatusItem()
         attachToMainWindow()
     }

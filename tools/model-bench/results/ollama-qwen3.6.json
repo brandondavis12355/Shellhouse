@@ -1,0 +1,29 @@
+{
+  "name": "ollama qwen3.6-35b (current)",
+  "model": "qwen3.6:35b-mlx",
+  "speed": {
+    "chat": {
+      "ttft_s": 0.08485603332519531,
+      "tps": 144.21320276921543,
+      "total_s": 1.3532249927520752,
+      "prompt_tokens": 58
+    },
+    "code": {
+      "ttft_s": 0.09043002128601074,
+      "tps": 168.78875053177424,
+      "total_s": 0.7526681423187256,
+      "prompt_tokens": 63
+    },
+    "long_prompt": {
+      "ttft_s": 0.9449679851531982,
+      "tps": 180.81007301498917,
+      "total_s": 1.0748541355133057,
+      "prompt_tokens": 4678
+    }
+  },
+  "accuracy": {
+    "qa": "5/6",
+    "json": true,
+    "tool_call": true
+  }
+}

@@ -372,8 +372,23 @@ public struct MemoryBook: Codable, Equatable, Sendable {
 
     /// Housekeeping, run now and then: fold near-duplicate notes together and move stale, low-value, never-used
     /// notes to the archive. Pinned notes are untouched. Returns what changed so it can be shown or archived.
+    /// The automatic "Asked <bot>: … they answered: …" / "<bot> asked me: … I answered: …" notes older versions wrote
+    /// after every delegation: a transcript, not a lesson.
+    public static func isDelegationLog(_ entry: MemoryEntry) -> Bool {
+        if entry.source == "delegation" { return true }
+        let t = entry.text
+        return (t.hasPrefix("Asked ") && t.contains("they answered:")) || (t.contains(" asked me: ") && t.contains("I answered:"))
+    }
+
     public mutating func consolidate(now: Date = Date()) -> Consolidation {
         var report = Consolidation()
+
+        // 0. delegation transcripts are archived (kept in the archive file, out of the prompt)
+        let logs = entries.filter { Self.isDelegationLog($0) && !$0.pinned }
+        if !logs.isEmpty {
+            remove(ids: Set(logs.map(\.id)))
+            report.archived.append(contentsOf: logs)
+        }
 
         // 1. merge near-duplicates (greedy, strongest pairs first)
         var changed = true

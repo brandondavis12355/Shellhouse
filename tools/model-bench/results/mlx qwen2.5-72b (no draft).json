@@ -1,0 +1,29 @@
+{
+  "name": "mlx qwen2.5-72b (no draft)",
+  "model": "mlx-community/Qwen2.5-72B-Instruct-4bit",
+  "speed": {
+    "chat": {
+      "ttft_s": 0.5216262340545654,
+      "tps": 12.025753967392243,
+      "total_s": 15.139227867126465,
+      "prompt_tokens": 75
+    },
+    "code": {
+      "ttft_s": 0.6070890426635742,
+      "tps": 11.349736216761967,
+      "total_s": 10.826019048690796,
+      "prompt_tokens": 82
+    },
+    "long_prompt": {
+      "ttft_s": 21.55976676940918,
+      "tps": 11.490755242407227,
+      "total_s": 23.70133399963379,
+      "prompt_tokens": 4693
+    }
+  },
+  "accuracy": {
+    "qa": "5/6",
+    "json": true,
+    "tool_call": false
+  }
+}

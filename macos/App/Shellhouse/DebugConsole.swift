@@ -318,6 +318,7 @@ final class BotActivity {
     func begin(bot: Bot, kind: Kind, detail: String) -> UUID {
         let span = Span(botID: bot.id, botName: bot.name, colorHex: bot.colorHex, kind: kind, detail: detail)
         spans.append(span)
+        BackgroundGuard.shared.botsWorking(true)
         let now = concurrentBotCount
         if now > peakConcurrent { peakConcurrent = now; peakAt = Date() }
         return span.id
@@ -327,6 +328,7 @@ final class BotActivity {
         guard let id else { return }
         phaseChangedAt[id] = nil
         spans.removeAll { $0.id == id }
+        if !spans.contains(where: { $0.kind != .queued }) { BackgroundGuard.shared.botsWorking(false) }
     }
 
     /// Flips the bot's current running span between working and responding.

@@ -249,7 +249,34 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// `.ollama` talks to the local `ollama serve` process `boot()` already
     /// waits for; `.remote` talks to `remoteBaseURLText`, any OpenAI-
     /// `/v1/chat/completions`-compatible server. See `makeModelBackend()`.
-    var modelProvider: ModelProvider = .ollama
+    var modelProvider: ModelProvider = .ollama {
+        didSet { switchedProvider(from: oldValue) }
+    }
+    /// The model last used with each provider, so switching to the other and back doesn't leave the picker
+    /// holding a name the other server never heard of (which showed as a blank selection).
+    private var lastModelByProvider: [ModelProvider: String] = [:]
+
+    private func switchedProvider(from old: ModelProvider) {
+        guard old != modelProvider else { return }
+        if !selectedModel.isEmpty { lastModelByProvider[old] = selectedModel }
+        if let remembered = lastModelByProvider[modelProvider] {
+            selectedModel = remembered
+        } else if modelProvider == .ollama, !availableModels.contains(selectedModel) {
+            selectedModel = availableModels.first ?? selectedModel
+        } else if modelProvider == .remote, availableModels.contains(selectedModel) {
+            selectedModel = ""   // a local model name means nothing to a remote server
+        }
+        // A bot that booted on a remote model never loaded Ollama's list, so the local picker would be empty and
+        // disabled: load it now and settle on an installed model.
+        if modelProvider == .ollama, availableModels.isEmpty {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.loadLocalModelsIfNeeded()
+                guard self.modelProvider == .ollama, !self.availableModels.isEmpty else { return }
+                if !self.availableModels.contains(self.selectedModel) { self.selectedModel = self.availableModels[0] }
+            }
+        }
+    }
     /// Only meaningful when `modelProvider == .remote` — e.g.
     /// "https://api.openai.com/v1" or a self-hosted vLLM/LM Studio URL,
     /// including whatever path prefix that server expects before
@@ -651,6 +678,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         // Reads the managed memory book (or migrates the old plain list), then tidies it once.
         memoryBook = BotMemoryStore.loadBook(id: id)
         memories = memoryBook.texts
+        // Old automatic "Asked <bot>: … they answered: …" entries go to the archive now.
+        consolidateMemories(force: memoryBook.entries.contains(where: MemoryBook.isDelegationLog))
         consolidateMemories(force: false)
         Task { @MainActor [weak self] in await self?.embedPendingMemories() }
         // A different embedding model (or a switch between local and remote): re-index every note for it.
