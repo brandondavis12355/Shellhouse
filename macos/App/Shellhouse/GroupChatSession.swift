@@ -106,7 +106,7 @@ final class GroupChatSession: Identifiable {
     /// The goal owner is owed a nudge: the goal is active but nothing has happened in the group for a while.
     private var probeDue: Set<String> = []
     private var idleProbeTask: Task<Void, Never>?
-    static let idleProbeSeconds: TimeInterval = 30
+    static let idleProbeSeconds: TimeInterval = 10
     private var lastOwnerReview = Date.distantPast
     private var lastReviewedSignature = ""
     static let ownerReviewInterval: TimeInterval = 240
@@ -1078,12 +1078,12 @@ final class GroupChatSession: Identifiable {
             var lastActivity = Date()
             var probed = false
             // Quiet periods that end with nothing new from anyone but the owner double the wait (up to 20 minutes):
-            // a goal waiting on the user shouldn't be nudged every 30 s forever.
+            // a goal waiting on the user shouldn't be nudged every 10 s forever.
             var interval = Self.idleProbeSeconds
             var lastOthers = -1
             var lastSignature = ""
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let self else { return }
                 let busy = !self.workers.isEmpty
                     || self.members.contains { $0.isProcessingMessage }
