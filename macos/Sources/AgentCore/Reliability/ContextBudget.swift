@@ -21,6 +21,16 @@ public enum ContextBudget {
         return max(base, min(fixedPrefixTokens + headroom, cap))
     }
 
+    /// The rough ~4-characters-per-token estimate (there is no client-side tokenizer for an arbitrary backend). Images
+    /// get their own flat estimate: a screenshot is thousands of real tokens, far more than its base64 length suggests.
+    public static func estimatedTokens(for message: ChatMessage) -> Int {
+        var characters = message.content.utf8.count
+        for call in message.toolCalls ?? [] {
+            characters += call.name.count + runJSONString(call.arguments.mapValues(\.value)).count
+        }
+        return characters / 4 + (message.images?.count ?? 0) * 1_100
+    }
+
     /// Tool definitions travel with every request and count against the window.
     public static func estimatedTokens(ofSchemas schemas: [ToolSchema]) -> Int {
         schemas.reduce(0) { total, schema in

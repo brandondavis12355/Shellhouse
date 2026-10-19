@@ -225,6 +225,9 @@ public struct StuckDetector: Sendable {
         }
     }
 
+    /// A tool ran: the "replied without a tool" count starts over (`recordAction` does the same).
+    public mutating func clearPlainReplies() { plainRepliesInARow = 0 }
+
     /// Something changed in the world: earlier patterns no longer apply.
     public mutating func reset() {
         recent.removeAll()
