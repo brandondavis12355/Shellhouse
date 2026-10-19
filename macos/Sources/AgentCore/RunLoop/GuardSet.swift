@@ -5,7 +5,8 @@ import Foundation
 /// runs before the repeat check that asks whether a result was already seen. Nudges reach the model in this order.
 public enum GuardSet {
     public static func standard(plainReplyEndsTurn: Bool = false, answerEndsTurnAfterTools: Bool = false,
-                                seenResults: SeenResults = SeenResults()) -> [any Guard] {
+                                seenResults: SeenResults = SeenResults(),
+                                onMissingPath: (@Sendable (String) -> Void)? = nil) -> [any Guard] {
         let stale = StaleResultsGuard(seen: seenResults)
         return [
             ContextBudgetGuard(),
@@ -13,10 +14,12 @@ public enum GuardSet {
             NarrationGuard(plainReplyEndsTurn: plainReplyEndsTurn, answerEndsTurnAfterTools: answerEndsTurnAfterTools),
             RepeatedCallsGuard(stale: stale),
             ToolValidationGuard(),
+            MemoryWriteGuard(),
             TrashWarningGuard(),
             SameErrorGuard(),
             FailureStreakGuard(),
             stale,
+        ] + (onMissingPath.map { [MissingPathGuard(onMissing: $0)] as [any Guard] } ?? []) + [
             UnverifiedChangeGuard(),
             EmptySummaryGuard(),
             OpenPlanGuard(),

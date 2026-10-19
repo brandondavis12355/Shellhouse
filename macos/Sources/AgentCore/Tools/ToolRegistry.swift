@@ -72,6 +72,7 @@ public struct ToolRegistry: Sendable {
     public init(
         skills: [Skill] = [],
         onRemember: (@Sendable (String) async -> Bool)? = nil,
+        onRememberWithCheck: (@Sendable (String, String) async -> Bool)? = nil,
         onReplaceMemory: (@Sendable (String, String) async -> Bool)? = nil,
         onRecallMemory: (@Sendable (String) async -> [String])? = nil,
         onRememberTask: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
@@ -136,7 +137,10 @@ public struct ToolRegistry: Sendable {
                         + "parts you'll need again (the rule, the fact, the exact value or command) in one or two sentences under "
                         + "\(Self.maxNoteCharacters) characters, then call remember again with that."]
                 }
-                guard await onRemember(text) else {
+                let check = arguments["check"]?.asString?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let saved: Bool
+                if !check.isEmpty, let onRememberWithCheck { saved = await onRememberWithCheck(text, check) } else { saved = await onRemember(text) }
+                guard saved else {
                     return ["error": "failed to save to disk — this wasn't actually remembered"]
                 }
                 return ["saved": true]
@@ -387,7 +391,10 @@ public struct ToolRegistry: Sendable {
                 + "Up to 200 notes are kept (the least important are dropped first); check recall_memory first so you don't save a near-duplicate.",
             parameters: [
                 "type": "object",
-                "properties": ["text": ["type": "string", "description": "A rule to act on, e.g. \"When deploying, run make release from main.\" Under 300 characters; not a summary of what happened."]],
+                "properties": [
+                    "text": ["type": "string", "description": "A rule to act on, e.g. \"When deploying, run make release from main.\" Under 300 characters; not a summary of what happened."],
+                    "check": ["type": "string", "description": "Optional. When the note states a fact you can test (a file, a command, a branch), a read-only command that proves it: test -f/-d PATH, grep -q PATTERN FILE, command -v NAME, git rev-parse ..., ls PATH, joined with &&. Run it with run_shell first and see it exit 0. It is re-run when the note is recalled."],
+                ],
                 "required": ["text"],
             ]
         )

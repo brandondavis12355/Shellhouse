@@ -153,6 +153,7 @@ struct BotSettingsTab: View {
     var groupChats: [GroupChatSession] = []
     @State private var newMemoryText = ""
     @State private var tidyNote: String?
+    @State private var memoryFilter = "all"
     @State private var newTaskText = ""
 
     @State private var newRoutineInstruction = ""
@@ -463,7 +464,14 @@ struct BotSettingsTab: View {
                                 .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
-                        ForEach(Array(bot.memoryBook.entries.enumerated()), id: \.element.id) { index, entry in
+                        Picker("Show", selection: $memoryFilter) {
+                            Text("All").tag("all")
+                            Text("Unverified").tag("untrusted")
+                            Text("Stale").tag("stale")
+                            ForEach(Array(Set(bot.memoryBook.entries.map(\.source))).sorted(), id: \.self) { Text("From \($0)").tag("source:\($0)") }
+                        }
+                        .pickerStyle(.menu).fixedSize()
+                        ForEach(Array(bot.memoryBook.entries.enumerated()).filter { memoryMatchesFilter($0.element) }, id: \.element.id) { index, entry in
                             HStack(alignment: .top, spacing: 8) {
                                 Button {
                                     bot.setMemoryPinned(index, !entry.pinned)
@@ -475,11 +483,22 @@ struct BotSettingsTab: View {
                                 .help(entry.pinned ? "Pinned: always in this bot's core notes" : "Pin: always include in this bot's core notes")
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(entry.text).font(.system(size: 14)).textSelection(.enabled)
+                                        .opacity(entry.stale ? 0.55 : 1)
                                     Text("importance \(String(repeating: "●", count: entry.importance))\(String(repeating: "○", count: 5 - entry.importance))"
-                                        + (entry.useCount > 0 ? " · used \(entry.useCount)×" : "") + " · \(entry.source)")
+                                        + (entry.useCount > 0 ? " · used \(entry.useCount)×" : "") + " · \(entry.source)"
+                                        + (entry.trust == .untrusted ? " · unverified" : "") + (entry.stale ? " · stale" : "")
+                                        + " · \(MemoryPrompt.age(of: entry.createdAt))")
                                         .font(.system(size: 11)).foregroundStyle(.tertiary)
                                 }
                                 Spacer()
+                                if entry.trust == .untrusted {
+                                    Button("Trust") { bot.reviewMemory(index) }
+                                        .buttonStyle(.borderless).font(.system(size: 11))
+                                        .help("You've read this note and vouch for it: it becomes a note from you and can be pinned")
+                                }
+                                Button(entry.stale ? "Not stale" : "Stale") { bot.setMemoryStale(index, !entry.stale) }
+                                    .buttonStyle(.borderless).font(.system(size: 11))
+                                    .help(entry.stale ? "Use this note normally again" : "This note is out of date: keep it, but out of the core prompt")
                                 Menu {
                                     ForEach((1...5).reversed(), id: \.self) { level in
                                         Button("Importance \(level)") { bot.setMemoryImportance(index, level) }
@@ -773,6 +792,15 @@ struct BotSettingsTab: View {
                 Task { await bot.revokePermission(binary, scope: scope) }
             }
             .buttonStyle(.compactPill)
+        }
+    }
+
+    private func memoryMatchesFilter(_ entry: MemoryEntry) -> Bool {
+        switch memoryFilter {
+        case "untrusted": return entry.trust == .untrusted
+        case "stale": return entry.stale
+        case let f where f.hasPrefix("source:"): return entry.source == String(f.dropFirst(7))
+        default: return true
         }
     }
 

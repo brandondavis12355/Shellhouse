@@ -102,7 +102,7 @@ enum GuardAction { case nudge(String, escalation: Int), rewrite(Call), replaceRe
 
 ### 3.4a Memory and note hygiene (context poisoning)
 
-Added after review; not built yet. A note or memory that is wrong, injected or stale is read as an instruction on every
+Added after review. Built: provenance and trust class, data-block rendering, write gate, replay tests, labelled `recall_memory`, 30-day expiry of unreviewed untrusted notes, stale marking, review/filter UI. Verify-before-relying built (see below). A note or memory that is wrong, injected or stale is read as an instruction on every
 later run, so it is the longest-lived way to poison a bot. Rules, in the order they would be built:
 
 - **Provenance on every entry.** `MemoryEntry.source` already exists ("self", "user", "delegation", "goal", "import").
@@ -114,9 +114,14 @@ later run, so it is the longest-lived way to poison a bot. Rules, in the order t
   system prefix. A standing instruction only enters the prefix when it is pinned by the user.
 - **Write gate.** A `remember` / `note_progress` call is a guard (`beforeTool`): refuse text that looks like an
   instruction aimed at a future run when the run is tainted, cap size, and log a `stateNote` event with the source.
-- **Verify before relying.** A note that names a file, command or fact is a claim: the progress note carries the
-  command that proved it, and the next run re-checks the cheap ones first. Notes contradicted by a later tool result
-  are marked stale in the log rather than deleted.
+- **Verify before relying.** (Built.) `remember` takes an optional `check`: a read-only command (`test`, `grep -q`,
+  `command -v`, `git rev-parse`, `ls`, joined with `&&`; `MemoryCheck.isAllowed`) that the run already ran and saw exit 0
+  (`MemoryCheck.wasProven`, read from the prompt) in a clean run, else the note is saved without it and the model is
+  nudged (`memory_check_rejected`). When a note is recalled (the recall block or `recall_memory`) its check is re-run
+  in the VM, at most 3 per recall and not within 10 minutes of a pass: a pass refreshes it, a failure marks it stale
+  (`memory_check_failed`), no verdict (VM down) changes nothing. A passing check never raises trust. A tool result
+  that says a path does not exist flags notes naming it "possibly stale" (`MissingPathGuard`, clean runs only; a hint,
+  the note stays in place).
 - **Expiry and review.** Untrusted and unverified notes expire; the user can see, filter by source and delete them.
 - **Test it.** Replay fixtures where a tainted tool result tries to plant a memory; the run must end with no new
   trusted entry. Owner for the policy: security (information.security@allegiantair.com) should review the trust classes.

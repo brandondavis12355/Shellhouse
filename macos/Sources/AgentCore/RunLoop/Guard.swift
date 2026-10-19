@@ -64,6 +64,11 @@ public struct RunContext {
     public var schemaTokens = 0
     public var lastPromptTokens = 0
     public var lastCompactionMessageCount: Int?
+    /// Why the run counts as tainted (`TaintSource` names); empty while it has read nothing untrusted.
+    public var taintSources: [String] = []
+    /// This run's log id, and the id of the model reply being acted on (what a saved note points back to).
+    public var session = ""
+    public var replyEventID = 0
 
     public init() {}
 
