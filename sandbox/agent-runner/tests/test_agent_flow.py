@@ -264,6 +264,15 @@ def test_coerces_string_integers(tmp_path):
     assert tc["result"]["exit_code"] == 0 and tc["result"]["stdout"].strip() == "hi"
 
 
+def test_five_prose_replies_block_with_no_action(tmp_path):
+    run_dir, _ = make_config(tmp_path, max_steps=8)
+    model = ScriptedModel([ChatMessageText("I'll look into that now.")] * 8)
+    run(run_dir, model_factory=lambda c: model)
+    fin = [e for e in read_events(run_dir) if e["type"] == "final"][0]
+    assert fin["outcome"] == "blocked" and fin["reason"] == "no_action"
+    assert len(model.seen) == 5
+
+
 def test_planning_interval_emits_plan(tmp_path):
     run_dir, _ = make_config(tmp_path, planning_interval=3)
     plan = ChatMessageText("1. do it")

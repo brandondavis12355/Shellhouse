@@ -204,8 +204,6 @@ public actor AgentRuntime {
     private var abortForStuck: String?
     /// The text of a reply that announced a step without taking it (see the loop's narration nudge).
     private var lastNarration: String?
-    /// Consecutive replies that only announced a step (reset when a tool is called).
-    private var narrationStreak = 0
     /// Results this bot already saw, in this run or a recent one (shared across its runs). A run getting back
     /// nothing but already-seen results is waiting or polling, whatever the commands look like, and side
     /// effects (a `git fetch`, a checkout) don't reset it the way they reset the other loop guards.
@@ -535,12 +533,12 @@ public actor AgentRuntime {
                     do {
                         reply = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
                     } catch where loopGuard.isTripped && !Task.isCancelled {
-                        // One reply fell into a loop. Keep the passage once and tell the model.
-                        let once = RepetitionGuard.collapsed(streamed.text)
-                        onEvent(.contextTrimmed(detail: "reply cut off: the model was repeating itself (\(streamed.text.count) characters)"))
-                        reply = ModelReply(message: ChatMessage(role: .assistant, content: once), usage: nil)
+                        reply = Self.cutRepeatedReply(streamed.text, onEvent: onEvent)
                         loopBroken = true
-                        Telemetry.recorder.loopEvent("repetition_cut")
+                    }
+                    if !loopBroken, loopGuard.isTripped, !Task.isCancelled {
+                        reply = Self.cutRepeatedReply(streamed.text, onEvent: onEvent)
+                        loopBroken = true
                     }
                     break
                 } catch {
@@ -560,8 +558,8 @@ public actor AgentRuntime {
             if loopBroken {
                 messages.append(reply.message)
                 onEvent(.message(reply.message))
-                messages.append(ChatMessage(role: .user, content: "Your last reply repeated the same passage over and over and was cut off. "
-                    + "Do not write it again. Call the one tool for your next real step now, or if you are blocked call finish_task with outcome blocked and say why."))
+                guard noteNoAction(nudge: "Your last reply repeated the same passage over and over and was cut off. "
+                    + "Do not write it again. Call the one tool for your next real step now, or if you are blocked call finish_task with outcome blocked and say why.") else { return }
                 continue
             }
             if Reliability.isOn(.callChecks), (reply.message.toolCalls ?? []).isEmpty,
@@ -569,7 +567,6 @@ public actor AgentRuntime {
                 // The model wrote its tool call as text. Treat it as the call it meant to make.
                 reply = ModelReply(message: ChatMessage(role: .assistant, content: "", toolCalls: [recovered]), usage: reply.usage)
             }
-            if !(reply.message.toolCalls ?? []).isEmpty { narrationStreak = 0 }
             messages.append(reply.message)
             // After "I'll do X" with no tool call, the model usually repeats that sentence alongside the call:
             // show it once, not twice.
@@ -584,54 +581,26 @@ public actor AgentRuntime {
 
             guard let calls = reply.message.toolCalls, !calls.isEmpty else {
                 let plain = reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                let isAnswer = plain.count >= Self.plainReplyMinLength && !plain.hasSuffix(":")
+                let announced = ReplyQuality.isAnnouncement(plain)
+                // An announcement is not an answer, including on a chat turn that otherwise accepts prose.
+                let isAnswer = plain.count >= Self.plainReplyMinLength && !plain.hasSuffix(":") && !announced
                 let answeredAfterWork = answerEndsTurnAfterTools && toolCallsThisTurn > 0
-                    && !ReplyQuality.looksLikeNarration(plain) && !ReplyQuality.endsWithIntent(plain)
                 if isAnswer, plainReplyEndsTurn || answeredAfterWork, openPlanItems.isEmpty {
                     onEvent(.message(ChatMessage(role: .assistant, content: plain, isTaskSummary: true)))
                     onEvent(.status(.completed))
                     return
                 }
-                // Deliberately NOT treated as completion — see
-                // `finishTaskSchema`'s doc comment. A plain-text reply with
-                // no tool call just means "keep going," bounded by the same
-                // budgets as everything else, not "the task is done."
-                switch Reliability.isOn(.loopGuards) ? stuck.recordPlainReply() : .fine {
-                case .abort(let why):
-                    let error = RuntimeError.repeated(why)
-                    emitAbortMessage(for: error)
-                    onEvent(.status(.aborted("\(error)")))
-                    return
-                case .nudge(let text):
-                    messages.append(ChatMessage(role: .user, content: text))
-                case .fine:
-                    break
-                }
-                if ReplyQuality.looksLikeNarration(plain) || ReplyQuality.endsWithIntent(plain) {
-                    // It announced a step without taking it. Left in the context, that sentence is what a local
-                    // model copies on the next try ("I'll verify the server runs." again and again), so take it
-                    // out and ask only for the action.
+                if announced {
+                    // Left in the context, that sentence is what a local model copies on the next try.
                     lastNarration = plain
-                    messages.removeLast()
-                    narrationStreak += 1
-                    Telemetry.recorder.loopEvent(narrationStreak >= 2 ? "narration_escalated" : "narration")
-                    let nudge = narrationStreak >= 2
-                        ? Self.escalatedNarrationNudge(narration: plain, toolNames: Array(tools.names()))
-                        : "Make the tool call for your next step now. No sentence about it first: just the call."
-                            + Self.screenshotRoute(for: plain)
-                    if messages.last?.content != nudge { messages.append(ChatMessage(role: .user, content: nudge)) }
-                    continue
+                    removeAssistantAnnouncement(plain)
+                    let next = stuck.plainReplyCount + 1
+                    Telemetry.recorder.loopEvent(next >= 2 ? "narration_escalated" : "narration")
                 }
-                messages.append(ChatMessage(
-                    role: .user,
-                    content: "You did not call a tool. Plain text alone never ends the task — if you are "
-                        + "not finished, call the next tool you need right now. If the message you just "
-                        + "wrote already WAS your complete answer, call finish_task right now with that "
-                        + "SAME content as the summary — do not write a different, shorter, or more "
-                        + "hesitant response instead of it. Only report being blocked if you genuinely "
-                        + "are; don't downgrade a complete answer into a \"blocked\" one just because you "
-                        + "forgot to call finish_task the first time."
-                ))
+                let nudge = announced
+                    ? Self.narrationNudge(count: stuck.plainReplyCount + 1, narration: plain, toolNames: Array(tools.names()))
+                    : Self.missingToolNudge
+                guard noteNoAction(nudge: nudge) else { return }
                 continue
             }
 
@@ -681,7 +650,7 @@ public actor AgentRuntime {
             }
 
             var seenThisTurn = Set<String>()
-            toolCallsThisTurn += calls.count
+            var ranSomething = false
             prefetchReads(calls)
             for call in calls {
                 if call.name == Self.updatePlanName {
@@ -697,16 +666,57 @@ public actor AgentRuntime {
                     appendToolResult(name: call.name, observation: ["note": "Duplicate of an identical call in this same turn; it was run once, see the result above."])
                     continue
                 }
-                let shouldContinue = await handle(Reliability.isOn(.callChecks) ? ToolCallValidator.coerced(call, schemas: tools.schemas) : call)
-                if !shouldContinue { return }
+                switch await handle(Reliability.isOn(.callChecks) ? ToolCallValidator.coerced(call, schemas: tools.schemas) : call) {
+                case .stop: return
+                case .ran:
+                    ranSomething = true
+                    toolCallsThisTurn += 1
+                case .skipped: break
+                }
+            }
+            // A plan rewrite or a call that never executed is the same as saying the step without doing it.
+            if !ranSomething {
+                guard noteNoAction(nudge: "Those calls did not run. Call a tool with valid arguments, or call finish_task if you are done or blocked.") else { return }
             }
         }
     }
 
-    /// Runs one tool call to completion. Returns `false` if the runtime
-    /// should stop entirely (budget exceeded, repeat loop detected, or the
-    /// guardrail circuit breaker tripped).
-    private func handle(_ call: ToolCall) async -> Bool {
+    /// What one tool call did. `.ran` is the only result that clears the no-action counter.
+    private enum StepEffect { case stop, ran, skipped }
+
+    /// Counts a model step that ran no tool. The fifth one aborts. On the third, `StuckDetector` supplies the nudge.
+    @discardableResult
+    private func noteNoAction(nudge: String) -> Bool {
+        switch Reliability.isOn(.loopGuards) ? stuck.recordPlainReply() : StuckDetector.Verdict.fine {
+        case .abort(let why):
+            let error = RuntimeError.repeated(why)
+            emitAbortMessage(for: error)
+            onEvent(.status(.aborted("\(error)")))
+            return false
+        case .nudge(let text):
+            if messages.last?.content != text { messages.append(ChatMessage(role: .user, content: text)) }
+            return true
+        case .fine:
+            if messages.last?.content != nudge { messages.append(ChatMessage(role: .user, content: nudge)) }
+            return true
+        }
+    }
+
+    /// Drops the announcement from the model context. The chat already showed it.
+    private func removeAssistantAnnouncement(_ text: String) {
+        guard let index = messages.lastIndex(where: { $0.role == .assistant && $0.content == text && ($0.toolCalls ?? []).isEmpty }) else { return }
+        messages.remove(at: index)
+    }
+
+    private static func cutRepeatedReply(_ text: String, onEvent: @escaping @Sendable (Event) -> Void) -> ModelReply {
+        let once = RepetitionGuard.collapsed(text)
+        onEvent(.contextTrimmed(detail: "reply cut off: the model was repeating itself (\(text.count) characters)"))
+        Telemetry.recorder.loopEvent("repetition_cut")
+        return ModelReply(message: ChatMessage(role: .assistant, content: once), usage: nil)
+    }
+
+    /// Runs one tool call to completion.
+    private func handle(_ call: ToolCall) async -> StepEffect {
         let repeatCount: Int
         do {
             try checkBudgets()
@@ -714,7 +724,7 @@ public actor AgentRuntime {
         } catch {
             emitAbortMessage(for: error)
             onEvent(.status(.aborted("\(error)")))
-            return false
+            return .stop
         }
 
         // A malformed call gets a precise correction (missing field, wrong type, "did you mean run_shell?")
@@ -725,15 +735,15 @@ public actor AgentRuntime {
                 ? (ToolCallValidator.problem(with: call, schemas: tools.schemas + [Self.finishTaskSchema]) ?? "unknown tool '\(call.name)'")
                 : "unknown tool '\(call.name)'"
             appendToolResult(name: call.name, observation: ["error": message])
-            return true
+            return .skipped
         }
         if Reliability.isOn(.callChecks), let problem = ToolCallValidator.problem(with: call, schemas: tools.schemas + [Self.finishTaskSchema]) {
             appendToolResult(name: call.name, observation: ["error": problem])
-            return true
+            return .skipped
         }
         if Reliability.isOn(.callChecks), call.name == "run_shell", let command = call.arguments["command"]?.asString, let problem = ShellLint.problem(in: command) {
             appendToolResult(name: call.name, observation: ["error": problem])
-            return true
+            return .skipped
         }
 
         // A plain GitHub git/gh network command with no secret attached: bots often forget use_secrets and get
@@ -758,17 +768,17 @@ public actor AgentRuntime {
             let error = RuntimeError.frozen(why)
             emitAbortMessage(for: error)
             onEvent(.status(.aborted("\(error)")))
-            return false
+            return .stop
         case .refuse(let message):
             appendToolResult(name: call.name, observation: ["error": message])
             noteFailure(FailureCheck.kind(["error": message]), key: call.name + message)
-            if abortForFailures { return stopForFailures() }
-            return true
+            if abortForFailures { _ = stopForFailures(); return .stop }
+            return .skipped
         case .held(let note, let stored):
             onEvent(.toolStarted(name: call.name, argumentsJSON: jsonString(call.arguments.mapValues(\.value))))
             appendToolResult(name: call.name, observation: ["ok": stored, "held_for_review": stored, "note": note])
             onEvent(.toolCompleted(name: call.name, resultJSON: jsonString(["held_for_review": stored])))
-            return true
+            return .ran
         case .run(let decision, let askedHuman):
             if askedHuman {
                 onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
@@ -783,22 +793,22 @@ public actor AgentRuntime {
                 let error = RuntimeError.repeated(why)
                 emitAbortMessage(for: error)
                 onEvent(.status(.aborted("\(error)")))
-                return false
+                return .stop
             }
-            if abortForFailures { return stopForFailures() }
+            if abortForFailures { _ = stopForFailures(); return .stop }
             if abortForStale {
                 let error = RuntimeError.repeated("nothing new came back for \(staleStreak) calls in a row: it was waiting, not working")
                 emitAbortMessage(for: error)
                 onEvent(.status(.aborted("\(error)")))
-                return false
+                return .stop
             }
             if abortForSameResults {
                 let error = RuntimeError.repeated("'\(call.name)' kept returning the same result; the run was going in circles")
                 emitAbortMessage(for: error)
                 onEvent(.status(.aborted("\(error)")))
-                return false
+                return .stop
             }
-            return true
+            return .ran
         }
     }
 
@@ -1325,16 +1335,27 @@ public actor AgentRuntime {
         onEvent(.message(message))
     }
 
-    /// When a bot keeps announcing the next step instead of doing it, say which tools exist, and for a screenshot the
-    /// exact route (the first nudge alone often just gets the same sentence again).
-    /// The exact route to a screenshot, for a reply that talks about taking one without doing it.
+    /// Points a screenshot announcement at the tools and the skill, without a shell recipe.
     static func screenshotRoute(for narration: String) -> String {
         let lowered = narration.lowercased()
         guard lowered.contains("screenshot") || lowered.contains("picture") || lowered.contains("capture") else { return "" }
-        return " To show a web page headlessly: run_shell `chromium --headless --no-sandbox --disable-gpu --hide-scrollbars "
-            + "--window-size=1280,800 --screenshot=/workspace/shot.png URL` (URL is the live site, or http://localhost:PORT for a server "
-            + "you are running), then post_screenshot with path \"/workspace/shot.png\". If a browser is already open on the desktop, "
-            + "call screenshot instead."
+        return " To show the screen, call screenshot, then post_screenshot. Load use_skill(\"desktop-control\") before a GUI action, "
+            + "or use_skill(\"sharing-screenshots\") when the user should see the image."
+    }
+
+    static let missingToolNudge = "You did not call a tool. Plain text alone never ends the task — if you are "
+        + "not finished, call the next tool you need right now. If the message you just "
+        + "wrote already WAS your complete answer, call finish_task right now with that "
+        + "SAME content as the summary — do not write a different, shorter, or more "
+        + "hesitant response instead of it. Only report being blocked if you genuinely "
+        + "are; don't downgrade a complete answer into a \"blocked\" one just because you "
+        + "forgot to call finish_task the first time."
+
+    /// First miss asks for the call. From the second miss, name the tools. The count is `plainReplyCount`.
+    static func narrationNudge(count: Int, narration: String, toolNames: [String]) -> String {
+        if count >= 2 { return escalatedNarrationNudge(narration: narration, toolNames: toolNames) }
+        return "Make the tool call for your next step now. No sentence about it first: just the call."
+            + screenshotRoute(for: narration)
     }
 
     static func escalatedNarrationNudge(narration: String, toolNames: [String]) -> String {

@@ -35,13 +35,18 @@ lasting facts, `remember_task` for jobs with an end.
     branch."
 - Dates and names matter: keep them. Chatter, greetings and what you did
   step by step don't.
-- Your system prompt shows your most important notes, and the ones relevant
-  to each message come with it. `recall_memory(query)` searches the rest.
-- A near-copy of an existing note replaces it, so to correct a memory, save
-  the corrected version. Your user sees and can delete every memory in your
-  settings; the least important are dropped when there are too many.
-- A short note of each answered `message_bot` exchange is usually saved for
-  you automatically; don't `remember` it again.
+- Your system prompt keeps three short blocks: user preferences, procedures
+  (a command worth reusing, including one saved after a checked `message_bot`),
+  and work (open tasks, one line each). `recall_memory(query)` searches
+  everything else.
+- A near-copy of an existing note replaces it. To change a note that is
+  already in a core block, call `replace_memory(id, text)` with the id shown
+  beside it. That rewrites the one note; it does not add a second. Your user
+  sees and can delete every memory in your settings; the least important are
+  dropped when there are too many.
+- A checked `message_bot` that names a reusable command saves one process
+  line. The exchange itself is not saved. A `checked: false` answer is not
+  written into memory. Don't `remember` it.
 
 ## remember_task, list_tasks, complete_task
 - `remember_task` the moment you're given a concrete job or promise one ("I'll

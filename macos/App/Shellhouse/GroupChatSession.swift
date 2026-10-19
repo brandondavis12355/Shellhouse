@@ -1129,8 +1129,18 @@ final class GroupChatSession: Identifiable {
         persist()
     }
 
+    /// Names the next open step on a submit, accept, or rejection so the bot knows where to go.
+    private func namingNextStep(_ payload: [String: Any], goal g: GroupGoal) -> [String: Any] {
+        var payload = payload
+        guard let next = g.nextActionLine() else { return payload }
+        payload["next"] = next
+        if let note = payload["note"] as? String { payload["note"] = note + " " + next }
+        else if let error = payload["error"] as? String { payload["error"] = error + " " + next }
+        return payload
+    }
+
     /// Every bot-authored message while a goal is active counts toward the
-    /// stall limit; verified step completions reset it.
+    /// stall limit; verified step completions reset it. A step in review does not count.
     private func noteBotMessagePosted() {
         guard var g = goal, g.status == .active else { return }
         let justPaused = g.noteBotMessage()
@@ -1285,7 +1295,7 @@ final class GroupChatSession: Identifiable {
             if case .rejected = result {} else { syncGoalTask(goal: g, stepID: stepID, actor: bot, evidence: arguments["evidence"]?.asString) }
             switch result {
             case .rejected(let reason):
-                return ["error": reason]
+                return namingNextStep(["error": reason], goal: g)
             case .progress:
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
                 postSystem("✅ Step \(index) done by \(bot.name) — \(g.doneCount)/\(g.steps.count).")
@@ -1293,7 +1303,7 @@ final class GroupChatSession: Identifiable {
                     return ["ok": true, "counted_as_progress": true, "goal_complete": true,
                             "note": "That was the last step: the goal is complete and closed. Post a short wrap-up if useful; no more goal work is needed."]
                 }
-                return ["ok": true, "counted_as_progress": true, "goal": goalBlockText(g)]
+                return namingNextStep(["ok": true, "counted_as_progress": true, "note": "Accepted. Stop working on that step.", "goal": goalBlockText(g)], goal: g)
             case .memberCheckedIn(let remaining):
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
                 postSystem("☑️ \(bot.name) checked in on step \(index) — waiting on \(remaining.joined(separator: ", ")).")
@@ -1305,9 +1315,9 @@ final class GroupChatSession: Identifiable {
                 let index = (g.steps.firstIndex(where: { $0.id == stepID }) ?? 0) + 1
                 postSystem("🔎 Step \(index) submitted by \(bot.name) — waiting for \(ownerName) to validate.")
                 requestOwnerReview()
-                return ["ok": true, "counted_as_progress": false,
-                        "note": "Submitted for validation. Only \(ownerName) can mark it done after re-checking it. @mention \(ownerName) with what to verify; do not mark it done again.",
-                        "goal": goalBlockText(g)]
+                return namingNextStep(["ok": true, "counted_as_progress": false,
+                        "note": "Submitted for validation. Only \(ownerName) can mark it done after re-checking it. Stop calling update_goal_step on this step. @mention \(ownerName) with what to verify.",
+                        "goal": goalBlockText(g)], goal: g)
             case .recorded:
                 let note = status == .done
                     ? (toolCalls > 0

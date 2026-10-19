@@ -216,6 +216,19 @@ public struct MemoryBook: Codable, Equatable, Sendable {
     public mutating func setPinned(_ id: String, _ pinned: Bool) { if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].pinned = pinned } }
     public mutating func setImportance(_ id: String, _ value: Int) { if let i = entries.firstIndex(where: { $0.id == id }) { entries[i].importance = min(5, max(1, value)) } }
 
+    /// Rewrites one existing note in place. Returns false when the id is missing or the text is empty.
+    @discardableResult
+    public mutating func replace(id: String, text: String) -> Bool {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return false }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        entries[index].text = trimmed
+        entries[index].embedding = nil
+        entries[index].embeddingModel = nil
+        entries[index].lastUsedAt = Date()
+        return true
+    }
+
     // MARK: scoring
 
     public func recency(_ entry: MemoryEntry, now: Date) -> Double {
@@ -297,8 +310,35 @@ public struct MemoryBook: Codable, Equatable, Sendable {
         .map { $0 }
     }
 
-    /// The notes that go in the bot's system prompt every time: pinned first, then the highest keep-scores,
-    /// skipping trivia. Everything else is found by `rank` when it is relevant.
+    public enum MemoryBlock: String, Sendable, Equatable {
+        case user, procedures
+    }
+
+    /// Which always-visible block a note belongs in. Delegation transcripts and one-off facts stay archival.
+    public static func block(for entry: MemoryEntry) -> MemoryBlock? {
+        switch entry.source {
+        case "process", "learned": return .procedures
+        case "user", "self", "import": return .user
+        default: return entry.pinned ? .user : nil
+        }
+    }
+
+    /// The notes for one core block, newest-useful first, inside a short character budget.
+    public func block(_ kind: MemoryBlock, limit: Int = 8, characterBudget: Int = 1_200, now: Date = Date()) -> [MemoryEntry] {
+        let matching = entries.filter { Self.block(for: $0) == kind }
+            .sorted { keepScore($0, now: now) > keepScore($1, now: now) }
+        var used = 0
+        var chosen: [MemoryEntry] = []
+        for entry in matching {
+            if chosen.count >= limit { break }
+            if used > 0, used + entry.text.count > characterBudget { break }
+            chosen.append(entry)
+            used += entry.text.count
+        }
+        return chosen
+    }
+
+    /// Pinned notes first, then the highest keep-scores, skipping trivia. The prompt uses `block` instead.
     public func core(now: Date = Date(), limit: Int = 12) -> [MemoryEntry] {
         entries
             .filter { $0.pinned || $0.importance >= 2 }

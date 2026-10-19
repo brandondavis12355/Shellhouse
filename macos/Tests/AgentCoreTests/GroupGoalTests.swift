@@ -16,10 +16,11 @@ final class GroupGoalTests: XCTestCase {
         XCTAssertTrue(g.steps[0].verified)
     }
 
-    func testUnverifiedCompletionIsRecordedButNotProgress() {
+    func testUngroundedDoneLeavesTheStepOpen() {
         var g = goal()
         g.noteBotMessage()
-        XCTAssertEqual(g.updateStep(id: g.steps[0].id, status: .done, evidence: evidence, assigneeName: nil, turnHadToolCalls: false), .recorded)
+        if case .rejected = g.updateStep(id: g.steps[0].id, status: .done, evidence: evidence, assigneeName: nil, turnHadToolCalls: false) {} else { XCTFail() }
+        XCTAssertEqual(g.steps[0].status, .open)
         XCTAssertEqual(g.messagesSinceProgress, 1)
         XCTAssertFalse(g.steps[0].verified)
     }
@@ -166,5 +167,22 @@ final class GoalValidationTests: XCTestCase {
     func testReviewIsNotSettableDirectly() {
         var g = goal()
         if case .rejected = g.updateStep(id: g.steps[0].id, status: .review, evidence: evidence, assigneeName: nil, turnHadToolCalls: true) {} else { XCTFail() }
+    }
+
+    func testGroundedSubmitIsReviewAndDoesNotCountAsProgress() {
+        var g = goal(steps: ["first", "second"])
+        g.noteBotMessage()
+        XCTAssertEqual(g.updateStep(id: g.steps[0].id, status: .done, evidence: evidence, assigneeName: "Bugbot", turnHadToolCalls: true, byOwner: false), .submitted)
+        XCTAssertEqual(g.steps[0].status, .review)
+        XCTAssertFalse(g.steps[0].verified)
+        XCTAssertFalse(g.noteBotMessage(), "a step in review does not move the stall counter")
+        XCTAssertEqual(g.messagesSinceProgress, 1)
+    }
+
+    func testAcceptNamesTheNextOpenStep() {
+        var g = goal(steps: ["first", "second"])
+        g.steps[1].assigneeName = "Cleo"
+        XCTAssertEqual(g.updateStep(id: g.steps[0].id, status: .done, evidence: evidence, assigneeName: nil, turnHadToolCalls: true, byOwner: true), .progress)
+        XCTAssertEqual(g.nextActionLine(), "Next open step: 2 (Cleo): second")
     }
 }

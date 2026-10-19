@@ -356,14 +356,31 @@ def run(run_dir: str, model_factory: Callable[[Config], Model] | None = None) ->
         agent, model, final_tool = build_agent(cfg, ctx, inner)
         ctx.check_cancel()
         output = None
+        plain_misses = 0
+        stopped_for_no_action = False
         for item in agent.run(cfg.task, stream=True, reset=False):
             ctx.check_cancel()
             if isinstance(item, ActionStep) and item.error is not None and not item.is_final_answer:
-                events.emit("error", message=str(item.error)[:4000], fatal=False)
+                message = str(item.error)
+                events.emit("error", message=message[:4000], fatal=False)
+                if "You did not call a tool" in message:
+                    plain_misses += 1
+                    if plain_misses >= 5:
+                        stopped_for_no_action = True
+                        break
+                else:
+                    plain_misses = 0
+            elif isinstance(item, ActionStep) and item.error is None and getattr(item, "tool_calls", None):
+                plain_misses = 0
             if isinstance(item, FinalAnswerStep):
                 output = item.output
         usage = {"input_tokens": model.input_tokens, "output_tokens": model.output_tokens,
                  "model_calls": model.calls, "seconds": round(time.monotonic() - start, 2)}
+        if stopped_for_no_action and final_tool.captured is None:
+            events.emit("final", summary="Stopped: five replies in a row did not call a tool.",
+                        outcome="blocked", reason="no_action", usage=usage)
+            events.emit("status", state="aborted", detail="no_action")
+            return 0
         if final_tool.captured is not None:
             summary, outcome = final_tool.captured
             events.emit("final", summary=summary, outcome=outcome, usage=usage)

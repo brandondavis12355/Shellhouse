@@ -72,6 +72,7 @@ public struct ToolRegistry: Sendable {
     public init(
         skills: [Skill] = [],
         onRemember: (@Sendable (String) async -> Bool)? = nil,
+        onReplaceMemory: (@Sendable (String, String) async -> Bool)? = nil,
         onRecallMemory: (@Sendable (String) async -> [String])? = nil,
         onRememberTask: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
         onCompleteTask: (@Sendable ([String: AnyCodable]) async -> [String: Any])? = nil,
@@ -133,6 +134,22 @@ public struct ToolRegistry: Sendable {
                     return ["error": "failed to save to disk — this wasn't actually remembered"]
                 }
                 return ["saved": true]
+            }
+        }
+        if let onReplaceMemory {
+            schemas.append(Self.replaceMemorySchema)
+            executors["replace_memory"] = { _, _, arguments, _ in
+                guard let id = arguments["id"]?.asString, !id.isEmpty,
+                      let text = arguments["text"]?.asString, !text.isEmpty else {
+                    return ["error": "replace_memory requires 'id' and non-empty 'text'"]
+                }
+                if text.count > Self.maxNoteCharacters {
+                    return ["error": "That note is \(text.count) characters: too long. Summarize it under \(Self.maxNoteCharacters) characters, then call replace_memory again."]
+                }
+                guard await onReplaceMemory(id, text) else {
+                    return ["error": "No note with that id. Use the id shown in your core memory."]
+                }
+                return ["replaced": true, "id": id]
             }
         }
         if let onRecallMemory {
@@ -357,8 +374,9 @@ public struct ToolRegistry: Sendable {
             description: "Save one short, durable note (a summary of the key point in one or two sentences, never the whole message): a correction or standing preference from the user, or a lesson "
                 + "you learned that your skills don't cover (a fix that worked, a quirk of this VM, repo or tool, a needed "
                 + "command), written as a rule for next time. It's shown "
-                + "to the user in this bot's settings and resent at the start of every future conversation "
-                + "with it. Don't use this for task-specific facts that only matter to what you're doing right "
+                + "to the user in this bot's settings. Preferences land in your user block; a reusable command lands in procedures. "
+                + "To change a note already in those blocks, call replace_memory with its id instead of saving a second copy. "
+                + "Don't use this for task-specific facts that only matter to what you're doing right "
                 + "now — those belong in your own reasoning, not here. Up to 200 notes are kept (the least important are dropped first) — check "
                 + "recall_memory first so you don't save a near-duplicate of something you already have.",
             parameters: [
@@ -369,14 +387,28 @@ public struct ToolRegistry: Sendable {
         )
     }
 
+    private static var replaceMemorySchema: ToolSchema {
+        ToolSchema(
+            name: "replace_memory",
+            description: "Rewrite one note that is already in your core memory (the user or procedures block). "
+                + "Pass the id shown next to that note. This changes that note; it does not add another.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "id": ["type": "string", "description": "The id of the core note to rewrite."],
+                    "text": ["type": "string", "description": "The new wording, under 300 characters."],
+                ],
+                "required": ["id", "text"],
+            ]
+        )
+    }
+
     private static var recallMemorySchema: ToolSchema {
         ToolSchema(
             name: "recall_memory",
-            description: "Search this bot's remembered instructions/preferences — the ones saved via "
-                + "`remember`, plus anything the user added by hand in settings — for ones relevant to a "
-                + "query. Everything remembered is already in your system prompt, so this is for double-"
-                + "checking whether something you were told before applies to what you're doing right now, "
-                + "not the only way you'd ever see it.",
+            description: "Search this bot's remembered notes, including ones that are not in the core blocks "
+                + "of the system prompt. Use it when a fact might have been saved earlier and is not already "
+                + "listed under User or Procedures.",
             parameters: [
                 "type": "object",
                 "properties": ["query": ["type": "string", "description": "What to look for, e.g. a name, topic, or situation."]],
@@ -621,7 +653,10 @@ public struct ToolRegistry: Sendable {
             description: "Ask or delegate something to another bot by name (see list_bots) and wait for its answer — "
                 + "for when the user @mentions one asking you to coordinate with them, when something is "
                 + "outside your own scope and one of them specializes in it, or when your task needs information "
-                + "another bot has (its findings, files, results). If it's busy, it answers from what it already "
+                + "another bot has (its findings, files, results). The result includes checked: true only when that "
+                + "bot actually ran tools. checked: false means it answered from memory, was busy, or this question "
+                + "was already asked — do not save that answer as a fact. A bot that is answering you may message "
+                + "one further bot; that bot cannot pass the question on. If it's busy, it answers from what it already "
                 + "knows, without running anything. This happens in the background: "
                 + "the user sees only a \"Messaged <name>…\" notice in this chat, not the exchange itself, "
                 + "unless they tap it. YOU relay the answer back once you have it — don't just report that "

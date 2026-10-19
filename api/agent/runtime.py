@@ -34,6 +34,7 @@ from typing import Callable, Optional
 from sqlalchemy.orm import Session
 
 import models
+from agent.announcement import prose_outcome
 from agent.model_gateway import ModelGateway
 from agent.tools import (
     TOOL_EXECUTORS,
@@ -509,6 +510,7 @@ class AgentRuntime:
 
     async def _loop(self, task: models.Task, messages: list[dict]):
         fingerprints: dict[str, int] = {}
+        plain_misses = 0
 
         try:
             while True:
@@ -551,6 +553,16 @@ class AgentRuntime:
 
                 tool_calls = reply.get("tool_calls") or []
                 if not tool_calls:
+                    outcome, plain_misses = prose_outcome(reply.get("content", "") or "", plain_misses)
+                    if outcome == "block":
+                        raise TaskAborted("BLOCKED", "five replies announced work without calling a tool")
+                    if outcome == "nudge":
+                        messages.append({
+                            "role": "user",
+                            "content": "You announced the next step without calling a tool. Call the tool now.",
+                        })
+                        self._save_messages(task, messages)
+                        continue
                     self._set_status(task, "VERIFYING")
                     self._set_status(task, "COMPLETED", result=reply.get("content", ""))
                     self._log_event(task.id, "task.completed", {
@@ -559,6 +571,7 @@ class AgentRuntime:
                         "tokens_used": task.tokens_used,
                     })
                     return
+                plain_misses = 0
 
                 for call in tool_calls:
                     self._check_budgets(task)
