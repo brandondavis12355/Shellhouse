@@ -30,7 +30,7 @@ public enum GUICommand {
     }
 
     public static let alreadyOpenNote = "That page is already open in the browser (opened a moment ago); opening it again would only add another tab. "
-        + "Take a screenshot to see it. To go somewhere else in the same window, press_key ctrl+l, type_text the address, then press_key Return."
+        + "Take a screenshot to see it. To go to a different page, call open_app again with that page's url."
 
     public static let noDesktopMessage = "This VM has no running desktop (nothing is answering on the X display \(display)), so graphical apps, "
         + "screenshots, clicks and typing cannot work. That is a VM problem, not something to retry: tell the user, and for anything that "

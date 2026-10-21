@@ -34,6 +34,35 @@ public final class RepeatedSecretGuard: Guard {
     }
 }
 
+/// Clicking or typing on a screen the bot has not looked at: coordinates from memory land on whatever is there (a run
+/// that opened a news site by clicking where a menu used to be), and text typed with no focus goes into the page. The
+/// first click, scroll or typing of a turn, and the first after opening an app, must follow a screenshot. Every click, scroll
+/// and typing result carries its own screenshot, so one look at the start is enough.
+public final class LookFirstGuard: Guard {
+    public let id = "look_first"
+    private var looked = false
+    public init() {}
+
+    public func reset(_ scope: GuardReset) { looked = false }
+
+    private static let needsLook: Set<String> = ["click", "scroll", "type_text"]
+    private static let showsScreen: Set<String> = ["screenshot", "click", "scroll", "type_text"]
+
+    public func beforeTool(_ call: ToolCall, _ ctx: RunContext) -> [GuardAction] {
+        guard !looked, Self.needsLook.contains(call.name), Reliability.isOn(.loopGuards) else { return [] }
+        return [.replaceResult(runJSONString(["error": "You haven't looked at the screen yet this turn (or since you opened an app). Call screenshot first "
+            + "and aim at what it shows: coordinates guessed or remembered from earlier often land on the wrong thing, and typed text goes "
+            + "wherever the focus is. Then \(call.name) again."]), kind: "look_first")]
+    }
+
+    public func afterTool(_ call: ToolCall, _ outcome: ToolOutcome, _ ctx: RunContext) -> [GuardAction] {
+        guard case .executed = outcome.kind else { return [] }
+        if call.name == "open_app" { looked = false }
+        else if Self.showsScreen.contains(call.name), outcome.raw["error"] == nil { looked = true }
+        return []
+    }
+}
+
 /// Clicking the same spot again and again (a pixel apart, so an exact-repeat check never fires) while the screen does not
 /// change. After three the bot is told to look at the screenshot and aim elsewhere or move focus with the keyboard.
 public final class NearRepeatClickGuard: Guard {
