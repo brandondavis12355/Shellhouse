@@ -2736,6 +2736,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                     return await self.delegateToBot(named: to, message: message, quickIfBusy: true, senderTainted: tainted, hop: hop, originID: origin)
                 }
             }
+            registerPointerBus(sandboxID: handle.id)
             let runtime = AgentRuntime(
                 model: await makeModelBackend(),
                 sandbox: sandbox,
@@ -3185,6 +3186,17 @@ final class Bot: Identifiable, @unchecked Sendable {
         Task { await sendWithAttachments(text: text, attachments: attachments) }
     }
 
+    /// Lets tools show the pointer arriving before they click (see `PointerBus`).
+    func registerPointerBus(sandboxID: String) {
+        PointerBus.setHandler({ [weak self] x, y, clicked in
+            Task { @MainActor in
+                guard let self else { return }
+                self.agentPointerCount += 1
+                self.agentPointer = AgentPointer(x: x, y: y, clicked: clicked, sequence: self.agentPointerCount)
+            }
+        }, for: sandboxID)
+    }
+
     /// A tool result reported the mouse position: show it on the desktop pane.
     func noteAgentPointer(_ toolName: String, _ resultJSON: String) {
         guard let report = PointerMapping.report(toolName: toolName, resultJSON: resultJSON) else { return }
@@ -3553,6 +3565,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 var chosen: (any AgentEngine)?
                 if engine == .smolagents {
                     do {
+                        registerPointerBus(sandboxID: handle.id)
                         chosen = try await makeSmolAgentsEngine(
                             tools: toolRegistry, sandbox: sandbox, sandboxID: handle.id, budgets: budgets, model: model,
                             onEvent: eventHandler, requestApproval: approvalHandler

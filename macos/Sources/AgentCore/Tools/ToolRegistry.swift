@@ -932,6 +932,15 @@ public struct ToolRegistry: Sendable {
         return object
     }
 
+    /// Shows the pointer arriving at the element a page tool is about to act on, and waits, so the click or typing happens after it.
+    private static func aimBrowser(_ query: String, index: String, mode: String, clicked: Bool, sandboxID: String, sandbox: any SandboxProvider) async {
+        guard let result = try? await sandbox.exec(sandboxID, command: BrowserControl.command(.aim, [query, index, mode]), timeout: 20, env: nil),
+              let line = result.stdout.split(separator: "\n").last, let data = String(line).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], object["error"] == nil,
+              let pointer = object["pointer"] as? [String: Any], let x = pointer["x"] as? Int, let y = pointer["y"] as? Int else { return }
+        await PointerBus.moveAndWait(sandboxID: sandboxID, x: x, y: y, clicked: clicked)
+    }
+
     /// `X=…` and `Y=…` lines of `xdotool getmouselocation --shell`.
     static func pointerPosition(in output: String) -> (x: Int, y: Int)? {
         var x: Int?, y: Int?
@@ -1370,6 +1379,7 @@ public struct ToolRegistry: Sendable {
                 guard let text = args["text"]?.asString, !text.isEmpty else { return ["error": "click_text requires 'text'"] }
                 // The "before" screenshot is taken here, so the bot need not take one first.
                 let before = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox)
+                await aimBrowser(text, index: String(args["index"]?.asInt ?? 0), mode: "click", clicked: true, sandboxID: sandboxID, sandbox: sandbox)
                 var result = await runBrowser(.click, [text, String(args["index"]?.asInt ?? 0)], sandboxID: sandboxID, sandbox: sandbox)
                 if let before { result["before_screenshot"] = before.filename }
                 guard result["error"] == nil else { return result }
@@ -1385,6 +1395,7 @@ public struct ToolRegistry: Sendable {
                     return ["error": "fill_field requires 'label' and 'text'"]
                 }
                 let before = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox)
+                await aimBrowser(label, index: "0", mode: "field", clicked: false, sandboxID: sandboxID, sandbox: sandbox)
                 var result = await runBrowser(.fill, [label, text] + ((args["submit"]?.asBool ?? false) ? ["submit"] : []), sandboxID: sandboxID, sandbox: sandbox)
                 if let before { result["before_screenshot"] = before.filename }
                 guard result["error"] == nil else { return result }
@@ -1400,6 +1411,7 @@ public struct ToolRegistry: Sendable {
 
             "move_mouse": { sandboxID, sandbox, args, _ in
                 guard let x = args["x"]?.asInt, let y = args["y"]?.asInt else { return ["error": "move_mouse requires 'x' and 'y'"] }
+                await PointerBus.moveAndWait(sandboxID: sandboxID, x: x, y: y)
                 do {
                     let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap("xdotool mousemove \(x) \(y)"), timeout: 10, env: nil)
                     guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
@@ -1416,6 +1428,7 @@ public struct ToolRegistry: Sendable {
                 let button = args["button"]?.asInt ?? 1
                 let at = (args["x"]?.asInt).flatMap { x in (args["y"]?.asInt).map { (x, $0) } }
                 if args["x"] != nil || args["y"] != nil, at == nil { return ["error": "click needs both 'x' and 'y', or neither (to click where the pointer is)"] }
+                if let at { await PointerBus.moveAndWait(sandboxID: sandboxID, x: at.0, y: at.1, clicked: true) }
                 do {
                     // ai-click.py animates the pointer to (x, y) instead of
                     // warping it instantly, clicks, and flashes a transient
@@ -1530,6 +1543,7 @@ public struct ToolRegistry: Sendable {
                 // this is what xdotool uses to simulate scrolling, there's
                 // no separate "scroll" primitive at the X11 level.
                 let button = direction == "up" ? 4 : 5
+                if let x = args["x"]?.asInt, let y = args["y"]?.asInt { await PointerBus.moveAndWait(sandboxID: sandboxID, x: x, y: y) }
                 var command = ""
                 if let x = args["x"]?.asInt, let y = args["y"]?.asInt {
                     command += "xdotool mousemove \(x) \(y) && "

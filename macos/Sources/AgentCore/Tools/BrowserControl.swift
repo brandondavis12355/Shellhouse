@@ -11,7 +11,7 @@ public enum BrowserControl {
     public static let profileDir = "$HOME/.config/shellhouse-chromium"
     public static let launchFlags = "--remote-debugging-port=\(port) --user-data-dir=\(profileDir) --no-first-run --no-default-browser-check"
 
-    public enum Operation: String { case find, click, fill, text }
+    public enum Operation: String { case find, click, fill, text, aim }
 
     /// The shell command that runs one operation. `args` are passed as arguments, quoted.
     public static func command(_ operation: Operation, _ args: [String], port: Int = BrowserControl.port) -> String {
@@ -181,6 +181,19 @@ public enum BrowserControl {
             after = state()
             out({"clicked": {"label": m["label"], "tag": m["tag"]}, "matches": len(r["matches"]), "pointer": pointer,
                  "url": after["url"], "title": after["title"], "navigated": after["url"] != before["url"]})
+
+        elif op == "aim":
+            # Scroll the target into view and report where the pointer will go, without clicking: the app shows the pointer
+            # arriving first, then the real click or fill runs.
+            query, index, mode = sys.argv[2], int(sys.argv[3]), sys.argv[4]
+            r = find(query, mode)
+            if not r["matches"]: out({"error": "no_match"})
+            if index >= len(r["matches"]): index = 0
+            js("(() => { const e = window.__shMatches[%d]; e.scrollIntoView({block: 'center', inline: 'center'}); })()" % index)
+            time.sleep(0.15)
+            r = find(query, mode)
+            m = r["matches"][index] if index < len(r["matches"]) else r["matches"][0]
+            out({"pointer": move_pointer(r["win"], m["x"], m["y"])})
 
         elif op == "fill":
             label, value = sys.argv[2], sys.argv[3]
