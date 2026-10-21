@@ -43,7 +43,10 @@ public enum ActivityGrouping {
             var group: [ID] = []
             func closeGroup() { if !group.isEmpty { rows.append(.activity(group)); group = [] } }
             let isText: (TranscriptKind) -> Bool = { $0 == .assistantText || $0 == .summary }
-            let answer = (live && isNewest) ? nil : turn.indices.last { $0 > lastTool && isText(turn[$0].kind) }
+            // A `.summary` is collapsed to "Done" because it repeats a reply, so the reply is the answer; the summary only
+            // counts when no plain text follows the last tool.
+            let answer = (live && isNewest) ? nil
+                : turn.indices.last { $0 > lastTool && turn[$0].kind == .assistantText } ?? turn.indices.last { $0 > lastTool && turn[$0].kind == .summary }
             let foldedUpTo = answer ?? (live && isNewest ? turn.count : lastTool + 1)
             for (offset, item) in turn.enumerated() {
                 let inActivity = offset < foldedUpTo && (item.kind == .tool || isText(item.kind))
