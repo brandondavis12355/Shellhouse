@@ -1278,7 +1278,7 @@ public struct ToolRegistry: Sendable {
                 switch app {
                 case "browser":
                     let target = args["url"]?.asString.map { shellQuote($0) } ?? ""
-                    command = GUICommand.openApp(process: "chromium", launch: "chromium \(target)")
+                    command = GUICommand.openApp(process: "chromium", launch: "chromium \(target)", once: args["url"]?.asString)
                 case "terminal":
                     command = GUICommand.openApp(process: "xfce4-terminal", launch: "xfce4-terminal --working-directory=/workspace")
                 case "files":
@@ -1288,6 +1288,7 @@ public struct ToolRegistry: Sendable {
                 }
                 do {
                     let result = try await sandbox.exec(sandboxID, command: command, timeout: 20, env: nil)
+                    if result.exitCode == Int32(GUICommand.alreadyOpenExit) { return ["ok": true, "app": app, "already_open": true, "note": GUICommand.alreadyOpenNote] }
                     return result.exitCode == 0 ? ["ok": true, "app": app] : ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode, app: app)]
                 } catch {
                     return ["error": error.localizedDescription]

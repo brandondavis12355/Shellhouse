@@ -380,14 +380,14 @@ final class OpenAIEmbedderTests: XCTestCase {
     }
 
     func testOllamaRootIsFoundOnlyForTheOllamaPort() {
-        XCTAssertEqual(ModelTiers.ollamaRoot(URL(string: "http://10.63.128.211:11434/v1")!)?.absoluteString, "http://10.63.128.211:11434")
+        XCTAssertEqual(ModelTiers.ollamaRoot(URL(string: "http://10.0.0.5:11434/v1")!)?.absoluteString, "http://10.0.0.5:11434")
         XCTAssertEqual(ModelTiers.ollamaRoot(URL(string: "http://studio.local:11434")!)?.absoluteString, "http://studio.local:11434")
         XCTAssertNil(ModelTiers.ollamaRoot(URL(string: "http://10.0.0.5:1234/v1")!))
         XCTAssertNil(ModelTiers.ollamaRoot(URL(string: "https://api.openai.com/v1")!))
     }
 
     func testOllamaLikeServersAreRecognizedForReasoningOff() {
-        XCTAssertTrue(ModelTiers.looksLikeOllama(URL(string: "http://10.63.128.211:11434/v1")!))
+        XCTAssertTrue(ModelTiers.looksLikeOllama(URL(string: "http://10.0.0.5:11434/v1")!))
         XCTAssertTrue(ModelTiers.looksLikeOllama(URL(string: "http://studio.local:8080/v1")!))
         XCTAssertFalse(ModelTiers.looksLikeOllama(URL(string: "https://api.openai.com/v1")!))
     }
