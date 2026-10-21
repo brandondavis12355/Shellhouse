@@ -109,6 +109,14 @@ final class BrowserControlTests: XCTestCase {
         XCTAssertEqual((r["clicked"] as? [String: Any])?["tag"] as? String, "button", "\(r)")
     }
 
+    func testAimReportsWhereThePointerWillGoWithoutClicking() throws {
+        let r = try run(.aim, ["Search", "0", "click"])
+        XCTAssertNotNil((r["pointer"] as? [String: Any])?["x"], "\(r)")
+        let title = try run(.text, ["100"])["title"] as? String
+        XCTAssertNotEqual(title, "Searched:", "nothing was clicked")
+        XCTAssertEqual(try run(.aim, ["Nonexistent", "0", "click"])["error"] as? String, "no_match")
+    }
+
     func testNoMatchSaysSoAndPageTextIsReadable() throws {
         let none = try run(.click, ["Nonexistent thing", "0"])
         XCTAssertEqual(none["error"] as? String, "no_match")

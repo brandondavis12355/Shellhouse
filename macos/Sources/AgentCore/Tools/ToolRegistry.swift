@@ -897,7 +897,7 @@ public struct ToolRegistry: Sendable {
         sandbox: any SandboxProvider,
         filenameHint: String? = nil,
         clicked: Bool = false
-    ) async -> (filename: String, bytes: Int, base64: String, changed: Double?)? {
+    ) async -> (filename: String, bytes: Int, base64: String, changed: Double?, region: CGRect?)? {
         let filename = sanitizeFilename(filenameHint) ?? "screenshot-\(Int(Date().timeIntervalSince1970)).png"
         let absolutePath = "/workspace/\(filename)"
         // The pointer's position comes back with the capture, to be drawn into the copy the model sees (scrot leaves it out).
@@ -908,7 +908,7 @@ public struct ToolRegistry: Sendable {
         }
         let changed = ScreenMemory.shared.record(data, for: sandboxID)
         let marked = ScreenOverlay.annotate(data, pointer: pointerPosition(in: captured.stdout), clicked: clicked)
-        return (filename, data.count, compressedForModel(marked).base64EncodedString(), changed)
+        return (filename, data.count, compressedForModel(marked).base64EncodedString(), changed, ScreenMemory.shared.region(for: sandboxID))
     }
 
     /// One page operation (see `BrowserControl`): run the script in the VM, read its one line of JSON, and turn its error codes into advice.
@@ -930,6 +930,15 @@ public struct ToolRegistry: Sendable {
         default: break
         }
         return object
+    }
+
+    /// Shows the pointer arriving at the element a page tool is about to act on, and waits, so the click or typing happens after it.
+    private static func aimBrowser(_ query: String, index: String, mode: String, clicked: Bool, sandboxID: String, sandbox: any SandboxProvider) async {
+        guard let result = try? await sandbox.exec(sandboxID, command: BrowserControl.command(.aim, [query, index, mode]), timeout: 20, env: nil),
+              let line = result.stdout.split(separator: "\n").last, let data = String(line).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], object["error"] == nil,
+              let pointer = object["pointer"] as? [String: Any], let x = pointer["x"] as? Int, let y = pointer["y"] as? Int else { return }
+        await PointerBus.moveAndWait(sandboxID: sandboxID, x: x, y: y, clicked: clicked)
     }
 
     /// `X=…` and `Y=…` lines of `xdotool getmouselocation --shell`.
@@ -1370,12 +1379,13 @@ public struct ToolRegistry: Sendable {
                 guard let text = args["text"]?.asString, !text.isEmpty else { return ["error": "click_text requires 'text'"] }
                 // The "before" screenshot is taken here, so the bot need not take one first.
                 let before = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox)
+                await aimBrowser(text, index: String(args["index"]?.asInt ?? 0), mode: "click", clicked: true, sandboxID: sandboxID, sandbox: sandbox)
                 var result = await runBrowser(.click, [text, String(args["index"]?.asInt ?? 0)], sandboxID: sandboxID, sandbox: sandbox)
                 if let before { result["before_screenshot"] = before.filename }
                 guard result["error"] == nil else { return result }
                 if let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox, clicked: true) {
                     result["screenshot"] = shot.filename; result["_base64"] = shot.base64
-                    for (k, v) in GUICommand.reaction(shot.changed, after: "click") where k == "screen_changed" { result[k] = v }
+                    for (k, v) in GUICommand.reaction(shot.changed, after: "click", region: shot.region) where k != "note" || result["navigated"] as? Bool != true { result[k] = v }
                 }
                 return result
             },
@@ -1385,11 +1395,13 @@ public struct ToolRegistry: Sendable {
                     return ["error": "fill_field requires 'label' and 'text'"]
                 }
                 let before = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox)
+                await aimBrowser(label, index: "0", mode: "field", clicked: false, sandboxID: sandboxID, sandbox: sandbox)
                 var result = await runBrowser(.fill, [label, text] + ((args["submit"]?.asBool ?? false) ? ["submit"] : []), sandboxID: sandboxID, sandbox: sandbox)
                 if let before { result["before_screenshot"] = before.filename }
                 guard result["error"] == nil else { return result }
                 if let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox) {
                     result["screenshot"] = shot.filename; result["_base64"] = shot.base64
+                    for (k, v) in GUICommand.reaction(shot.changed, after: "type_text", region: shot.region) { result[k] = v }
                 }
                 return result
             },
@@ -1400,6 +1412,7 @@ public struct ToolRegistry: Sendable {
 
             "move_mouse": { sandboxID, sandbox, args, _ in
                 guard let x = args["x"]?.asInt, let y = args["y"]?.asInt else { return ["error": "move_mouse requires 'x' and 'y'"] }
+                await PointerBus.moveAndWait(sandboxID: sandboxID, x: x, y: y)
                 do {
                     let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap("xdotool mousemove \(x) \(y)"), timeout: 10, env: nil)
                     guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
@@ -1416,6 +1429,7 @@ public struct ToolRegistry: Sendable {
                 let button = args["button"]?.asInt ?? 1
                 let at = (args["x"]?.asInt).flatMap { x in (args["y"]?.asInt).map { (x, $0) } }
                 if args["x"] != nil || args["y"] != nil, at == nil { return ["error": "click needs both 'x' and 'y', or neither (to click where the pointer is)"] }
+                if let at { await PointerBus.moveAndWait(sandboxID: sandboxID, x: at.0, y: at.1, clicked: true) }
                 do {
                     // ai-click.py animates the pointer to (x, y) instead of
                     // warping it instantly, clicks, and flashes a transient
@@ -1443,7 +1457,7 @@ public struct ToolRegistry: Sendable {
                         return report.merging(["ok": true, "screenshot_error": "click succeeded but the verification screenshot failed"]) { a, _ in a }
                     }
                     return report.merging(["ok": true, "screenshot": shot.filename, "_base64": shot.base64]) { a, _ in a }
-                        .merging(GUICommand.reaction(shot.changed, after: "click")) { a, _ in a }
+                        .merging(GUICommand.reaction(shot.changed, after: "click", region: shot.region)) { a, _ in a }
                 } catch {
                     return ["error": error.localizedDescription]
                 }
@@ -1469,7 +1483,7 @@ public struct ToolRegistry: Sendable {
                         return ["ok": true, "screenshot_error": "type_text succeeded but the verification screenshot failed"]
                     }
                     return ["ok": true, "screenshot": shot.filename, "_base64": shot.base64]
-                        .merging(GUICommand.reaction(shot.changed, after: "type_text")) { a, _ in a }
+                        .merging(GUICommand.reaction(shot.changed, after: "type_text", region: shot.region)) { a, _ in a }
                 } catch {
                     return ["error": error.localizedDescription]
                 }
@@ -1515,7 +1529,7 @@ public struct ToolRegistry: Sendable {
                         return ["ok": true, "screenshot_error": "the key was pressed but the verification screenshot failed; take a screenshot"]
                     }
                     return ["ok": true, "screenshot": shot.filename, "_base64": shot.base64]
-                        .merging(GUICommand.reaction(shot.changed, after: "press_key")) { a, _ in a }
+                        .merging(GUICommand.reaction(shot.changed, after: "press_key", region: shot.region)) { a, _ in a }
                 } catch {
                     return ["error": error.localizedDescription]
                 }
@@ -1530,6 +1544,7 @@ public struct ToolRegistry: Sendable {
                 // this is what xdotool uses to simulate scrolling, there's
                 // no separate "scroll" primitive at the X11 level.
                 let button = direction == "up" ? 4 : 5
+                if let x = args["x"]?.asInt, let y = args["y"]?.asInt { await PointerBus.moveAndWait(sandboxID: sandboxID, x: x, y: y) }
                 var command = ""
                 if let x = args["x"]?.asInt, let y = args["y"]?.asInt {
                     command += "xdotool mousemove \(x) \(y) && "
@@ -1545,7 +1560,7 @@ public struct ToolRegistry: Sendable {
                         return ["ok": true, "screenshot_error": "scroll succeeded but the verification screenshot failed"]
                     }
                     return ["ok": true, "screenshot": shot.filename, "_base64": shot.base64]
-                        .merging(GUICommand.reaction(shot.changed, after: "scroll")) { a, _ in a }
+                        .merging(GUICommand.reaction(shot.changed, after: "scroll", region: shot.region)) { a, _ in a }
                 } catch {
                     return ["error": error.localizedDescription]
                 }

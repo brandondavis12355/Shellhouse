@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// The desktop tools (screenshot, click, type, press_key, scroll, windows, open_app) talk to the VM's X display.
@@ -78,9 +79,17 @@ public enum GUICommand {
     """
 
     /// What to tell the bot about how the screen reacted to its action: a plain yes, or, when nothing moved, what that usually means.
-    public static func reaction(_ changed: Double?, after action: String) -> [String: Any] {
+    public static func reaction(_ changed: Double?, after action: String, region: CGRect? = nil) -> [String: Any] {
         guard let changed else { return [:] }
-        if changed >= ScreenDiff.reactionThreshold { return ["screen_changed": true] }
+        if changed >= ScreenDiff.reactionThreshold {
+            var out: [String: Any] = ["screen_changed": true]
+            if let region {
+                out["changed_region"] = ["x": Int(region.minX), "y": Int(region.minY), "w": Int(region.width), "h": Int(region.height)]
+                out["compare"] = "Compared with the screen before this action, the area that changed is the box in changed_region. Check it is "
+                    + "the change you expected (a field filled, a page or menu opened); if it is elsewhere, the action hit the wrong thing."
+            }
+            return out
+        }
         let note: String
         switch action {
         case "click":
