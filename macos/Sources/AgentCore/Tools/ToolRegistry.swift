@@ -1005,7 +1005,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "open_app",
-                description: "Launch an application on the sandbox desktop.",
+                description: "Launch an application on the sandbox desktop. To open another web page, call this again with browser and that url: it opens in the same browser window (more reliable than typing into the address bar). After opening, take a screenshot before you click anything.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -1017,7 +1017,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "click",
-                description: "Move the mouse to absolute screen coordinates and click.",
+                description: "Move the mouse to absolute screen coordinates and click. Take a screenshot first and aim at what it shows; coordinates from memory or an older screenshot are often wrong.",
                 parameters: [
                     "type": "object",
                     "properties": [

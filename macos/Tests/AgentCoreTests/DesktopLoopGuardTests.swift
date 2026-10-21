@@ -63,4 +63,39 @@ final class DesktopLoopGuardTests: XCTestCase {
         XCTAssertTrue((r["values_note"] as? String)?.contains("type_text") == true)
         XCTAssertNil(CredentialRequest.result(saved: ["A"], kept: [], missing: [], plain: [:], failed: [])["values_note"])
     }
+
+    private func call(_ name: String) -> ToolCall { ToolCall(name: name, arguments: ["x": AnyCodable(1), "y": AnyCodable(1), "text": AnyCodable("a"), "app": AnyCodable("browser")]) }
+
+    func testNothingIsClickedOrTypedBeforeTheScreenHasBeenSeen() {
+        let g = LookFirstGuard(); let ctx = RunContext()
+        for name in ["click", "scroll", "type_text"] {
+            guard case .replaceResult(let json, let kind)? = g.beforeTool(call(name), ctx).first else { return XCTFail("\(name) was allowed blind") }
+            XCTAssertEqual(kind, "look_first"); XCTAssertTrue(json.contains("screenshot"))
+        }
+        XCTAssertTrue(g.beforeTool(call("press_key"), ctx).isEmpty, "a key press is not aimed at coordinates")
+        XCTAssertTrue(g.beforeTool(call("screenshot"), ctx).isEmpty)
+        XCTAssertTrue(g.beforeTool(call("run_shell"), ctx).isEmpty)
+    }
+
+    func testOneScreenshotOpensTheTurnAndAnActionResultCountsAsALook() {
+        let g = LookFirstGuard(); let ctx = RunContext()
+        _ = g.afterTool(call("screenshot"), ran(), ctx)
+        XCTAssertTrue(g.beforeTool(call("click"), ctx).isEmpty)
+        let h = LookFirstGuard()
+        _ = h.afterTool(call("type_text"), ran(), ctx)
+        XCTAssertTrue(h.beforeTool(call("click"), ctx).isEmpty, "type_text's own screenshot is a look")
+    }
+
+    func testAFailedLookDoesNotCountAndOpeningAnAppAsksForANewOne() {
+        let g = LookFirstGuard(); let ctx = RunContext()
+        _ = g.afterTool(call("screenshot"), ran(["error": "scrot failed"]), ctx)
+        XCTAssertFalse(g.beforeTool(call("click"), ctx).isEmpty)
+        _ = g.afterTool(call("screenshot"), ran(), ctx)
+        XCTAssertTrue(g.beforeTool(call("click"), ctx).isEmpty)
+        _ = g.afterTool(call("open_app"), ran(), ctx)
+        XCTAssertFalse(g.beforeTool(call("click"), ctx).isEmpty, "the page changed: look again")
+        g.reset(.turn)
+        _ = g.afterTool(call("screenshot"), ran(), ctx); g.reset(.turn)
+        XCTAssertFalse(g.beforeTool(call("click"), ctx).isEmpty, "a new turn starts without a look")
+    }
 }
