@@ -36,8 +36,9 @@ public final class RepeatedSecretGuard: Guard {
 
 /// Clicking or typing on a screen the bot has not looked at: coordinates from memory land on whatever is there (a run
 /// that opened a news site by clicking where a menu used to be), and text typed with no focus goes into the page. The
-/// first click, scroll or typing of a turn, and the first after opening an app, must follow a screenshot. Every click, scroll
-/// and typing result carries its own screenshot, so one look at the start is enough.
+/// first change of a turn (click, scroll, typing, a key, a page tool), and the first after opening an app or typing a secret,
+/// must follow a screenshot: the "before". Every change result carries its own screenshot, the "after", which is the next
+/// change's "before", so one look at the start is enough.
 public final class LookFirstGuard: Guard {
     public let id = "look_first"
     private var looked = false
@@ -45,8 +46,8 @@ public final class LookFirstGuard: Guard {
 
     public func reset(_ scope: GuardReset) { looked = false }
 
-    private static let needsLook: Set<String> = ["click", "move_mouse", "scroll", "type_text"]
-    private static let showsScreen: Set<String> = ["screenshot", "click", "move_mouse", "scroll", "type_text"]
+    private static let needsLook: Set<String> = ["click", "move_mouse", "scroll", "type_text", "press_key", "type_secret", "click_text", "fill_field"]
+    private static let showsScreen: Set<String> = ["screenshot", "click", "move_mouse", "scroll", "type_text", "click_text", "fill_field"]
 
     public func beforeTool(_ call: ToolCall, _ ctx: RunContext) -> [GuardAction] {
         guard !looked, Self.needsLook.contains(call.name), Reliability.isOn(.loopGuards) else { return [] }
@@ -57,7 +58,8 @@ public final class LookFirstGuard: Guard {
 
     public func afterTool(_ call: ToolCall, _ outcome: ToolOutcome, _ ctx: RunContext) -> [GuardAction] {
         guard case .executed = outcome.kind else { return [] }
-        if call.name == "open_app" { looked = false }
+        if call.name == "open_app" || call.name == "type_secret" { looked = false }
+        else if call.name == "press_key" { looked = outcome.raw["screenshot"] != nil && outcome.raw["error"] == nil }
         else if Self.showsScreen.contains(call.name), outcome.raw["error"] == nil { looked = true }
         return []
     }

@@ -72,7 +72,9 @@ final class DesktopLoopGuardTests: XCTestCase {
             guard case .replaceResult(let json, let kind)? = g.beforeTool(call(name), ctx).first else { return XCTFail("\(name) was allowed blind") }
             XCTAssertEqual(kind, "look_first"); XCTAssertTrue(json.contains("screenshot"))
         }
-        XCTAssertTrue(g.beforeTool(call("press_key"), ctx).isEmpty, "a key press is not aimed at coordinates")
+        for name in ["press_key", "click_text", "fill_field", "type_secret"] {
+            XCTAssertFalse(g.beforeTool(call(name), ctx).isEmpty, "\(name) changes the page, so it needs a before-screenshot")
+        }
         XCTAssertTrue(g.beforeTool(call("screenshot"), ctx).isEmpty)
         XCTAssertTrue(g.beforeTool(call("run_shell"), ctx).isEmpty)
     }
@@ -99,6 +101,19 @@ final class DesktopLoopGuardTests: XCTestCase {
         XCTAssertFalse(g.beforeTool(at("click", 10, 10), ctx).isEmpty)
         _ = g.afterTool(at("move_mouse", 10, 10), ran(["error": "no display"]), ctx)
         XCTAssertFalse(g.beforeTool(at("click", 10, 10), ctx).isEmpty, "a failed move aims nothing")
+    }
+
+    func testAKeyPressNeedsAScreenshotBeforeAndShowsOneAfter() {
+        let g = LookFirstGuard(); let ctx = RunContext()
+        _ = g.afterTool(call("screenshot"), ran(), ctx)
+        XCTAssertTrue(g.beforeTool(key("Return"), ctx).isEmpty)
+        _ = g.afterTool(key("Return"), ran(["ok": true, "screenshot": "s.png"]), ctx)
+        XCTAssertTrue(g.beforeTool(call("click_text"), ctx).isEmpty, "the key's own screenshot is the next before")
+        _ = g.afterTool(call("type_secret"), ran(), ctx)
+        XCTAssertFalse(g.beforeTool(key("Return"), ctx).isEmpty, "a secret typed shows nothing: look before submitting")
+        _ = g.afterTool(call("screenshot"), ran(), ctx)
+        _ = g.afterTool(key("Return"), ran(["ok": true, "screenshot_error": "x"]), ctx)
+        XCTAssertFalse(g.beforeTool(call("fill_field"), ctx).isEmpty, "no screenshot came back, so look again")
     }
 
     func testOneScreenshotOpensTheTurnAndAnActionResultCountsAsALook() {
