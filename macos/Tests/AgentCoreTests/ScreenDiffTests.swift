@@ -26,6 +26,15 @@ final class ScreenDiffTests: XCTestCase {
         XCTAssertLessThan(blink, ScreenDiff.reactionThreshold, "a text cursor blinking is not the page reacting")
     }
 
+    func testTheChangedAreaIsReportedInScreenPixels() throws {
+        let r = try XCTUnwrap(ScreenDiff.changedRegion(png(), png(box: CGRect(x: 0, y: 0, width: 320, height: 400))))
+        XCTAssertEqual(r.minX, 0, accuracy: 16); XCTAssertEqual(r.width, 640, accuracy: 16)
+        XCTAssertEqual(r.height, 800, accuracy: 16)
+        XCTAssertNil(ScreenDiff.changedRegion(png(), png()))
+        let out = GUICommand.reaction(0.3, after: "click", region: r)
+        XCTAssertNotNil(out["changed_region"]); XCTAssertTrue((out["compare"] as? String)?.contains("expected") == true)
+    }
+
     func testUnreadableImagesGiveNoAnswer() {
         XCTAssertNil(ScreenDiff.changedFraction(Data([1, 2]), png()))
     }
