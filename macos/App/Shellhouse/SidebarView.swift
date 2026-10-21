@@ -100,6 +100,7 @@ struct SidebarView: View {
     private var header: some View {
         HStack(spacing: 6) {
             Spacer(minLength: 0)
+            DebugConsoleButton()
             TelemetryButton()
             GlassCircleButton(systemName: "gearshape", size: 36, help: "Settings", action: actions.openSettings)
             GlassCircleButton(systemName: "person.2", size: 36, help: "Friends — connect to a relay, invite people, accept requests.", action: actions.openFriends)

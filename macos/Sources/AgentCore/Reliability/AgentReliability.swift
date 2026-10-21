@@ -506,6 +506,7 @@ public enum ToolCallRecovery {
     public static func extract(from content: String, toolNames: Set<String>, schemas: [ToolSchema] = []) -> ToolCall? {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if let tagged = taggedCall(in: text, toolNames: toolNames) { return tagged }
+        if let called = functionStyleCall(in: text, toolNames: toolNames, schemas: schemas) { return called }
         guard text.count < 4_000, text.contains("{") else { return nil }
         for candidate in jsonObjects(in: text) {
             guard let data = candidate.data(using: .utf8),
@@ -523,6 +524,84 @@ public enum ToolCallRecovery {
             return ToolCall(name: name, arguments: arguments.mapValues { AnyCodable($0) })
         }
         return nil
+    }
+
+    /// What a call is written as when a model puts it in its reply as code: `click(215, 204)`, `click(x=215, y=204)`,
+    /// `run_shell("ls -la")`. The whole reply must be that one call (optionally in backticks or a code fence), so a sentence
+    /// that merely mentions one is left alone. Positional values go to the tool's parameters in their usual order.
+    static func functionStyleCall(in text: String, toolNames: Set<String>, schemas: [ToolSchema]) -> ToolCall? {
+        var body = text.trimmingCharacters(in: CharacterSet(charactersIn: "`").union(.whitespacesAndNewlines))
+        if body.hasPrefix("python\n") { body = String(body.dropFirst(7)) }
+        guard body.count < 800, !body.contains("\n"),
+              let open = body.firstIndex(of: "("), body.hasSuffix(")") else { return nil }
+        let name = String(body[..<open]).trimmingCharacters(in: .whitespaces)
+        guard toolNames.contains(name), name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else { return nil }
+        // The first "(" must be closed by the very last character: one call, nothing after it.
+        var depth = 0, quote: Character?, escaped = false
+        for index in body[open...].indices {
+            let ch = body[index]
+            if escaped { escaped = false; continue }
+            if ch == "\\" { escaped = true; continue }
+            if let q = quote { if ch == q { quote = nil }; continue }
+            if ch == "\"" || ch == "'" { quote = ch }
+            else if ch == "(" { depth += 1 }
+            else if ch == ")" { depth -= 1; if depth == 0 && index != body.index(before: body.endIndex) { return nil } }
+        }
+        guard depth == 0 else { return nil }
+        let inside = String(body[body.index(after: open)..<body.index(before: body.endIndex)])
+        var arguments: [String: AnyCodable] = [:]
+        var position = 0
+        let order = positionalOrder[name] ?? ((schemas.first { $0.name == name }?.parameters["required"] as? [String]) ?? [])
+        for raw in splitArguments(inside) {
+            let token = raw.trimmingCharacters(in: .whitespaces)
+            guard !token.isEmpty else { continue }
+            if let eq = token.firstIndex(where: { $0 == "=" || $0 == ":" }), token[..<eq].allSatisfy({ $0.isLetter || $0 == "_" }), eq != token.startIndex {
+                arguments[String(token[..<eq])] = AnyCodable(scalar(String(token[token.index(after: eq)...])))
+            } else {
+                guard position < order.count else { return nil }
+                arguments[order[position]] = AnyCodable(scalar(token)); position += 1
+            }
+        }
+        return ToolCall(name: name, arguments: arguments)
+    }
+
+    /// Parameter order for tools whose schema doesn't list it (a dictionary has no order).
+    static let positionalOrder: [String: [String]] = [
+        "click": ["x", "y", "button"], "move_mouse": ["x", "y"], "scroll": ["direction", "amount", "x", "y"],
+        "type_text": ["text"], "press_key": ["key"], "open_app": ["app", "url"], "focus_window": ["title"], "screenshot": ["filename"],
+        "run_shell": ["command"], "read_file": ["path", "offset", "limit"], "list_files": ["path"], "type_secret": ["name", "window"],
+    ]
+
+    /// Comma-separated arguments, not splitting inside quotes or brackets.
+    static func splitArguments(_ text: String) -> [String] {
+        var parts: [String] = [], current = "", quote: Character?, depth = 0, escaped = false
+        for ch in text {
+            if escaped { current.append(ch); escaped = false; continue }
+            if ch == "\\" { current.append(ch); escaped = true; continue }
+            if let q = quote { current.append(ch); if ch == q { quote = nil }; continue }
+            switch ch {
+            case "\"", "'": quote = ch; current.append(ch)
+            case "[", "{", "(": depth += 1; current.append(ch)
+            case "]", "}", ")": depth -= 1; current.append(ch)
+            case "," where depth == 0: parts.append(current); current = ""
+            default: current.append(ch)
+            }
+        }
+        parts.append(current)
+        return parts
+    }
+
+    /// `215` -> 215, `true` -> true, `"a b"` -> a b, anything else as written.
+    static func scalar(_ raw: String) -> Any {
+        let t = raw.trimmingCharacters(in: .whitespaces)
+        if let i = Int(t) { return i }
+        if let d = Double(t) { return d }
+        if t == "true" || t == "True" { return true }
+        if t == "false" || t == "False" { return false }
+        if t.count >= 2, let f = t.first, f == t.last, f == "\"" || f == "'" {
+            return String(t.dropFirst().dropLast()).replacingOccurrences(of: "\\\"", with: "\"").replacingOccurrences(of: "\\'", with: "'")
+        }
+        return t
     }
 
     /// The single tool that takes exactly these argument names: every key is one of its parameters, and every
