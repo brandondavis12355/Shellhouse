@@ -38,7 +38,8 @@ public final class RepeatedSecretGuard: Guard {
 /// that opened a news site by clicking where a menu used to be), and text typed with no focus goes into the page. The
 /// first change of a turn (click, scroll, typing, a key, a page tool), and the first after opening an app or typing a secret,
 /// must follow a screenshot: the "before". Every change result carries its own screenshot, the "after", which is the next
-/// change's "before", so one look at the start is enough.
+/// change's "before", so one look at the start is enough. `click_text` and `fill_field` take their own "before" screenshot,
+/// so they need no look first.
 public final class LookFirstGuard: Guard {
     public let id = "look_first"
     private var looked = false
@@ -46,7 +47,7 @@ public final class LookFirstGuard: Guard {
 
     public func reset(_ scope: GuardReset) { looked = false }
 
-    private static let needsLook: Set<String> = ["click", "move_mouse", "scroll", "type_text", "press_key", "type_secret", "click_text", "fill_field"]
+    private static let needsLook: Set<String> = ["click", "move_mouse", "scroll", "type_text", "press_key", "type_secret"]
     private static let showsScreen: Set<String> = ["screenshot", "click", "move_mouse", "scroll", "type_text", "click_text", "fill_field"]
 
     public func beforeTool(_ call: ToolCall, _ ctx: RunContext) -> [GuardAction] {
