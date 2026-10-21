@@ -106,6 +106,7 @@ public enum BrowserControl {
         const parts = [e.getAttribute('aria-label'), e.placeholder, e.name, e.id, e.title];
         (e.labels ? Array.from(e.labels) : []).forEach(l => parts.push(l.innerText));
         const prev = e.previousElementSibling; if (prev) parts.push(prev.innerText);
+        const par = e.parentElement; if (par && par.querySelectorAll(sel).length === 1) parts.push(par.innerText);
         return parts.map(norm).filter(Boolean).join(' | ');
       };
       const out = [];
@@ -121,6 +122,7 @@ public enum BrowserControl {
       window.__shMatches = hits.map(h => h.e);
       return JSON.stringify({
         win: {sx: window.screenX, sy: window.screenY + (window.outerHeight - window.innerHeight), w: innerWidth, h: innerHeight},
+        others: out.slice(0, 15).map(o => o.l.slice(0, 60)),
         matches: hits.slice(0, 12).map((h, i) => ({i, label: h.l.slice(0, 80), tag: h.tag, type: h.type,
           x: Math.round(h.r.left + h.r.width / 2), y: Math.round(h.r.top + h.r.height / 2), w: Math.round(h.r.width), h: Math.round(h.r.height),
           inView: h.r.bottom > 0 && h.r.top < innerHeight && h.r.right > 0 && h.r.left < innerWidth}))
@@ -184,7 +186,10 @@ public enum BrowserControl {
             submit = len(sys.argv) > 4 and sys.argv[4] == "submit"
             r = find(label, "field")
             if not r["matches"]:
-                out({"error": "no_match", "detail": "no field is labelled like %r" % label})
+                s = state()
+                out({"error": "no_match", "detail": "no field is labelled like %r" % label, "url": s["url"], "title": s["title"],
+                     "fields_on_page": r.get("others", []),
+                     "hint": "The browser IS under control, so do not restart it (that signs you out). Check url/title: if you are on the wrong page, go to the right one; otherwise pick a label from fields_on_page."})
             js("(() => { const e = window.__shMatches[0]; e.scrollIntoView({block: 'center'}); e.focus(); if (e.select) e.select(); })()")
             ws.call("Input.insertText", {"text": value})
             if submit:

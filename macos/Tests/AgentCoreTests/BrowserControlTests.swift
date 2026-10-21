@@ -20,6 +20,7 @@ final class BrowserControlTests: XCTestCase {
         <label for="serial">Serial or asset tag</label>
         <input id="serial" name="serial" placeholder="Serial or asset tag">
         <button id="go" onclick="document.title='Searched:' + document.getElementById('serial').value">Search</button>
+        <div><span>Notes for the desk</span><input id="notes"></div>
         <a href="#hidden" style="display:none">Hidden link</a>
         <div style="height:3000px"></div>
         <a href="#bottom" id="b">Bottom link</a>
@@ -90,6 +91,16 @@ final class BrowserControlTests: XCTestCase {
         _ = try run(.fill, ["Serial or asset tag", "first"])
         let again = try run(.fill, ["serial", "second"])
         XCTAssertEqual(again["value_length"] as? Int, 6, "the field holds only the new text: \(again)")
+    }
+
+    func testAFieldCanBeFoundByTheTextBesideItAndAMissIsExplained() throws {
+        let filled = try run(.fill, ["Notes for the desk", "hello"])
+        XCTAssertEqual(filled["value_length"] as? Int, 5, "\(filled)")
+        let none = try run(.fill, ["Nonexistent", "x"])
+        XCTAssertEqual(none["error"] as? String, "no_match")
+        XCTAssertTrue((none["fields_on_page"] as? [String])?.contains { $0.contains("Serial") } == true, "\(none)")
+        XCTAssertNotNil(none["title"])
+        XCTAssertTrue((none["hint"] as? String)?.contains("do not restart") == true)
     }
 
     func testNoMatchSaysSoAndPageTextIsReadable() throws {
