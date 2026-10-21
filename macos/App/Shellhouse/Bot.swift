@@ -3195,7 +3195,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                 guard let self else { return }
                 self.lastPointerEventAt = Date()
                 self.agentPointerCount += 1
-                self.agentPointer = AgentPointer(x: x, y: y, clicked: clicked, sequence: self.agentPointerCount)
+                self.agentPointer = AgentPointer(x: x, y: y, clicked: false, sequence: self.agentPointerCount)
             }
         }, for: sandboxID)
     }

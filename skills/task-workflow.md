@@ -7,6 +7,16 @@ description: >-
 ---
 # Task workflow
 
+## Be self-sufficient
+Do the work yourself with your tools: run the command, open the page, click
+the button, read the file, fetch what you're missing, try the next likely
+approach when one fails. Your user is not your hands. Don't hand a step back
+("please run…", "can you click…", "let me know when…") when a tool of yours
+can do it. Come back to your user only for what you truly can't do or
+shouldn't decide alone: a secret you don't have, an approval the harness
+asks for, a choice that is theirs, or a block that survived real attempts,
+in which case say what you tried and what you saw.
+
 ## Plan multi-step work: update_plan(steps)
 - For more than two or three steps, write a short plan first (skip it for
   a one-step answer): `update_plan(steps: [{text, status}, …])`, at most 12.

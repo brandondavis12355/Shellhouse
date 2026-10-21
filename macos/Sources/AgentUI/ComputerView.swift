@@ -14,33 +14,32 @@ import WebKit
 /// point a view at. `WKWebView` embedding noVNC is the direct replacement:
 /// one extra network hop instead of zero, but no native VNC client dependency
 /// either.
-/// Where the desktop picture really is inside the web view, read from noVNC's canvas, so the pointer overlay lands on the right
-/// spot whatever noVNC's own layout (bars, scaling mode) does. Nil until the first reading; the overlay then assumes a centred fit.
-public final class ScreenFrame: ObservableObject {
-    @Published public var rect: CGRect?
-    public init() {}
-}
-
 public struct ComputerView: NSViewRepresentable {
-    private let frame: ScreenFrame?
+    private let pointer: AgentPointer?
+    private let pointerColorHex: String
+    private let keepPointerVisible: Bool
     private let vncURL: URL?
     private let onLoadError: (String) -> Void
     private let onLoadingChange: (Bool) -> Void
 
     public init(
         vncURL: URL?,
-        frame: ScreenFrame? = nil,
+        pointer: AgentPointer? = nil,
+        pointerColor: Color = .purple,
+        keepPointerVisible: Bool = false,
         onLoadError: @escaping (String) -> Void = { _ in },
         onLoadingChange: @escaping (Bool) -> Void = { _ in }
     ) {
-        self.frame = frame
+        self.pointer = pointer
+        self.pointerColorHex = Self.hex(pointerColor)
+        self.keepPointerVisible = keepPointerVisible
         self.vncURL = vncURL
         self.onLoadError = onLoadError
         self.onLoadingChange = onLoadingChange
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(onLoadError: onLoadError, onLoadingChange: onLoadingChange, frame: frame)
+        Coordinator(onLoadError: onLoadError, onLoadingChange: onLoadingChange)
     }
 
     public func makeNSView(context: Context) -> WKWebView {
@@ -61,7 +60,6 @@ public struct ComputerView: NSViewRepresentable {
         // doesn't have the same effect anyway, so this reverted back.)
         view.setValue(false, forKey: "drawsBackground")
         load(vncURL, into: view)
-        context.coordinator.watch(view)
         return view
     }
 
@@ -69,6 +67,37 @@ public struct ComputerView: NSViewRepresentable {
         if view.url != vncURL.map(Self.withPointerDot) {
             load(vncURL, into: view)
         }
+        context.coordinator.show(pointer, colorHex: pointerColorHex, keep: keepPointerVisible, in: view)
+    }
+
+    static func hex(_ color: Color) -> String {
+        let c = NSColor(color).usingColorSpace(.sRGB) ?? .purple
+        return String(format: "#%02X%02X%02X", Int(c.redComponent * 255), Int(c.greenComponent * 255), Int(c.blueComponent * 255))
+    }
+
+    /// Places (and on first use creates) the arrow in the page. `x`, `y` are desktop pixels; the canvas's CSS box and its intrinsic size
+    /// give the scale, so the arrow's tip lands on that pixel however noVNC is scaled or offset. Fades 8 s after the last move unless
+    /// a task is running (`keep`).
+    static func pointerScript(x: Int, y: Int, clicked: Bool, move: Bool, color: String, keep: Bool) -> String {
+        """
+        (function(){
+          var c=document.querySelector('#noVNC_canvas')||document.querySelector('canvas'); if(!c) return;
+          var r=c.getBoundingClientRect(), w=c.width||1280, h=c.height||800;
+          var el=document.getElementById('shellhouse-ai-pointer');
+          if(!el){
+            el=document.createElement('div'); el.id='shellhouse-ai-pointer';
+            el.style.cssText='position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483647;opacity:0;transition:transform .6s ease-in-out,opacity .4s;';
+            el.innerHTML='<svg width="18" height="26" viewBox="0 0 12.5 20" style="position:absolute;left:0;top:0;overflow:visible;filter:drop-shadow(1px 2px 2px rgba(0,0,0,.4))"><path d="M0 0L0 17L4.2 13.2L7.2 20L10 18.8L7.2 12.2L12.5 12.2Z" stroke="#fff" stroke-width="1" stroke-linejoin="round"/></svg><div style="position:absolute;left:16px;top:20px;font:700 10px -apple-system,sans-serif;color:#fff;padding:1px 5px;border-radius:9px;">AI</div><div class="ring" style="position:absolute;left:-22px;top:-22px;width:44px;height:44px;border-radius:50%;opacity:0;box-sizing:border-box;border:3px solid;"></div>';
+            document.body.appendChild(el);
+          }
+          var col='\(color)';
+          el.querySelector('path').setAttribute('fill',col); el.children[1].style.background=col; el.querySelector('.ring').style.borderColor=col;
+          if(\(move)){ el.style.transform='translate('+(r.left+\(x)*r.width/w)+'px,'+(r.top+\(y)*r.height/h)+'px)'; }
+          el.style.opacity=1; clearTimeout(window.__shaiFade);
+          if(!\(keep)){ window.__shaiFade=setTimeout(function(){el.style.opacity=0;},8000); }
+          if(\(clicked)){ el.querySelector('.ring').animate([{transform:'scale(.3)',opacity:.95},{transform:'scale(1.6)',opacity:0}],{duration:600,easing:'ease-out'}); }
+        })();
+        """
     }
 
     private func load(_ url: URL?, into view: WKWebView) {
@@ -98,32 +127,28 @@ public struct ComputerView: NSViewRepresentable {
     public final class Coordinator: NSObject, WKNavigationDelegate {
         private let onLoadError: (String) -> Void
         private let onLoadingChange: (Bool) -> Void
-        private let frame: ScreenFrame?
-        private var timer: Timer?
-
-        init(onLoadError: @escaping (String) -> Void, onLoadingChange: @escaping (Bool) -> Void, frame: ScreenFrame?) {
+        init(onLoadError: @escaping (String) -> Void, onLoadingChange: @escaping (Bool) -> Void) {
             self.onLoadError = onLoadError
             self.onLoadingChange = onLoadingChange
-            self.frame = frame
         }
 
-        deinit { timer?.invalidate() }
-
-        /// Reads the desktop canvas's box every half second (it moves when the pane is resized or noVNC re-lays out).
-        func watch(_ view: WKWebView) {
-            guard frame != nil, timer == nil else { return }
-            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self, weak view] _ in
-                guard let self, let view else { return }
-                view.evaluateJavaScript("(function(){var c=document.querySelector('#noVNC_canvas')||document.querySelector('canvas');if(!c)return null;var r=c.getBoundingClientRect();return [r.left,r.top,r.width,r.height];})()") { value, _ in
-                    guard let v = value as? [Double], v.count == 4, v[2] > 10, v[3] > 10 else { return }
-                    let rect = CGRect(x: v[0], y: v[1], width: v[2], height: v[3])
-                    DispatchQueue.main.async { if self.frame?.rect != rect { self.frame?.rect = rect } }
-                }
-            }
-        }
+        private var shownSequence = -1
+        private var last: (AgentPointer, String, Bool)?
 
         public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             onLoadingChange(false)
+            // A reloaded page lost the pointer element: draw it again.
+            if let (pointer, colorHex, keep) = last { shownSequence = -1; show(pointer, colorHex: colorHex, keep: keep, in: webView) }
+        }
+
+        /// Draws the bot's pointer INSIDE the page, positioned from noVNC's own canvas (its real box and framebuffer size), so it cannot
+        /// disagree with where the desktop is drawn: there is no second layer whose frame has to be matched to the page's.
+        func show(_ pointer: AgentPointer?, colorHex: String, keep: Bool, in view: WKWebView) {
+            guard let pointer else { return }
+            last = (pointer, colorHex, keep)
+            let moved = pointer.sequence != shownSequence
+            shownSequence = pointer.sequence
+            view.evaluateJavaScript(ComputerView.pointerScript(x: pointer.x, y: pointer.y, clicked: pointer.clicked && moved, move: moved, color: colorHex, keep: keep), completionHandler: nil)
         }
 
         public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -152,101 +177,6 @@ public struct AgentPointer: Equatable {
     public init(x: Int, y: Int, clicked: Bool, sequence: Int) { self.x = x; self.y = y; self.clicked = clicked; self.sequence = sequence }
 }
 
-/// An arrow cursor with an "AI" tag, drawn over the desktop pane at the bot's pointer, gliding between positions and rippling on a click,
-/// then fading out after a few idle seconds. It is drawn by the app from what the tool results report, so it needs nothing from the VM
-/// (the remote desktop sends no pointer image) and cannot be mistaken for your own mouse.
-struct AgentPointerOverlay: View {
-    let pointer: AgentPointer?
-    @ObservedObject var frame: ScreenFrame
-    /// The bot's own colour: the arrow, its tag and the click ripple, so it reads as the bot's and not as your own mouse.
-    let color: Color
-    /// A task is running: the pointer stays on screen instead of fading after a few idle seconds.
-    let keepVisible: Bool
-    @State private var visible = false
-    @State private var rippling = false
-
-    var body: some View {
-        GeometryReader { geo in
-            if let pointer {
-                let rect = Self.usable(frame.rect, in: geo.size) ?? PointerMapping.fit(into: geo.size)
-                let spot = PointerMapping.point(x: pointer.x, y: pointer.y, in: rect)
-                // The arrow's frame is fixed (the ripple and tag are overlays that add nothing to its size), and it is placed so its
-                // TIP, not its centre, is on the spot. A ripple that took the whole pane's size once sent the arrow off screen.
-                ArrowShape()
-                    .fill(color)
-                    .overlay(ArrowShape().stroke(Color.white, lineWidth: 1.6))
-                    .frame(width: 18, height: 26)
-                    .shadow(color: .black.opacity(0.35), radius: 2, x: 1, y: 2)
-                    .overlay(alignment: .topLeading) {
-                        Text("AI")
-                            .font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(color))
-                            .fixedSize()
-                            .offset(x: 16, y: 20)
-                    }
-                    .overlay(alignment: .topLeading) {
-                        if pointer.clicked {
-                            Circle().stroke(color, lineWidth: 3)
-                                .frame(width: 44, height: 44)
-                                .scaleEffect(rippling ? 1.6 : 0.3).opacity(rippling ? 0 : 0.95)
-                                .offset(x: -22, y: -22)
-                                .id(pointer.sequence)
-                        }
-                    }
-                    .position(x: spot.x + 9, y: spot.y + 13)
-                .opacity(visible ? 1 : 0)
-                .animation(.easeInOut(duration: 0.45), value: pointer.sequence)
-                .animation(.easeOut(duration: 0.4), value: visible)
-            }
-        }
-        .allowsHitTesting(false)
-        .onChange(of: pointer?.sequence) { _, _ in
-            visible = true
-            rippling = false
-            if pointer?.clicked == true { withAnimation(.easeOut(duration: 0.6)) { rippling = true } }
-            fadeLaterIfIdle()
-        }
-        .onChange(of: keepVisible) { _, keep in
-            if keep, pointer != nil { visible = true }
-            if !keep { fadeLaterIfIdle() }
-        }
-        .onAppear { if keepVisible, pointer != nil { visible = true } }
-    }
-}
-
-extension AgentPointerOverlay {
-    /// The measured desktop box, if it is plausible: the right shape (1280x800) and inside the pane. Anything else (the page mid-layout,
-    /// a canvas scrolled out of view) is ignored in favour of a centred fit.
-    fileprivate static func usable(_ rect: CGRect?, in size: CGSize) -> CGRect? {
-        guard let rect, rect.width > 100, rect.height > 100, abs(rect.width / rect.height - 1.6) < 0.05,
-              rect.minX > -2, rect.minY > -2, rect.maxX < size.width + 2, rect.maxY < size.height + 2 else { return nil }
-        return rect
-    }
-
-    /// Once no task is running, fade the pointer out after a few idle seconds. While one is, it stays.
-    fileprivate func fadeLaterIfIdle() {
-        let mark = pointer?.sequence
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            if pointer?.sequence == mark, !keepVisible { visible = false }
-        }
-    }
-}
-
-/// The classic arrow, tip at the top left.
-private struct ArrowShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let points: [(CGFloat, CGFloat)] = [(0, 0), (0, 17), (4.2, 13.2), (7.2, 20), (10, 18.8), (7.2, 12.2), (12.5, 12.2)]
-        let sx = rect.width / 12.5, sy = rect.height / 20
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX + points[0].0 * sx, y: rect.minY + points[0].1 * sy))
-        for p in points.dropFirst() { path.addLine(to: CGPoint(x: rect.minX + p.0 * sx, y: rect.minY + p.1 * sy)) }
-        path.closeSubpath()
-        return path
-    }
-}
-
 /// Wraps ComputerView with the states a sandbox can actually be in, so the
 /// user sees why there is no desktop rather than a black rectangle.
 public struct ComputerPanel: View {
@@ -269,7 +199,6 @@ public struct ComputerPanel: View {
     private let pointer: AgentPointer?
     private let keepPointerVisible: Bool
     private let pointerColor: Color
-    @StateObject private var screenFrame = ScreenFrame()
 
     public init(state: State, pointer: AgentPointer? = nil, keepPointerVisible: Bool = false, pointerColor: Color = .purple, onLoadError: @escaping (String) -> Void = { _ in }) {
         self.state = state
@@ -284,7 +213,6 @@ public struct ComputerPanel: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
-                .overlay { if case .running = state { AgentPointerOverlay(pointer: pointer, frame: screenFrame, color: pointerColor, keepVisible: keepPointerVisible) } }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if case .running = state {
@@ -323,7 +251,9 @@ public struct ComputerPanel: View {
             ZStack {
                 ComputerView(
                     vncURL: vncURL,
-                    frame: screenFrame,
+                    pointer: pointer,
+                    pointerColor: pointerColor,
+                    keepPointerVisible: keepPointerVisible,
                     onLoadError: onLoadError,
                     onLoadingChange: { isConnecting = $0 }
                 )
