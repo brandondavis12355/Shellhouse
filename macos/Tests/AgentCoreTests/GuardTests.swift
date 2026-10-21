@@ -104,7 +104,7 @@ final class GuardTests: XCTestCase {
     func testGuardsRunInOneFixedOrder() {
         XCTAssertEqual(GuardSet.standard().map(\.id), [
             "context_budget", "tool_call_recovery", "narration", "repeated_calls", "tool_validation", "memory_write_gate", "trash_warning",
-            "same_error", "failure_streak", "stale_results", "repeated_read", "unverified_change", "empty_summary", "open_plan",
+            "same_error", "failure_streak", "stale_results", "repeated_read", "repeated_secret", "near_repeat_click", "unverified_change", "empty_summary", "open_plan",
         ])
     }
 

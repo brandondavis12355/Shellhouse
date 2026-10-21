@@ -1,0 +1,64 @@
+import Foundation
+
+/// A secret typed into a window is typed once. Typing it again goes into whatever has focus now: usually the same field,
+/// which then holds two or five copies and a wrong password (and a locked account after enough tries). It is allowed
+/// again after the field has been cleared or the form submitted (`ctrl+a`, Return), or after opening another page.
+public final class RepeatedSecretGuard: Guard {
+    public let id = "repeated_secret"
+    private var typed = Set<String>()
+    public init() {}
+
+    public func reset(_ scope: GuardReset) { typed.removeAll() }
+
+    private static func key(_ call: ToolCall) -> String? {
+        guard call.name == "type_secret", let name = call.arguments["name"]?.asString else { return nil }
+        return name + "|" + (call.arguments["window"]?.asString ?? "")
+    }
+
+    public func beforeTool(_ call: ToolCall, _ ctx: RunContext) -> [GuardAction] {
+        guard let key = Self.key(call), typed.contains(key), Reliability.isOn(.loopGuards) else { return [] }
+        let name = call.arguments["name"]?.asString ?? "that secret"
+        return [.replaceResult(runJSONString(["error": "You already typed \(name) into this window, so the field now holds it. Typing it again "
+            + "adds a second copy and makes the value wrong. Take a screenshot to see which field has it. To type it again, first select the "
+            + "field's text (press_key ctrl+a) so the new text replaces it. If the field you wanted is a different one, click that field first."]),
+            kind: "repeated_secret")]
+    }
+
+    public func afterTool(_ call: ToolCall, _ outcome: ToolOutcome, _ ctx: RunContext) -> [GuardAction] {
+        guard case .executed = outcome.kind else { return [] }
+        if let key = Self.key(call), outcome.raw["ok"] as? Bool == true { typed.insert(key) }
+        if call.name == "press_key", let k = call.arguments["key"]?.asString?.lowercased(),
+           ["return", "kp_enter", "ctrl+a", "ctrl+backspace"].contains(k) { typed.removeAll() }
+        if call.name == "open_app" { typed.removeAll() }
+        return []
+    }
+}
+
+/// Clicking the same spot again and again (a pixel apart, so an exact-repeat check never fires) while the screen does not
+/// change. After three the bot is told to look at the screenshot and aim elsewhere or move focus with the keyboard.
+public final class NearRepeatClickGuard: Guard {
+    public let id = "near_repeat_click"
+    public static let radius = 8
+    private var last: (x: Int, y: Int)?
+    private var streak = 0
+    public init() {}
+
+    public func reset(_ scope: GuardReset) { last = nil; streak = 0 }
+
+    public func afterTool(_ call: ToolCall, _ outcome: ToolOutcome, _ ctx: RunContext) -> [GuardAction] {
+        guard case .executed = outcome.kind else { return [] }
+        guard call.name == "click", let x = call.arguments["x"]?.asInt, let y = call.arguments["y"]?.asInt else {
+            // Typing, a key or a new page is progress; a screenshot is only looking.
+            if call.name != "screenshot" { last = nil; streak = 0 }
+            return []
+        }
+        if let l = last, abs(l.x - x) <= Self.radius, abs(l.y - y) <= Self.radius { streak += 1 } else { streak = 1 }
+        last = (x, y)
+        guard Reliability.isOn(.loopGuards), streak == 3 || streak == 6 else { return [] }
+        let tail = streak == 6 ? " You have clicked here six times; stop clicking this spot." : ""
+        return [.nudge(Nudge(kind: "near_repeat_click", text:
+            "You have clicked within a few pixels of (\(x), \(y)) \(streak) times and the screen is not changing as you expect.\(tail) "
+            + "Look at the latest screenshot and work out where the element you want really is (the field above or below may be a "
+            + "different y), click there, or move focus with the keyboard (press_key Tab or shift+Tab) instead.", escalation: .specific))]
+    }
+}

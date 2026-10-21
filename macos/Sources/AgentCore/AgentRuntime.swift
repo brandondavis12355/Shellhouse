@@ -838,6 +838,9 @@ public actor AgentRuntime {
     private func emitAbortMessage(for error: Error) {
         stopReason = ModelConnection.isConnectionProblem(error) ? "model server unreachable" : "\(error)"
         if case RuntimeError.cancelled = error { stopReason = "stopped by the user"; return }
+        // Stopping a run cancels its model request: that arrives as a URL "cancelled" error, not as ours. Same thing, said plainly.
+        let ns = error as NSError
+        if error is CancellationError || (ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled) { stopReason = "stopped by the user"; return }
         // A dead model server is not something the bot said or did: one plain sentence, not the raw URL error.
         if ModelConnection.isConnectionProblem(error) {
             onEvent(.message(ChatMessage(role: .assistant, content: ModelConnection.friendlyMessage(for: error), isTaskSummary: true)))
