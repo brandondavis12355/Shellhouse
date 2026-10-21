@@ -1431,6 +1431,7 @@ public struct ToolRegistry: Sendable {
                 let at = (args["x"]?.asInt).flatMap { x in (args["y"]?.asInt).map { (x, $0) } }
                 if args["x"] != nil || args["y"] != nil, at == nil { return ["error": "click needs both 'x' and 'y', or neither (to click where the pointer is)"] }
                 if let at { await PointerBus.moveAndWait(sandboxID: sandboxID, x: at.0, y: at.1, clicked: true) }
+                else { await PointerBus.settle(sandboxID: sandboxID) }
                 do {
                     // ai-click.py animates the pointer to (x, y) instead of
                     // warping it instantly, clicks, and flashes a transient

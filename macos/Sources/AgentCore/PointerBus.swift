@@ -7,7 +7,7 @@ import Foundation
 public enum PointerBus {
     public typealias Handler = @Sendable (_ x: Int, _ y: Int, _ clicked: Bool) -> Void
     /// Long enough for the pointer's glide (0.6 s) to finish and be seen before the action fires.
-    public static let arrival: TimeInterval = 1.8
+    public static let arrival: TimeInterval = 3.0
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var handlers: [String: Handler] = [:]
@@ -20,6 +20,13 @@ public enum PointerBus {
     private static func handler(for sandboxID: String) -> Handler? {
         lock.lock(); defer { lock.unlock() }
         return handlers[sandboxID]
+    }
+
+    /// A pause before a click that has no coordinates of its own (the pointer is already where `move_mouse` put it), so the click
+    /// does not fire the instant the call arrives. Skipped when nothing is watching.
+    public static func settle(sandboxID: String, seconds: TimeInterval = 1.2) async {
+        guard handler(for: sandboxID) != nil else { return }
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
     /// Shows the pointer at (x, y) and waits for it to get there. Does nothing, and does not wait, when nothing is watching.

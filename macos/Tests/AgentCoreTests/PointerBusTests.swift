@@ -14,6 +14,17 @@ final class PointerBusTests: XCTestCase {
         PointerBus.setHandler(nil, for: "vm-test")
     }
 
+    func testAClickWithoutCoordinatesPausesOnlyWhenSomeoneIsWatching() async {
+        PointerBus.setHandler({ _, _, _ in }, for: "vm-watch")
+        var start = Date()
+        await PointerBus.settle(sandboxID: "vm-watch", seconds: 0.3)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 0.28)
+        PointerBus.setHandler(nil, for: "vm-watch")
+        start = Date()
+        await PointerBus.settle(sandboxID: "vm-watch", seconds: 0.3)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.1)
+    }
+
     func testNothingWatchingMeansNoWait() async {
         let start = Date()
         await PointerBus.moveAndWait(sandboxID: "nobody", x: 1, y: 1)
