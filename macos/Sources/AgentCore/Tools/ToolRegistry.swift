@@ -1385,7 +1385,7 @@ public struct ToolRegistry: Sendable {
                 guard result["error"] == nil else { return result }
                 if let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox, clicked: true) {
                     result["screenshot"] = shot.filename; result["_base64"] = shot.base64
-                    for (k, v) in GUICommand.reaction(shot.changed, after: "click", region: shot.region) where k != "note" || result["navigated"] as? Bool != true { result[k] = v }
+                    for (k, v) in GUICommand.reaction(shot.changed, after: "click_text", region: shot.region) { result[k] = v }
                 }
                 return result
             },

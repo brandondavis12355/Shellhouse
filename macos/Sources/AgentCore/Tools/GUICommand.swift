@@ -92,6 +92,8 @@ public enum GUICommand {
         }
         let note: String
         switch action {
+        case "click_text":
+            return ["screen_changed": false]
         case "click":
             note = "Nothing on the screen changed after this click: it probably landed on something that isn't clickable, or the page ignored it. "
                 + "Compare the orange ripple with the target in the screenshot. Try another spot on the target, or reach it with the keyboard "

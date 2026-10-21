@@ -137,8 +137,7 @@ final class DesktopLoopGuardTests: XCTestCase {
         _ = g.afterTool(key("Return"), ran(["ok": true, "screenshot": "s.png"]), ctx)
         XCTAssertTrue(g.beforeTool(call("click"), ctx).isEmpty, "the key's own screenshot is the next before")
         _ = g.afterTool(call("type_secret"), ran(), ctx)
-        XCTAssertFalse(g.beforeTool(key("Return"), ctx).isEmpty, "a secret typed shows nothing: look before submitting")
-        _ = g.afterTool(call("screenshot"), ran(), ctx)
+        XCTAssertTrue(g.beforeTool(key("Return"), ctx).isEmpty, "submitting a typed secret must not be blocked: it shows nothing to look at")
         _ = g.afterTool(key("Return"), ran(["ok": true, "screenshot_error": "x"]), ctx)
         XCTAssertFalse(g.beforeTool(call("click"), ctx).isEmpty, "no screenshot came back, so look again")
         XCTAssertTrue(LookFirstGuard().beforeTool(call("click_text"), ctx).isEmpty, "the page tools take their own before-screenshot")
@@ -165,5 +164,15 @@ final class DesktopLoopGuardTests: XCTestCase {
         g.reset(.turn)
         _ = g.afterTool(call("screenshot"), ran(), ctx); g.reset(.turn)
         XCTAssertFalse(g.beforeTool(call("click"), ctx).isEmpty, "a new turn starts without a look")
+    }
+}
+
+final class NarrationCallHintTests: XCTestCase {
+    func testANarratedClickIsHandedBackAsTheCall() {
+        let hint = NarrationGuard.callHint(for: "I need to go to the page. Let me click the \"Reports\" tab first.", toolNames: ["click_text", "screenshot"])
+        XCTAssertTrue(hint.contains("click_text") && hint.contains("\"text\": \"Reports\""), hint)
+        XCTAssertEqual(NarrationGuard.callHint(for: "Let me click the Reports tab.", toolNames: ["click_text"]), "", "no quoted target, no guess")
+        XCTAssertEqual(NarrationGuard.callHint(for: "Let me click \"Reports\".", toolNames: ["screenshot"]), "", "only when the tool exists")
+        XCTAssertTrue(NarrationGuard.narrationNudge(count: 2, narration: "I'll click the \"Home\" link.", toolNames: ["click_text"]).contains("\"Home\""))
     }
 }

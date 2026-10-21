@@ -94,17 +94,30 @@ public final class NarrationGuard: Guard {
             + "or use_skill(\"sharing-screenshots\") when the user should see the image."
     }
 
+    /// When the narration names what it will click ("click the \"Reports\" tab"), the exact call for it: a model that keeps saying the
+    /// step but never makes the call is handed the call to copy.
+    static func callHint(for narration: String, toolNames: [String]) -> String {
+        guard toolNames.contains("click_text"),
+              let match = narration.range(of: #"(?i)\bclick(?:ing)?\b[^"“'.\n]{0,30}["“']([^"”'\n]{1,60})["”']"#, options: .regularExpression) else { return "" }
+        let quoted = narration[match]
+        guard let open = quoted.firstIndex(where: { "\"“'".contains($0) }),
+              let close = quoted[quoted.index(after: open)...].firstIndex(where: { "\"”'".contains($0) }) else { return "" }
+        let target = quoted[quoted.index(after: open)..<close]
+        let safe = target.replacingOccurrences(of: "\\", with: "").replacingOccurrences(of: "\"", with: "")
+        return " The call for this step is: click_text with {\"text\": \"\(safe)\"}."
+    }
+
     /// First miss asks for the call. From the second miss, name the tools. The count is `plainReplyCount`.
     static func narrationNudge(count: Int, narration: String, toolNames: [String]) -> String {
         if count >= 2 { return escalatedNarrationNudge(narration: narration, toolNames: toolNames) }
         return "Make the tool call for your next step now. No sentence about it first: just the call."
-            + screenshotRoute(for: narration)
+            + screenshotRoute(for: narration) + callHint(for: narration, toolNames: toolNames)
     }
 
     static func escalatedNarrationNudge(narration: String, toolNames: [String]) -> String {
         var text = "You have described the next step \(2) times without calling a tool. Do not write another sentence: reply with ONLY a tool call. "
             + "Tools you can call: " + toolNames.sorted().prefix(30).joined(separator: ", ") + "."
-        text += screenshotRoute(for: narration)
+        text += screenshotRoute(for: narration) + callHint(for: narration, toolNames: toolNames)
         return text
     }
 }
