@@ -85,6 +85,50 @@ final class GUICommandTests: XCTestCase {
 }
 
 /// The realistic click script, run for real against a fake `xdotool` that records what it is told.
+final class BrowserLaunchTests: XCTestCase {
+    private func run(_ script: String, tools: [String: String]) throws -> (status: Int32, log: [String]) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("launch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("log")
+        for (name, body) in tools {
+            let url = dir.appendingPathComponent(name)
+            try "#!/bin/sh\necho \"\(name) $@\" >> '\(log.path)'\n\(body)\n".write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", script]
+        p.environment = ["PATH": dir.path + ":/usr/bin:/bin", "DISPLAY": ":9"]
+        try p.run(); p.waitUntilExit()
+        return (p.terminationStatus, ((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init))
+    }
+
+    private func script() -> String {
+        GUICommand.openApp(process: "fakebrowser", launch: "fakebrowser \(BrowserControl.launchFlags) 'http://x/y'", once: "http://x/y", controllable: "curl -sf http://127.0.0.1:9222/json/version")
+    }
+
+    func testABrowserStartedWithoutRemoteControlIsRestartedWithIt() throws {
+        let (_, log) = try run(script(), tools: ["xdotool": "exit 0", "pgrep": "[ ! -e \"$(dirname \"$0\")/killed\" ]", "curl": "exit 22", "pkill": "touch \"$(dirname \"$0\")/killed\"", "sleep": "exit 0", "fakebrowser": "rm -f \"$(dirname \"$0\")/killed\""])
+        XCTAssertTrue(log.contains { $0.hasPrefix("pkill") }, "the uncontrollable browser is closed")
+        XCTAssertTrue(log.contains { $0.hasPrefix("fakebrowser") && $0.contains("--remote-debugging-port=9222") && $0.contains("--user-data-dir=") }, "and started with the port: \(log)")
+        try? FileManager.default.removeItem(atPath: "/tmp/.shellhouse-opened-fakebrowser")
+    }
+
+    func testAControllableBrowserIsLeftAlone() throws {
+        try? FileManager.default.removeItem(atPath: "/tmp/.shellhouse-opened-fakebrowser")
+        let (_, log) = try run(script(), tools: ["xdotool": "exit 0", "pgrep": "exit 0", "curl": "exit 0", "pkill": "exit 0", "sleep": "exit 0", "fakebrowser": "exit 0"])
+        XCTAssertFalse(log.contains { $0.hasPrefix("pkill") })
+        XCTAssertTrue(log.contains { $0.hasPrefix("fakebrowser") })
+        try? FileManager.default.removeItem(atPath: "/tmp/.shellhouse-opened-fakebrowser")
+    }
+
+    func testTheLaunchFlagsGiveTheBrowserAProfileOfItsOwn() {
+        XCTAssertTrue(BrowserControl.launchFlags.contains("--remote-debugging-port=9222"))
+        XCTAssertTrue(BrowserControl.launchFlags.contains("--user-data-dir=$HOME/.config/shellhouse-chromium"))
+    }
+}
+
 final class ClickScriptTests: XCTestCase {
     private func run(from start: (Int, Int), to target: (Int, Int)) throws -> (log: [String], report: [String: Any]) {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("click-\(UUID().uuidString)")

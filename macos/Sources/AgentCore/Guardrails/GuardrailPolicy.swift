@@ -50,7 +50,7 @@ public enum TaintRules {
             if let name = arguments["name"]?.asString, SkillLibrary.isUserSkill(id: name) { out.append(.thirdPartySkill) }
         case "message_bot":
             if (observation["_tainted"] as? Bool) == true { out.append(.peerBot) }
-        case "screenshot":
+        case "screenshot", "page_text", "find_on_page":
             if browserEngaged { out.append(.browser) }
         case "run_shell":
             let command = arguments["command"]?.asString ?? ""

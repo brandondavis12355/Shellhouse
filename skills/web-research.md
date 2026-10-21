@@ -13,7 +13,7 @@ computer:
 - **Headless Chromium** for pages that need JavaScript:
   `chromium --headless --no-sandbox --disable-gpu --virtual-time-budget=5000 --dump-dom '<url>' > /workspace/research/<name>.html`
 - **The desktop browser** (`open_app("browser", url)`) only when you must
-  click, scroll or sign in. See desktop-control.
+  click, scroll or sign in (`click_text`, `fill_field` and `page_text` work on the page itself). See desktop-control.
 
 Any of these makes **your run untrusted** once outside content comes in.
 Memory and routine changes are then held for review, and destructive or
