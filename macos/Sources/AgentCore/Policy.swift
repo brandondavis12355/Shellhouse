@@ -56,6 +56,7 @@ public enum Policy: Sendable {
         "focus_window": .allow,
         "open_app": .allow,
         "click": .allow,
+        "move_mouse": .allow,
         "type_text": .allow,
         // Types a Keychain secret into the desktop: the model never sees it, but the user OKs each use.
         "type_secret": .requireApproval,

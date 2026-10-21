@@ -45,7 +45,7 @@ public actor SmolAgentsEngine: AgentEngine {
     /// container, so background jobs are a built-in-engine feature for now.
     public static let inSandboxTools: Set<String> = [
         "run_shell", "list_files",
-        "screenshot", "list_windows", "focus_window", "open_app", "click", "type_text", "press_key", "scroll",
+        "screenshot", "list_windows", "focus_window", "open_app", "click", "move_mouse", "type_text", "press_key", "scroll",
     ]
     static let maxFieldBytes = 256 * 1024
     static let maxTailBytes = 400_000
