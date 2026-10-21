@@ -166,28 +166,33 @@ struct AgentPointerOverlay: View {
     var body: some View {
         GeometryReader { geo in
             if let pointer {
-                let rect = frame.rect ?? PointerMapping.fit(into: geo.size)
+                let rect = Self.usable(frame.rect, in: geo.size) ?? PointerMapping.fit(into: geo.size)
                 let spot = PointerMapping.point(x: pointer.x, y: pointer.y, in: rect)
-                ZStack(alignment: .topLeading) {
-                    if pointer.clicked {
-                        Circle().stroke(Color.orange, lineWidth: 3)
-                            .frame(width: 44, height: 44)
-                            .scaleEffect(rippling ? 1.6 : 0.3).opacity(rippling ? 0 : 0.95)
-                            .position(x: 0, y: 0)
-                            .id(pointer.sequence)
+                // The arrow's frame is fixed (the ripple and tag are overlays that add nothing to its size), and it is placed so its
+                // TIP, not its centre, is on the spot. A ripple that took the whole pane's size once sent the arrow off screen.
+                ArrowShape()
+                    .fill(Color.black)
+                    .overlay(ArrowShape().stroke(Color.white, lineWidth: 1.6))
+                    .frame(width: 18, height: 26)
+                    .shadow(color: .black.opacity(0.35), radius: 2, x: 1, y: 2)
+                    .overlay(alignment: .topLeading) {
+                        Text("AI")
+                            .font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.purple))
+                            .fixedSize()
+                            .offset(x: 16, y: 20)
                     }
-                    ArrowShape()
-                        .fill(Color.black)
-                        .overlay(ArrowShape().stroke(Color.white, lineWidth: 1.6))
-                        .frame(width: 18, height: 26)
-                        .shadow(color: .black.opacity(0.35), radius: 2, x: 1, y: 2)
-                    Text("AI")
-                        .font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.purple))
-                        .offset(x: 16, y: 20)
-                }
-                .position(spot)
+                    .overlay(alignment: .topLeading) {
+                        if pointer.clicked {
+                            Circle().stroke(Color.orange, lineWidth: 3)
+                                .frame(width: 44, height: 44)
+                                .scaleEffect(rippling ? 1.6 : 0.3).opacity(rippling ? 0 : 0.95)
+                                .offset(x: -22, y: -22)
+                                .id(pointer.sequence)
+                        }
+                    }
+                    .position(x: spot.x + 9, y: spot.y + 13)
                 .opacity(visible ? 1 : 0)
                 .animation(.easeInOut(duration: 0.45), value: pointer.sequence)
                 .animation(.easeOut(duration: 0.4), value: visible)
@@ -209,6 +214,14 @@ struct AgentPointerOverlay: View {
 }
 
 extension AgentPointerOverlay {
+    /// The measured desktop box, if it is plausible: the right shape (1280x800) and inside the pane. Anything else (the page mid-layout,
+    /// a canvas scrolled out of view) is ignored in favour of a centred fit.
+    fileprivate static func usable(_ rect: CGRect?, in size: CGSize) -> CGRect? {
+        guard let rect, rect.width > 100, rect.height > 100, abs(rect.width / rect.height - 1.6) < 0.05,
+              rect.minX > -2, rect.minY > -2, rect.maxX < size.width + 2, rect.maxY < size.height + 2 else { return nil }
+        return rect
+    }
+
     /// Once no task is running, fade the pointer out after a few idle seconds. While one is, it stays.
     fileprivate func fadeLaterIfIdle() {
         let mark = pointer?.sequence
