@@ -21,13 +21,13 @@ struct ActivityRowView: View {
 
     static func symbol(for tool: String) -> String {
         switch tool {
-        case "click", "move_mouse", "scroll": return "cursorarrow.click"
-        case "type_text", "type_secret", "press_key": return "keyboard"
+        case "click", "click_text", "move_mouse", "scroll": return "cursorarrow.click"
+        case "type_text", "type_secret", "press_key", "fill_field": return "keyboard"
         case "screenshot", "list_windows", "focus_window": return "camera.viewfinder"
         case "open_app": return "macwindow"
         case "run_shell", "check_job", "stop_job": return "terminal"
         case "read_file", "write_file", "edit_file", "search_files", "find_files", "list_files": return "doc.text"
-        case "fetch_url", "web_search": return "globe"
+        case "fetch_url", "web_search", "find_on_page", "page_text": return "globe"
         case "remember", "recall_memory", "replace_memory": return "brain"
         default: return "wrench.and.screwdriver"
         }
@@ -36,12 +36,12 @@ struct ActivityRowView: View {
     /// "4 clicks", "2 typed", "5 screenshots", "3 commands" … by kind, in a fixed order, so the chips read the same every time.
     private var counts: [(symbol: String, label: String)] {
         let groups: [(String, String, Set<String>)] = [
-            ("cursorarrow.click", "click", ["click", "move_mouse", "scroll"]),
-            ("keyboard", "typed", ["type_text", "type_secret", "press_key"]),
+            ("cursorarrow.click", "click", ["click", "click_text", "move_mouse", "scroll"]),
+            ("keyboard", "typed", ["type_text", "type_secret", "press_key", "fill_field"]),
             ("camera.viewfinder", "screenshot", ["screenshot", "list_windows", "focus_window"]),
             ("terminal", "command", ["run_shell", "check_job", "stop_job"]),
             ("doc.text", "file step", ["read_file", "write_file", "edit_file", "search_files", "find_files", "list_files"]),
-            ("globe", "web", ["fetch_url", "web_search", "open_app"]),
+            ("globe", "web", ["fetch_url", "web_search", "open_app", "find_on_page", "page_text"]),
         ]
         var used = Set<String>()
         var out: [(String, String)] = []

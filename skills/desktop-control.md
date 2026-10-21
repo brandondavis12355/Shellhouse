@@ -30,6 +30,17 @@ user over VNC: they can watch and take over. Act deliberately.
 - `press_key(key)`: xdotool names: `Return`, `Tab`, `Escape`, `BackSpace`,
   `ctrl+l`, `ctrl+a`, `alt+F4`, `Down`. Letters, digits, `_`, `+`, `-`
   only. **No screenshot comes back.**
+- **In the browser, use these instead of aiming at pixels** (they need the
+  browser opened with `open_app`):
+  - `click_text(text, index)`: clicks the link, button or field whose visible
+    text matches ("Reports", "Sign in") with real mouse events, scrolling to
+    it if needed. Says whether the page address changed.
+  - `fill_field(label, text, submit)`: puts text into a field found by its
+    label or placeholder ("Serial or asset tag"), replacing what's there;
+    `submit: true` presses Enter. Not for passwords.
+  - `find_on_page(text)`: lists matching links, buttons and fields.
+  - `page_text(max_chars)`: the page's text, exact. Read results, tables and
+    messages with this instead of squinting at a screenshot.
 - `list_windows`: id, position, size and title of each window.
 - `focus_window(title)`: raises the first window whose title contains it.
 - `open_app(app, url)`: `browser` (Chromium, optionally at `url`),
@@ -88,9 +99,10 @@ never write a secret into a reply, file or command.
 1. Don't have it? `request_login(service, reason, site)` (or
    `request_credentials` for a key or token). It is saved to the Keychain,
    e.g. `JIRA_PASSWORD`; you get only the username.
-2. Type the username with `type_text` (it is not a secret, so
-   `type_secret` doesn't know it). Then `move_mouse` to the password
-   field, check the arrow's tip is on it, and `click()`.
+2. In the browser: `fill_field("Username", "<username>")`, then
+   `click_text("Password")`. Elsewhere: type the username with `type_text`
+   (it is not a secret, so `type_secret` doesn't know it), then `move_mouse`
+   to the password field, check the arrow's tip is on it, and `click()`.
 3. `type_secret(name, window)`: `window` is part of the target window's
    title (from `list_windows`). It refuses if another window has focus.
    Your user approves every use, so expect a wait. **Once per field:** it
@@ -102,6 +114,15 @@ If the field would show the text (not a password field), stop and tell
 your user instead.
 
 ## The browser
+- **Use the page tools first.** To press something: `click_text("Reports")`.
+  To search: `fill_field("Serial or asset tag", "C37302TMW5", submit: true)`,
+  then `page_text` to read the result. No coordinates, no ruler, no guessing.
+  Fall back to `screenshot` and `click` only when they say `no_match` (the
+  thing has no text, such as an icon or a canvas) or for programs that
+  aren't the browser. Check a name first with `find_on_page`.
+- `open_app("browser", ...)` starts Chromium so the page tools can control it
+  (with its own profile: you may have to sign in once). A browser started
+  any other way is closed and started again.
 - Go to a page: `open_app("browser", url)`, and again with another `url`
   for the next page; each opens in the same browser window. Asking for the
   page that's already open says so instead of opening a second tab: take a

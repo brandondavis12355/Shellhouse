@@ -911,6 +911,27 @@ public struct ToolRegistry: Sendable {
         return (filename, data.count, compressedForModel(marked).base64EncodedString(), changed)
     }
 
+    /// One page operation (see `BrowserControl`): run the script in the VM, read its one line of JSON, and turn its error codes into advice.
+    private static func runBrowser(_ operation: BrowserControl.Operation, _ args: [String], sandboxID: String, sandbox: any SandboxProvider) async -> [String: Any] {
+        guard let result = try? await sandbox.exec(sandboxID, command: BrowserControl.command(operation, args), timeout: 40, env: nil) else {
+            return ["error": "could not reach the VM to control the browser"]
+        }
+        guard let line = result.stdout.split(separator: "\n").last, let data = String(line).data(using: .utf8),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ["error": "the browser tool printed nothing usable", "detail": String(result.stderr.suffix(300))]
+        }
+        switch object["error"] as? String {
+        case "browser_not_controllable"?:
+            object["error"] = "The browser can't be controlled: it was started some other way, or isn't running. Call open_app with the browser and a url; that restarts it so these tools work. For anything outside the browser, use screenshot and click."
+        case "no_match"?:
+            object["hint"] = "Try fewer or different words (the text on the element), or find_on_page to list what the page has. If it truly isn't labelled, take a screenshot and use click."
+        case "no_page"?:
+            object["error"] = "The browser has no page open. Call open_app with the browser and a url."
+        default: break
+        }
+        return object
+    }
+
     /// `X=…` and `Y=…` lines of `xdotool getmouselocation --shell`.
     static func pointerPosition(in output: String) -> (x: Int, y: Int)? {
         var x: Int?, y: Int?
@@ -1041,6 +1062,26 @@ public struct ToolRegistry: Sendable {
                     ],
                     "required": [],
                 ]
+            ),
+            ToolSchema(
+                name: "find_on_page",
+                description: "List the links, buttons and fields in the browser page whose visible text matches (best match first), with their position. Use it to see what is on a page and to check a name before click_text. Needs the browser opened with open_app.",
+                parameters: ["type": "object", "properties": ["text": ["type": "string", "description": "Words on the element, e.g. Reports or Sign in."]], "required": ["text"]]
+            ),
+            ToolSchema(
+                name: "click_text",
+                description: "Click a link, button or field in the browser page by its visible text (e.g. \"Reports\"), with real mouse events at its centre. No coordinates to get wrong: prefer this to click for anything on a web page. Reports the page address after, and whether it changed. Scrolls to the element if needed. If several match, index picks one (0 is the best match).",
+                parameters: ["type": "object", "properties": ["text": ["type": "string"], "index": ["type": "integer", "description": "Which match, from find_on_page. Default 0."]], "required": ["text"]]
+            ),
+            ToolSchema(
+                name: "fill_field",
+                description: "Put text into a field of the browser page, found by its label or placeholder (e.g. \"Serial or asset tag\"), replacing what is there. With submit true it then presses Enter. Not for passwords: click the field with click_text, then use type_secret.",
+                parameters: ["type": "object", "properties": ["label": ["type": "string"], "text": ["type": "string"], "submit": ["type": "boolean", "description": "Press Enter afterwards (to search or sign in). Default false."]], "required": ["label", "text"]]
+            ),
+            ToolSchema(
+                name: "page_text",
+                description: "The text of the browser page (title, address and visible text), up to max_chars. Cheaper and exact compared with reading a screenshot: use it to read results, tables and messages.",
+                parameters: ["type": "object", "properties": ["max_chars": ["type": "integer", "description": "Default 6000, at most 20000."]]]
             ),
             ToolSchema(
                 name: "move_mouse",
@@ -1301,7 +1342,9 @@ public struct ToolRegistry: Sendable {
                 switch app {
                 case "browser":
                     let target = args["url"]?.asString.map { shellQuote($0) } ?? ""
-                    command = GUICommand.openApp(process: "chromium", launch: "chromium \(target)", once: args["url"]?.asString)
+                    command = GUICommand.openApp(
+                        process: "chromium", launch: "chromium \(BrowserControl.launchFlags) \(target)", once: args["url"]?.asString,
+                        controllable: "curl -sf -m 2 http://127.0.0.1:\(BrowserControl.port)/json/version >/dev/null")
                 case "terminal":
                     command = GUICommand.openApp(process: "xfce4-terminal", launch: "xfce4-terminal --working-directory=/workspace")
                 case "files":
@@ -1316,6 +1359,38 @@ public struct ToolRegistry: Sendable {
                 } catch {
                     return ["error": error.localizedDescription]
                 }
+            },
+
+            "find_on_page": { sandboxID, sandbox, args, _ in
+                guard let text = args["text"]?.asString, !text.isEmpty else { return ["error": "find_on_page requires 'text'"] }
+                return await runBrowser(.find, [text], sandboxID: sandboxID, sandbox: sandbox)
+            },
+
+            "click_text": { sandboxID, sandbox, args, _ in
+                guard let text = args["text"]?.asString, !text.isEmpty else { return ["error": "click_text requires 'text'"] }
+                var result = await runBrowser(.click, [text, String(args["index"]?.asInt ?? 0)], sandboxID: sandboxID, sandbox: sandbox)
+                guard result["error"] == nil else { return result }
+                if let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox, clicked: true) {
+                    result["screenshot"] = shot.filename; result["_base64"] = shot.base64
+                    for (k, v) in GUICommand.reaction(shot.changed, after: "click") where k == "screen_changed" { result[k] = v }
+                }
+                return result
+            },
+
+            "fill_field": { sandboxID, sandbox, args, _ in
+                guard let label = args["label"]?.asString, !label.isEmpty, let text = args["text"]?.asString else {
+                    return ["error": "fill_field requires 'label' and 'text'"]
+                }
+                var result = await runBrowser(.fill, [label, text] + ((args["submit"]?.asBool ?? false) ? ["submit"] : []), sandboxID: sandboxID, sandbox: sandbox)
+                guard result["error"] == nil else { return result }
+                if let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox) {
+                    result["screenshot"] = shot.filename; result["_base64"] = shot.base64
+                }
+                return result
+            },
+
+            "page_text": { sandboxID, sandbox, args, _ in
+                await runBrowser(.text, [String(min(max(args["max_chars"]?.asInt ?? 6000, 500), 20_000))], sandboxID: sandboxID, sandbox: sandbox)
             },
 
             "move_mouse": { sandboxID, sandbox, args, _ in

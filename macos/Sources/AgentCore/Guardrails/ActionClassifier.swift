@@ -300,13 +300,13 @@ public enum ActionClassifier {
                                     clean: .allow, tainted: .allow, checkpointPaths: [normalized]))
             return Classification(findings: findings)
 
-        case "screenshot", "list_windows", "focus_window", "scroll":
+        case "screenshot", "list_windows", "focus_window", "scroll", "find_on_page", "page_text":
             return Classification(findings: [Finding(.observe, "tool.\(tool)", "observes the desktop", clean: .allow, tainted: .allow)])
 
-        case "click", "move_mouse", "press_key":
+        case "click", "move_mouse", "press_key", "click_text":
             return Classification(findings: [Finding(.ui, "tool.\(tool)", "drives the sandbox desktop", clean: .allow, tainted: .allow)])
 
-        case "type_text":
+        case "type_text", "fill_field":
             let text = arguments["text"]?.asString ?? ""
             // A long paste into the desktop is a data-egress path (a web form),
             // so it asks once untrusted content has been seen.

@@ -22,13 +22,13 @@ public enum PointerMapping {
 
     /// The pointer position a tool result reports (`"pointer": {"x": …, "y": …}`), and whether the action was a click.
     public static func report(toolName: String, resultJSON: String) -> (x: Int, y: Int, clicked: Bool)? {
-        guard ["click", "move_mouse"].contains(toolName),
+        guard ["click", "move_mouse", "click_text", "fill_field"].contains(toolName),
               let data = resultJSON.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               object["error"] == nil,
               let pointer = object["pointer"] as? [String: Any],
               let x = (pointer["x"] as? Int) ?? (pointer["x"] as? Double).map(Int.init),
               let y = (pointer["y"] as? Int) ?? (pointer["y"] as? Double).map(Int.init) else { return nil }
-        return (x, y, toolName == "click")
+        return (x, y, toolName == "click" || toolName == "click_text")
     }
 }
