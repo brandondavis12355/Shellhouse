@@ -77,6 +77,30 @@ final class DesktopLoopGuardTests: XCTestCase {
         XCTAssertTrue(g.beforeTool(call("run_shell"), ctx).isEmpty)
     }
 
+    private func at(_ name: String, _ x: Int, _ y: Int) -> ToolCall { ToolCall(name: name, arguments: ["x": AnyCodable(x), "y": AnyCodable(y)]) }
+
+    func testAClickWaitsForThePointerToBeMovedOntoTheTarget() {
+        let g = AimFirstGuard(); let ctx = RunContext()
+        guard case .replaceResult(let json, let kind)? = g.beforeTool(at("click", 200, 300), ctx).first else { return XCTFail("clicked unaimed") }
+        XCTAssertEqual(kind, "aim_first"); XCTAssertTrue(json.contains("move_mouse"))
+        XCTAssertFalse(g.beforeTool(ToolCall(name: "click", arguments: [:]), ctx).isEmpty, "a click with no coordinates needs an aim too")
+        _ = g.afterTool(at("move_mouse", 200, 300), ran(), ctx)
+        XCTAssertTrue(g.beforeTool(ToolCall(name: "click", arguments: [:]), ctx).isEmpty)
+        XCTAssertTrue(g.beforeTool(at("click", 203, 298), ctx).isEmpty, "a few pixels either way is the same spot")
+        XCTAssertFalse(g.beforeTool(at("click", 400, 300), ctx).isEmpty, "a different spot than the pointer is on")
+    }
+
+    func testEachClickIsAimedAfreshAndAScreenshotKeepsTheAim() {
+        let g = AimFirstGuard(); let ctx = RunContext()
+        _ = g.afterTool(at("move_mouse", 10, 10), ran(), ctx)
+        _ = g.afterTool(call("screenshot"), ran(), ctx)
+        XCTAssertTrue(g.beforeTool(at("click", 10, 10), ctx).isEmpty)
+        _ = g.afterTool(at("click", 10, 10), ran(), ctx)
+        XCTAssertFalse(g.beforeTool(at("click", 10, 10), ctx).isEmpty)
+        _ = g.afterTool(at("move_mouse", 10, 10), ran(["error": "no display"]), ctx)
+        XCTAssertFalse(g.beforeTool(at("click", 10, 10), ctx).isEmpty, "a failed move aims nothing")
+    }
+
     func testOneScreenshotOpensTheTurnAndAnActionResultCountsAsALook() {
         let g = LookFirstGuard(); let ctx = RunContext()
         _ = g.afterTool(call("screenshot"), ran(), ctx)

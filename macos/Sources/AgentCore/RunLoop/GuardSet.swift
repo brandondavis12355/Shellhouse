@@ -23,6 +23,7 @@ public enum GuardSet {
             RepeatedSecretGuard(),
             NearRepeatClickGuard(),
             LookFirstGuard(),
+            AimFirstGuard(),
         ] + (onMissingPath.map { [MissingPathGuard(onMissing: $0)] as [any Guard] } ?? []) + [
             UnverifiedChangeGuard(),
             EmptySummaryGuard(),
