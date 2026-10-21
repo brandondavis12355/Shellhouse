@@ -32,6 +32,11 @@ final class ActivityGroupingTests: XCTestCase {
         XCTAssertEqual(r, [.message(0), .activity([1, 2, 3]), .message(4), .message(5)])
     }
 
+    func testTheReplyStaysVisibleWhenACollapsedSummaryFollowsIt() {
+        let r = rows([.user, .tool, .assistantText, .assistantText, .summary])
+        XCTAssertEqual(r, [.message(0), .activity([1, 2]), .message(3), .message(4)])
+    }
+
     func testWhileLiveTheNewestTurnsTextIsAllActivity() {
         let r = ActivityGrouping.rows([(0, TranscriptKind.user), (1, .tool), (2, .assistantText)], live: true)
         XCTAssertEqual(r, [.message(0), .activity([1, 2])])
