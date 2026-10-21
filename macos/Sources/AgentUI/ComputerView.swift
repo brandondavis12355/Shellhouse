@@ -1,3 +1,4 @@
+import AgentCore
 import SwiftUI
 import WebKit
 
@@ -112,6 +113,81 @@ public struct ComputerView: NSViewRepresentable {
     }
 }
 
+/// Where the bot last put the mouse, for the arrow drawn over the desktop. `sequence` changes with every move or click, so the same spot
+/// clicked twice still shows twice.
+public struct AgentPointer: Equatable {
+    public var x: Int
+    public var y: Int
+    public var clicked: Bool
+    public var sequence: Int
+    public init(x: Int, y: Int, clicked: Bool, sequence: Int) { self.x = x; self.y = y; self.clicked = clicked; self.sequence = sequence }
+}
+
+/// An arrow cursor with an "AI" tag, drawn over the desktop pane at the bot's pointer, gliding between positions and rippling on a click,
+/// then fading out after a few idle seconds. It is drawn by the app from what the tool results report, so it needs nothing from the VM
+/// (the remote desktop sends no pointer image) and cannot be mistaken for your own mouse.
+struct AgentPointerOverlay: View {
+    let pointer: AgentPointer?
+    @State private var visible = false
+    @State private var rippling = false
+
+    var body: some View {
+        GeometryReader { geo in
+            if let pointer {
+                let rect = PointerMapping.fit(into: geo.size)
+                let spot = PointerMapping.point(x: pointer.x, y: pointer.y, in: rect)
+                ZStack(alignment: .topLeading) {
+                    if pointer.clicked {
+                        Circle().stroke(Color.orange, lineWidth: 3)
+                            .frame(width: 44, height: 44)
+                            .scaleEffect(rippling ? 1.6 : 0.3).opacity(rippling ? 0 : 0.95)
+                            .position(x: 0, y: 0)
+                            .id(pointer.sequence)
+                    }
+                    ArrowShape()
+                        .fill(Color.black)
+                        .overlay(ArrowShape().stroke(Color.white, lineWidth: 1.6))
+                        .frame(width: 18, height: 26)
+                        .shadow(color: .black.opacity(0.35), radius: 2, x: 1, y: 2)
+                    Text("AI")
+                        .font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.purple))
+                        .offset(x: 16, y: 20)
+                }
+                .position(spot)
+                .opacity(visible ? 1 : 0)
+                .animation(.easeInOut(duration: 0.45), value: pointer.sequence)
+                .animation(.easeOut(duration: 0.4), value: visible)
+            }
+        }
+        .allowsHitTesting(false)
+        .onChange(of: pointer?.sequence) { _, _ in
+            visible = true
+            rippling = false
+            withAnimation(.easeOut(duration: 0.6)) { rippling = true }
+            let mark = pointer?.sequence
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if pointer?.sequence == mark { visible = false }
+            }
+        }
+    }
+}
+
+/// The classic arrow, tip at the top left.
+private struct ArrowShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let points: [(CGFloat, CGFloat)] = [(0, 0), (0, 17), (4.2, 13.2), (7.2, 20), (10, 18.8), (7.2, 12.2), (12.5, 12.2)]
+        let sx = rect.width / 12.5, sy = rect.height / 20
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + points[0].0 * sx, y: rect.minY + points[0].1 * sy))
+        for p in points.dropFirst() { path.addLine(to: CGPoint(x: rect.minX + p.0 * sx, y: rect.minY + p.1 * sy)) }
+        path.closeSubpath()
+        return path
+    }
+}
+
 /// Wraps ComputerView with the states a sandbox can actually be in, so the
 /// user sees why there is no desktop rather than a black rectangle.
 public struct ComputerPanel: View {
@@ -131,8 +207,11 @@ public struct ComputerPanel: View {
     /// reconnect to a new `vncURL` should show "Connecting…" again too.
     @State private var isConnecting = true
 
-    public init(state: State, onLoadError: @escaping (String) -> Void = { _ in }) {
+    private let pointer: AgentPointer?
+
+    public init(state: State, pointer: AgentPointer? = nil, onLoadError: @escaping (String) -> Void = { _ in }) {
         self.state = state
+        self.pointer = pointer
         self.onLoadError = onLoadError
     }
 
@@ -141,6 +220,7 @@ public struct ComputerPanel: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
+                .overlay { if case .running = state { AgentPointerOverlay(pointer: pointer) } }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if case .running = state {

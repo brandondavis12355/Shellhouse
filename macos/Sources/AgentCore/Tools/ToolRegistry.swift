@@ -897,7 +897,7 @@ public struct ToolRegistry: Sendable {
         sandbox: any SandboxProvider,
         filenameHint: String? = nil,
         clicked: Bool = false
-    ) async -> (filename: String, bytes: Int, base64: String)? {
+    ) async -> (filename: String, bytes: Int, base64: String, changed: Double?)? {
         let filename = sanitizeFilename(filenameHint) ?? "screenshot-\(Int(Date().timeIntervalSince1970)).png"
         let absolutePath = "/workspace/\(filename)"
         // The pointer's position comes back with the capture, to be drawn into the copy the model sees (scrot leaves it out).
@@ -906,8 +906,9 @@ public struct ToolRegistry: Sendable {
               let data = try? await sandbox.readFile(sandboxID, path: filename, maxBytes: 10_000_000) else {
             return nil
         }
+        let changed = ScreenMemory.shared.record(data, for: sandboxID)
         let marked = ScreenOverlay.annotate(data, pointer: pointerPosition(in: captured.stdout), clicked: clicked)
-        return (filename, data.count, compressedForModel(marked).base64EncodedString())
+        return (filename, data.count, compressedForModel(marked).base64EncodedString(), changed)
     }
 
     /// `X=…` and `Y=…` lines of `xdotool getmouselocation --shell`.
@@ -1362,6 +1363,7 @@ public struct ToolRegistry: Sendable {
                         return report.merging(["ok": true, "screenshot_error": "click succeeded but the verification screenshot failed"]) { a, _ in a }
                     }
                     return report.merging(["ok": true, "screenshot": shot.filename, "_base64": shot.base64]) { a, _ in a }
+                        .merging(GUICommand.reaction(shot.changed, after: "click")) { a, _ in a }
                 } catch {
                     return ["error": error.localizedDescription]
                 }
@@ -1387,6 +1389,7 @@ public struct ToolRegistry: Sendable {
                         return ["ok": true, "screenshot_error": "type_text succeeded but the verification screenshot failed"]
                     }
                     return ["ok": true, "screenshot": shot.filename, "_base64": shot.base64]
+                        .merging(GUICommand.reaction(shot.changed, after: "type_text")) { a, _ in a }
                 } catch {
                     return ["error": error.localizedDescription]
                 }
@@ -1457,6 +1460,7 @@ public struct ToolRegistry: Sendable {
                         return ["ok": true, "screenshot_error": "scroll succeeded but the verification screenshot failed"]
                     }
                     return ["ok": true, "screenshot": shot.filename, "_base64": shot.base64]
+                        .merging(GUICommand.reaction(shot.changed, after: "scroll")) { a, _ in a }
                 } catch {
                     return ["error": error.localizedDescription]
                 }
