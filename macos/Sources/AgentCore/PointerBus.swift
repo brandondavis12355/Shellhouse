@@ -6,8 +6,8 @@ import Foundation
 /// the pointer was seen.
 public enum PointerBus {
     public typealias Handler = @Sendable (_ x: Int, _ y: Int, _ clicked: Bool) -> Void
-    /// Long enough for the pointer's glide (0.45 s) to finish and be seen.
-    public static let arrival: TimeInterval = 0.9
+    /// Long enough for the pointer's glide (0.6 s) to finish and be seen before the action fires.
+    public static let arrival: TimeInterval = 1.8
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var handlers: [String: Handler] = [:]
