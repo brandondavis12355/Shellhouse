@@ -92,7 +92,10 @@ public struct CredentialRequest: Sendable, Equatable {
         if !kept.isEmpty { out["kept_existing_secrets"] = kept }
         if !missing.isEmpty { out["not_provided"] = missing }
         if !failed.isEmpty { out["could_not_save"] = failed }
-        if !plain.isEmpty { out["values"] = plain }
+        if !plain.isEmpty {
+            out["values"] = plain
+            out["values_note"] = "These are not secrets and were not saved as secrets: type them with type_text (type_secret only works for the saved secret names above)."
+        }
         let usable = saved + kept
         if !usable.isEmpty {
             out["how_to_use"] = "You can't read these values. Use them with run_shell(use_secrets: [\(usable.map { "\"\($0)\"" }.joined(separator: ", "))]) "

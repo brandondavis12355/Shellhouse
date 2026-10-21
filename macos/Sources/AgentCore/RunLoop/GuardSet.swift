@@ -20,6 +20,8 @@ public enum GuardSet {
             FailureStreakGuard(),
             stale,
             RepeatedReadGuard(),
+            RepeatedSecretGuard(),
+            NearRepeatClickGuard(),
         ] + (onMissingPath.map { [MissingPathGuard(onMissing: $0)] as [any Guard] } ?? []) + [
             UnverifiedChangeGuard(),
             EmptySummaryGuard(),
