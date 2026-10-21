@@ -3837,6 +3837,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                 return
             }
             var text = message.content
+            // A plain reply that ends the turn is announced twice: as the reply, then again as the turn's summary. The
+            // chat collapses the second; the console shows it once too.
+            if message.role == .assistant, message.isTaskSummary, lastLoggedAssistantText[context ?? ""] == message.content { return }
             if message.role == .assistant, !message.isTaskSummary, !text.isEmpty {
                 let key = context ?? ""
                 if lastLoggedAssistantText[key] == text {

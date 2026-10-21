@@ -357,7 +357,7 @@ public struct ToolRegistry: Sendable {
     /// The screen as PNG bytes, full quality (for people to look at, unlike `captureScreenshot`'s copy for the model).
     private static func captureScreenshotData(sandboxID: String, sandbox: any SandboxProvider) async -> Data? {
         let filename = ".shellhouse/screens/shot-\(Int(Date().timeIntervalSince1970)).png"
-        guard let captured = try? await sandbox.exec(sandboxID, command: "mkdir -p /workspace/.shellhouse/screens && scrot \(shellQuote("/workspace/" + filename))", timeout: 20, env: nil),
+        guard let captured = try? await sandbox.exec(sandboxID, command: GUICommand.wrap("mkdir -p /workspace/.shellhouse/screens && scrot \(shellQuote("/workspace/" + filename))"), timeout: 20, env: nil),
               captured.exitCode == 0 else { return nil }
         return try? await sandbox.readFile(sandboxID, path: filename, maxBytes: ChatImageStore.maxBytes)
     }
@@ -899,7 +899,7 @@ public struct ToolRegistry: Sendable {
     ) async -> (filename: String, bytes: Int, base64: String)? {
         let filename = sanitizeFilename(filenameHint) ?? "screenshot-\(Int(Date().timeIntervalSince1970)).png"
         let absolutePath = "/workspace/\(filename)"
-        guard let captured = try? await sandbox.exec(sandboxID, command: "scrot \(shellQuote(absolutePath))", timeout: 20, env: nil),
+        guard let captured = try? await sandbox.exec(sandboxID, command: GUICommand.wrap("scrot \(shellQuote(absolutePath))"), timeout: 20, env: nil),
               captured.exitCode == 0,
               let data = try? await sandbox.readFile(sandboxID, path: filename, maxBytes: 10_000_000) else {
             return nil
@@ -1249,8 +1249,8 @@ public struct ToolRegistry: Sendable {
 
             "list_windows": { sandboxID, sandbox, _, _ in
                 do {
-                    let result = try await sandbox.exec(sandboxID, command: "wmctrl -lG", timeout: 15, env: nil)
-                    guard result.exitCode == 0 else { return ["error": result.stderr] }
+                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap("wmctrl -lG"), timeout: 15, env: nil)
+                    guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
                     let windows: [[String: Any]] = result.stdout.split(separator: "\n").compactMap { line in
                         let parts = line.split(separator: " ", maxSplits: 7, omittingEmptySubsequences: true).map(String.init)
                         guard parts.count == 8 else { return nil }
@@ -1265,8 +1265,8 @@ public struct ToolRegistry: Sendable {
             "focus_window": { sandboxID, sandbox, args, _ in
                 guard let title = args["title"]?.asString else { return ["error": "focus_window requires 'title'"] }
                 do {
-                    let result = try await sandbox.exec(sandboxID, command: "wmctrl -a \(shellQuote(title))", timeout: 10, env: nil)
-                    return result.exitCode == 0 ? ["ok": true] : ["error": result.stderr]
+                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap("wmctrl -a \(shellQuote(title))"), timeout: 10, env: nil)
+                    return result.exitCode == 0 ? ["ok": true] : ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)]
                 } catch {
                     return ["error": error.localizedDescription]
                 }
@@ -1278,17 +1278,17 @@ public struct ToolRegistry: Sendable {
                 switch app {
                 case "browser":
                     let target = args["url"]?.asString.map { shellQuote($0) } ?? ""
-                    command = "nohup chromium \(target) >/dev/null 2>&1 & disown"
+                    command = GUICommand.openApp(process: "chromium", launch: "chromium \(target)")
                 case "terminal":
-                    command = "nohup xfce4-terminal --working-directory=/workspace >/dev/null 2>&1 & disown"
+                    command = GUICommand.openApp(process: "xfce4-terminal", launch: "xfce4-terminal --working-directory=/workspace")
                 case "files":
-                    command = "nohup thunar /workspace >/dev/null 2>&1 & disown"
+                    command = GUICommand.openApp(process: "thunar", launch: "thunar /workspace")
                 default:
                     return ["error": "unknown app '\(app)', expected browser|terminal|files"]
                 }
                 do {
-                    let result = try await sandbox.exec(sandboxID, command: command, timeout: 10, env: nil)
-                    return result.exitCode == 0 ? ["ok": true, "app": app] : ["error": result.stderr]
+                    let result = try await sandbox.exec(sandboxID, command: command, timeout: 20, env: nil)
+                    return result.exitCode == 0 ? ["ok": true, "app": app] : ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode, app: app)]
                 } catch {
                     return ["error": error.localizedDescription]
                 }
@@ -1307,9 +1307,9 @@ public struct ToolRegistry: Sendable {
                     // from the agent and where it landed, not just from a
                     // static screenshot after the fact.
                     let result = try await sandbox.exec(
-                        sandboxID, command: "python3 /usr/local/bin/ai-click.py \(x) \(y) \(button)", timeout: 15, env: nil
+                        sandboxID, command: GUICommand.wrap("python3 /usr/local/bin/ai-click.py \(x) \(y) \(button)"), timeout: 15, env: nil
                     )
-                    guard result.exitCode == 0 else { return ["error": result.stderr] }
+                    guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
                     // Always attached, not left to the model to remember to
                     // ask for — see captureScreenshot's doc comment.
                     guard let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox) else {
@@ -1332,11 +1332,11 @@ public struct ToolRegistry: Sendable {
                     try await sandbox.writeFile(sandboxID, path: relativeName, contents: Data(text.utf8))
                     let result = try await sandbox.exec(
                         sandboxID,
-                        command: "xdotool type --file \(shellQuote(absolutePath)); rm -f \(shellQuote(absolutePath))",
+                        command: GUICommand.wrap("xdotool type --file \(shellQuote(absolutePath)); rm -f \(shellQuote(absolutePath))"),
                         timeout: 15,
                         env: nil
                     )
-                    guard result.exitCode == 0 else { return ["error": result.stderr] }
+                    guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
                     guard let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox) else {
                         return ["ok": true, "screenshot_error": "type_text succeeded but the verification screenshot failed"]
                     }
@@ -1363,7 +1363,7 @@ public struct ToolRegistry: Sendable {
                     + "*) echo \"focused window is '$active', not the one asked for\" >&2; exit 4;; esac; "
                     + "printf %s \"$SHELLHOUSE_SECRET_VALUE\" | xdotool type --clearmodifiers --delay 25 --file -"
                 do {
-                    let result = try await sandbox.exec(sandboxID, command: command, timeout: 30, env: ["SHELLHOUSE_SECRET_VALUE": value])
+                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap(command), timeout: 30, env: ["SHELLHOUSE_SECRET_VALUE": value])
                     guard result.exitCode == 0 else {
                         return ["error": secretStore.mask(result.stderr, values: [value]).trimmingCharacters(in: .whitespacesAndNewlines)]
                     }
@@ -1380,8 +1380,8 @@ public struct ToolRegistry: Sendable {
                     return ["error": "invalid key name '\(key)'"]
                 }
                 do {
-                    let result = try await sandbox.exec(sandboxID, command: "xdotool key \(key)", timeout: 10, env: nil)
-                    return result.exitCode == 0 ? ["ok": true] : ["error": result.stderr]
+                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap("xdotool key \(key)"), timeout: 10, env: nil)
+                    return result.exitCode == 0 ? ["ok": true] : ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)]
                 } catch {
                     return ["error": error.localizedDescription]
                 }
@@ -1402,8 +1402,8 @@ public struct ToolRegistry: Sendable {
                 }
                 command += "xdotool click --repeat \(amount) --delay 20 \(button)"
                 do {
-                    let result = try await sandbox.exec(sandboxID, command: command, timeout: 10, env: nil)
-                    guard result.exitCode == 0 else { return ["error": result.stderr] }
+                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap(command), timeout: 10, env: nil)
+                    guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
                     // Same auto-verification as click/type_text — the whole
                     // point of scrolling is to bring something new into
                     // view, so the model needs to actually see the result.
