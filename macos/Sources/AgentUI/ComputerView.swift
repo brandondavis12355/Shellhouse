@@ -158,6 +158,8 @@ public struct AgentPointer: Equatable {
 struct AgentPointerOverlay: View {
     let pointer: AgentPointer?
     @ObservedObject var frame: ScreenFrame
+    /// The bot's own colour: the arrow, its tag and the click ripple, so it reads as the bot's and not as your own mouse.
+    let color: Color
     /// A task is running: the pointer stays on screen instead of fading after a few idle seconds.
     let keepVisible: Bool
     @State private var visible = false
@@ -171,7 +173,7 @@ struct AgentPointerOverlay: View {
                 // The arrow's frame is fixed (the ripple and tag are overlays that add nothing to its size), and it is placed so its
                 // TIP, not its centre, is on the spot. A ripple that took the whole pane's size once sent the arrow off screen.
                 ArrowShape()
-                    .fill(Color.black)
+                    .fill(color)
                     .overlay(ArrowShape().stroke(Color.white, lineWidth: 1.6))
                     .frame(width: 18, height: 26)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 1, y: 2)
@@ -179,13 +181,13 @@ struct AgentPointerOverlay: View {
                         Text("AI")
                             .font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
                             .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.purple))
+                            .background(Capsule().fill(color))
                             .fixedSize()
                             .offset(x: 16, y: 20)
                     }
                     .overlay(alignment: .topLeading) {
                         if pointer.clicked {
-                            Circle().stroke(Color.orange, lineWidth: 3)
+                            Circle().stroke(color, lineWidth: 3)
                                 .frame(width: 44, height: 44)
                                 .scaleEffect(rippling ? 1.6 : 0.3).opacity(rippling ? 0 : 0.95)
                                 .offset(x: -22, y: -22)
@@ -266,12 +268,14 @@ public struct ComputerPanel: View {
 
     private let pointer: AgentPointer?
     private let keepPointerVisible: Bool
+    private let pointerColor: Color
     @StateObject private var screenFrame = ScreenFrame()
 
-    public init(state: State, pointer: AgentPointer? = nil, keepPointerVisible: Bool = false, onLoadError: @escaping (String) -> Void = { _ in }) {
+    public init(state: State, pointer: AgentPointer? = nil, keepPointerVisible: Bool = false, pointerColor: Color = .purple, onLoadError: @escaping (String) -> Void = { _ in }) {
         self.state = state
         self.pointer = pointer
         self.keepPointerVisible = keepPointerVisible
+        self.pointerColor = pointerColor
         self.onLoadError = onLoadError
     }
 
@@ -280,7 +284,7 @@ public struct ComputerPanel: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
-                .overlay { if case .running = state { AgentPointerOverlay(pointer: pointer, frame: screenFrame, keepVisible: keepPointerVisible) } }
+                .overlay { if case .running = state { AgentPointerOverlay(pointer: pointer, frame: screenFrame, color: pointerColor, keepVisible: keepPointerVisible) } }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if case .running = state {

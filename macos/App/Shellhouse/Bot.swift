@@ -3311,9 +3311,8 @@ final class Bot: Identifiable, @unchecked Sendable {
         startPointerWatch()
     }
 
-    /// While a task runs, ask the VM where the mouse really is every second or so and move the on-screen pointer there if it is
-    /// not already (nothing announced or reported in the last two seconds, so a glide in progress is left alone). The pointer
-    /// stays on screen for the whole task, and always matches the real position rather than only what the last tool reported.
+    /// While a task runs and the arrow has no position yet, ask the VM where the mouse is, so the pointer is on screen from the start
+    /// of the task (and stays there; see `AgentPointerOverlay`).
     func startPointerWatch() {
         guard pointerWatch == nil else { return }
         pointerWatch = Task { @MainActor [weak self] in
@@ -3323,7 +3322,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                       let sandbox = self.sandbox, let id = self.handle?.id,
                       let result = try? await sandbox.exec(id, command: GUICommand.wrap("xdotool getmouselocation --shell"), timeout: 8, env: nil),
                       result.exitCode == 0, let spot = PointerMapping.location(in: result.stdout) else { continue }
-                if let now = self.agentPointer, abs(now.x - spot.x) <= 2, abs(now.y - spot.y) <= 2 { continue }
+                // Only when nothing is shown yet: once you take over the desktop the VM's mouse is yours, and following it would
+                // drag the arrow around. Tool results and announced moves place it from then on.
+                guard self.agentPointer == nil else { continue }
                 self.agentPointerCount += 1
                 self.agentPointer = AgentPointer(x: spot.x, y: spot.y, clicked: false, sequence: self.agentPointerCount)
             }
