@@ -9,7 +9,25 @@ public enum BrowserControl {
     public static let port = 9222
     /// Where the browser keeps its profile: remote control needs a profile of its own (newer Chromium refuses it on the default one).
     public static let profileDir = "$HOME/.config/shellhouse-chromium"
-    public static let launchFlags = "--remote-debugging-port=\(port) --user-data-dir=\(profileDir) --no-first-run --no-default-browser-check"
+    public static let launchFlags = "--remote-debugging-port=\(port) --user-data-dir=\(profileDir) --no-first-run --no-default-browser-check --disable-notifications --disable-infobars"
+
+    /// Turns off the browser's own "save password?" and autofill prompts in the profile: they are Chromium's interface, not the page's, so
+    /// `click_text` can't reach them and a bot spent a run trying to click one. Run before a fresh start (Chromium rewrites its settings on exit).
+    public static let quietProfile: String = {
+        let code = """
+        import json, os
+        d = os.path.expandvars("\(profileDir)/Default"); os.makedirs(d, exist_ok=True)
+        p = d + "/Preferences"
+        try: j = json.load(open(p))
+        except Exception: j = {}
+        j["credentials_enable_service"] = False
+        j.setdefault("profile", {})["password_manager_enabled"] = False
+        j.setdefault("autofill", {})["profile_enabled"] = False
+        j["autofill"]["credit_card_enabled"] = False
+        json.dump(j, open(p, "w"))
+        """
+        return "python3 -c " + shellQuote(code)
+    }()
 
     public enum Operation: String { case find, click, fill, text, aim }
 
