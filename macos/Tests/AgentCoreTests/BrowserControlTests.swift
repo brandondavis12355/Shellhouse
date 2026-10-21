@@ -21,6 +21,7 @@ final class BrowserControlTests: XCTestCase {
         <input id="serial" name="serial" placeholder="Serial or asset tag">
         <button id="go" onclick="document.title='Searched:' + document.getElementById('serial').value">Search</button>
         <div><span>Notes for the desk</span><input id="notes"></div>
+        <a href="#signin" id="nav-signin">Sign in</a><button id="signin-btn" onclick="document.title='Signed'">Sign in</button>
         <a href="#hidden" style="display:none">Hidden link</a>
         <div style="height:3000px"></div>
         <a href="#bottom" id="b">Bottom link</a>
@@ -101,6 +102,11 @@ final class BrowserControlTests: XCTestCase {
         XCTAssertTrue((none["fields_on_page"] as? [String])?.contains { $0.contains("Serial") } == true, "\(none)")
         XCTAssertNotNil(none["title"])
         XCTAssertTrue((none["hint"] as? String)?.contains("do not restart") == true)
+    }
+
+    func testAButtonBeatsALinkWithTheSameText() throws {
+        let r = try run(.click, ["Sign in", "0"])
+        XCTAssertEqual((r["clicked"] as? [String: Any])?["tag"] as? String, "button", "\(r)")
     }
 
     func testNoMatchSaysSoAndPageTextIsReadable() throws {

@@ -118,7 +118,8 @@ public enum BrowserControl {
       });
       const t = q.toLowerCase();
       const score = o => { const l = o.l.toLowerCase(); return l === t ? 0 : l.split(' | ').includes(t) ? 0 : l.startsWith(t) ? 1 : l.includes(t) ? 2 : 9; };
-      const hits = out.filter(o => score(o) < 9).sort((a, b) => score(a) - score(b) || a.r.top - b.r.top || a.r.left - b.r.left);
+      const pri = o => (o.tag === 'button' || (o.tag === 'input' && /^(submit|button)$/.test(o.type))) ? 0 : 1;
+      const hits = out.filter(o => score(o) < 9).sort((a, b) => score(a) - score(b) || pri(a) - pri(b) || a.r.top - b.r.top || a.r.left - b.r.left);
       window.__shMatches = hits.map(h => h.e);
       return JSON.stringify({
         win: {sx: window.screenX, sy: window.screenY + (window.outerHeight - window.innerHeight), w: innerWidth, h: innerHeight},

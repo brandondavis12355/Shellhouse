@@ -103,8 +103,8 @@ never write a secret into a reply, file or command.
 1. Don't have it? `request_login(service, reason, site)` (or
    `request_credentials` for a key or token). It is saved to the Keychain,
    e.g. `JIRA_PASSWORD`; you get only the username.
-   Never guess a username ("admin"): use the one `request_login` gave
-   you, or ask. If the browser is already signed in, don't open the page
+   Never guess a username ("admin"; `fill_field` refuses one you weren't
+   given): use the one `request_login` gave you, or ask. If the browser is already signed in, don't open the page
    again: that can sign you out. (`request_login` takes an IP, e.g.
    `10.0.0.5:3005`, as the site.)
 2. In the browser: `fill_field("Username", "<username>")`, then

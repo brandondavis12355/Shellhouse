@@ -65,6 +65,60 @@ public final class LookFirstGuard: Guard {
     }
 }
 
+/// A username is something the bot is told, never something it makes up ("admin"). `fill_field` into a username, login or email
+/// field is refused when the value appears nowhere the bot was given it: your messages, a tool result (`request_login` returns the
+/// username), or memory.
+public final class KnownUsernameGuard: Guard {
+    public let id = "known_username"
+    public init() {}
+
+    private static let usernameish = ["user", "login", "email", "e-mail", "account", "sign in", "signin", "log in"]
+
+    public func beforeTool(_ call: ToolCall, _ ctx: RunContext) -> [GuardAction] {
+        guard call.name == "fill_field", Reliability.isOn(.loopGuards),
+              let label = call.arguments["label"]?.asString?.lowercased(), !label.contains("password"),
+              Self.usernameish.contains(where: label.contains),
+              let value = call.arguments["text"]?.asString?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return [] }
+        let needle = value.lowercased()
+        let given = ctx.messages.contains { $0.role != .assistant && $0.content.lowercased().contains(needle) }
+        guard !given else { return [] }
+        return [.replaceResult(runJSONString(["error": "Nothing was typed: you have not been given the username \"\(value)\". Never guess one. "
+            + "Use the username your user told you or request_login returned; if you have none, call request_login (it asks your user for the "
+            + "username and password), or tell your user you need it."]), kind: "known_username")]
+    }
+}
+
+/// A saved secret is typed into whatever has focus, so focus must have been put on the right field first: a run moved the
+/// pointer over the password field, never clicked it, and typed the password into the username box. `type_secret` waits for a
+/// click, `click_text`, `fill_field` or Tab since the page last changed, and for another one after each submit or new page.
+public final class FocusBeforeSecretGuard: Guard {
+    public let id = "focus_before_secret"
+    private var focused = false
+    public init() {}
+
+    public func reset(_ scope: GuardReset) { focused = false }
+
+    public func beforeTool(_ call: ToolCall, _ ctx: RunContext) -> [GuardAction] {
+        guard call.name == "type_secret", !focused, Reliability.isOn(.loopGuards) else { return [] }
+        return [.replaceResult(runJSONString(["error": "Nothing was typed: you have not put focus in the field yet. Click the field first "
+            + "(in the browser click_text(\"Password\") or fill_field; elsewhere move_mouse onto it, then click()), check in the screenshot "
+            + "that the cursor is in it, then call type_secret."]), kind: "focus_before_secret")]
+    }
+
+    public func afterTool(_ call: ToolCall, _ outcome: ToolOutcome, _ ctx: RunContext) -> [GuardAction] {
+        guard case .executed = outcome.kind, outcome.raw["error"] == nil else { return [] }
+        switch call.name {
+        case "click", "click_text", "fill_field": focused = true
+        case "press_key":
+            let k = call.arguments["key"]?.asString?.lowercased() ?? ""
+            if k == "tab" || k == "shift+tab" { focused = true } else if ["return", "kp_enter"].contains(k) { focused = false }
+        case "open_app": focused = false
+        default: break
+        }
+        return []
+    }
+}
+
 /// A click fires only on a spot the bot has seen the pointer on. `move_mouse(x, y)` puts the pointer there and returns a
 /// screenshot with the arrow drawn on it; only then does `click` (with the same coordinates, or none) go through. Anything that
 /// changes the screen (a click, typing, scrolling, a key, a new page) clears the aim, so each click is aimed afresh.
