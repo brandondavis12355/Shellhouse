@@ -313,7 +313,9 @@ struct BotDetailView: View {
                                 activeInterBotThread = InterBotThreadTarget(peerID: peerID, peerName: peerName)
                             },
                             onEdit: bot.canEditMessages ? { message in editingMessage = MessageEdit(id: message.id.uuidString, text: message.text) } : nil,
-                            onDelete: bot.canEditMessages ? { message in bot.deleteMessage(id: message.id) } : nil
+                            onDelete: bot.canEditMessages ? { message in bot.deleteMessage(id: message.id) } : nil,
+                            isWorking: bot.isProcessingMessage,
+                            liveStatus: bot.status
                         )
                         .sheet(item: $editingMessage) { edit in
                             MessageEditSheet(edit: edit) { text in

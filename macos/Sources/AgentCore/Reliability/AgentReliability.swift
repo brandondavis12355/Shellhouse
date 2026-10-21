@@ -108,6 +108,24 @@ public enum ObservationPolicy {
     /// Collapses in batches of `batch`: rewriting an early message makes the model server re-read the
     /// conversation from there, so doing it every few results instead of on every step keeps more of the
     /// prompt cached. Up to `batch - 1` extra results stay in full in between.
+    /// Older narration that rode along with a tool call ("Let me click the field", "Now I need to type the password") leaves
+    /// the prompt: it said what the call was about to do, and the call and its result say it better. The newest `keep`
+    /// stay (the bot's own notes on the step in progress), and the cut moves forward in jumps of `batch`, so the start of the
+    /// prompt only changes now and then and the model server can keep its cache of it. A reply with no tool call is an answer
+    /// and is never touched; the run log keeps every word.
+    public static func dropStaleNarration(_ messages: [ChatMessage], keep: Int = 4, batch: Int = 6) -> [ChatMessage] {
+        let narrated = messages.indices.filter {
+            messages[$0].role == .assistant && !(messages[$0].toolCalls ?? []).isEmpty
+                && !messages[$0].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let excess = narrated.count - keep
+        let step = max(1, batch)
+        guard excess >= step else { return messages }
+        var out = messages
+        for index in narrated.prefix(excess - excess % step) { out[index].content = "" }
+        return out
+    }
+
     public static func collapseStale(_ messages: [ChatMessage], keepLast: Int = 8, minCharacters: Int = 700, batch: Int = 4,
                                      fullBudgetCharacters: Int = 16_000) -> [ChatMessage] {
         let toolIndices = messages.indices.filter { messages[$0].role == .tool }
