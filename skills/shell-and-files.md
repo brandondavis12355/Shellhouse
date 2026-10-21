@@ -83,7 +83,7 @@ They need no approval; shell commands do. Paths are relative to
 - Use one with `run_shell(command, use_secrets: ["API_KEY"])`: it is
   `$API_KEY` for that one command, masked in output. Never print it, write
   it to a file, or put it in a URL. Empty `$NAME` means a wrong name: ask.
-- Passwords on the desktop: `type_secret`, never `type_text`.
+- Passwords on the desktop: `type_secret`, never `type_text`, once per field (desktop-control).
 
 ## Deleting and overwriting
 - Deletes and overwrites in `/workspace` are first copied to

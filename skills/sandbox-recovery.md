@@ -15,6 +15,9 @@ attempts. Repeating a failing or blocked action freezes the run.
   the desktop.
 - `screenshot` errors or is black → the display may be restarting by
   itself. Wait once (`run_shell("sleep 5")`), then one more screenshot.
+- A tool says "no running desktop" → the VM has no display at all. Don't
+  retry the click or `open_app`: tell your user, and use `run_shell`,
+  `fetch_url` or the file tools for anything that doesn't need the screen.
 - Commands time out → something is hogging the machine:
   `ps aux --sort=-%cpu | head -8`.
 - "No space left" → `df -h /workspace`, then
