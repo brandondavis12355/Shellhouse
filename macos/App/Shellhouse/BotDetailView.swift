@@ -364,7 +364,8 @@ struct BotDetailView: View {
                                     ForEach(bot.pendingAttachments) { attachment in
                                         AttachmentChip(
                                             filename: attachment.url.lastPathComponent,
-                                            isImage: attachment.isImage
+                                            isImage: attachment.isImage,
+                                            thumbnail: attachment.isImage ? attachment.url : nil
                                         ) {
                                             bot.removeAttachment(attachment)
                                         }
@@ -565,6 +566,7 @@ struct BotDetailView: View {
         // right now" — covers both switching to it and it getting a new
         // message while it's already the one open.
         .onAppear { bot.markRead(); bot.refreshPendingReview() }
+        .pastesAttachments(into: bot)
         .onChange(of: bot.displayMessages.count) { _, _ in bot.markRead() }
         .sheet(item: $activeInterBotThread) { thread in
             InterBotThreadView(
@@ -683,12 +685,16 @@ struct BotDetailView: View {
 struct AttachmentChip: View {
     let filename: String
     let isImage: Bool
+    /// Where the image is, for a small picture instead of the icon (only before sending).
+    var thumbnail: URL?
     var onRemove: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: isImage ? "photo" : "doc")
-                .font(.caption)
+            if let thumbnail { AttachmentThumbnail(url: thumbnail) } else {
+                Image(systemName: isImage ? "photo" : "doc")
+                    .font(.caption)
+            }
             Text(filename)
                 .font(.caption)
                 .lineLimit(1)
