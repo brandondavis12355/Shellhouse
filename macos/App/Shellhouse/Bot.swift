@@ -136,6 +136,9 @@ final class Bot: Identifiable, @unchecked Sendable {
         let isImage: Bool
     }
     var pendingAttachments: [PendingAttachment] = []
+    /// Where the bot last moved or clicked the mouse on its desktop, drawn as an arrow over the computer pane (see `AgentPointerOverlay`).
+    var agentPointer: AgentPointer?
+    private var agentPointerCount = 0
     /// True while ANY `AgentRuntime` run is in flight for this bot — its own
     /// chat, a delegation reply, or a group-chat turn — not just the chat
     /// queue. Kept true continuously from `acquireRunLock()` to
@@ -2854,6 +2857,7 @@ final class Bot: Identifiable, @unchecked Sendable {
                         replyPicker.observe(msg)
                         phaseTracker.set(responding: false, botID: botIDForPhase)
                     case .toolCompleted(let toolName, let resultJSON):
+                        Task { @MainActor in self?.noteAgentPointer(toolName, resultJSON) }
                         toolCallCounter.noteOutput(toolName, resultJSON)
                         lessonTrail.completed(toolName, resultJSON: resultJSON)
                     case .toolStarted(let toolName, let argumentsJSON):
@@ -3179,6 +3183,13 @@ final class Bot: Identifiable, @unchecked Sendable {
         input = ""
         pendingAttachments = []
         Task { await sendWithAttachments(text: text, attachments: attachments) }
+    }
+
+    /// A tool result reported the mouse position: show it on the desktop pane.
+    func noteAgentPointer(_ toolName: String, _ resultJSON: String) {
+        guard let report = PointerMapping.report(toolName: toolName, resultJSON: resultJSON) else { return }
+        agentPointerCount += 1
+        agentPointer = AgentPointer(x: report.x, y: report.y, clicked: report.clicked, sequence: agentPointerCount)
     }
 
     func addAttachments(_ urls: [URL]) {
@@ -3759,6 +3770,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             // reusing (and overwriting) the one before the tool call.
             streamingIndex = nil
         case .toolCompleted(let name, let resultJSON):
+            noteAgentPointer(name, resultJSON)
             ownChatLessonTrail.completed(name, resultJSON: resultJSON)
             status = "Finished \(name)"
             lastOwnChatToolOutput = String((lastOwnChatToolOutput + "\n" + name + ": " + resultJSON).suffix(8_000))

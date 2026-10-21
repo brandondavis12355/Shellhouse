@@ -38,7 +38,7 @@ public enum GUICommand {
     }
 
     public static let clickScript = """
-    import json, math, random, subprocess, sys, time
+    import json, math, random, subprocess, sys
     tx, ty, button = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
     def xd(*a):
         return subprocess.run(["xdotool", *a], capture_output=True, text=True, check=True).stdout
@@ -47,28 +47,23 @@ public enum GUICommand {
         return int(v["X"]), int(v["Y"]), v.get("WINDOW", "")
     sx, sy, _ = where()
     dist = math.hypot(tx - sx, ty - sy)
-    steps = max(6, min(28, int(dist / 18) + 6))
-    # A quadratic curve: the control point is pushed sideways a little, more for a longer trip.
+    steps = max(5, min(12, int(dist / 40) + 5))
     side = random.choice((-1, 1)) * min(60, dist * 0.12)
-    mx, my = (sx + tx) / 2, (sy + ty) / 2
     nx, ny = (-(ty - sy) / (dist or 1), (tx - sx) / (dist or 1))
-    cx, cy = mx + nx * side, my + ny * side
-    for i in range(1, steps + 1):
+    cx, cy = (sx + tx) / 2 + nx * side, (sy + ty) / 2 + ny * side
+    # The whole gesture is ONE xdotool command (it chains `mousemove`, `sleep`, `mousedown` ...): starting a process per step took
+    # about half a second each in the VM, so one click took sixteen.
+    chain = []
+    for i in range(1, steps):
         t = i / steps
         e = t * t * (3 - 2 * t)
-        x = (1 - e) ** 2 * sx + 2 * (1 - e) * e * cx + e * e * tx
-        y = (1 - e) ** 2 * sy + 2 * (1 - e) * e * cy + e * e * ty
-        if i < steps:
-            x += random.uniform(-1.2, 1.2); y += random.uniform(-1.2, 1.2)
-        xd("mousemove", str(round(x)), str(round(y)))
-        time.sleep(random.uniform(0.006, 0.014))
-    xd("mousemove", "--sync", str(tx), str(ty))
-    time.sleep(0.12)
-    xd("mousemove", "--sync", str(tx + 1), str(ty)); xd("mousemove", "--sync", str(tx), str(ty))
-    time.sleep(0.05)
-    xd("mousedown", button)
-    time.sleep(random.uniform(0.06, 0.11))
-    xd("mouseup", button)
+        x = (1 - e) ** 2 * sx + 2 * (1 - e) * e * cx + e * e * tx + random.uniform(-1.2, 1.2)
+        y = (1 - e) ** 2 * sy + 2 * (1 - e) * e * cy + e * e * ty + random.uniform(-1.2, 1.2)
+        chain += ["mousemove", str(round(x)), str(round(y)), "sleep", "0.012"]
+    chain += ["mousemove", "--sync", str(tx), str(ty), "sleep", "0.12",
+              "mousemove", "--sync", str(tx + 1), str(ty), "mousemove", "--sync", str(tx), str(ty), "sleep", "0.05",
+              "mousedown", button, "sleep", "%.3f" % random.uniform(0.06, 0.11), "mouseup", button]
+    xd(*chain)
     x, y, win = where()
     name = ""
     if win:
@@ -76,6 +71,24 @@ public enum GUICommand {
         except Exception: pass
     print(json.dumps({"pointer": {"x": x, "y": y}, "landed": abs(x - tx) <= 2 and abs(y - ty) <= 2, "window": name}))
     """
+
+    /// What to tell the bot about how the screen reacted to its action: a plain yes, or, when nothing moved, what that usually means.
+    public static func reaction(_ changed: Double?, after action: String) -> [String: Any] {
+        guard let changed else { return [:] }
+        if changed >= ScreenDiff.reactionThreshold { return ["screen_changed": true] }
+        let note: String
+        switch action {
+        case "click":
+            note = "Nothing on the screen changed after this click: it probably landed on something that isn't clickable, or the page ignored it. "
+                + "Compare the orange ripple with the target in the screenshot. Try another spot on the target, or reach it with the keyboard "
+                + "(press_key Tab until it is focused, then Return). Don't repeat the same click."
+        case "type_text":
+            note = "Nothing on the screen changed after typing: the text probably went nowhere because no field has focus. Click the field first."
+        default:
+            note = "The screen did not change: the page may already be at its end, or nothing there scrolls."
+        }
+        return ["screen_changed": false, "note": note]
+    }
 
     public static let alreadyOpenNote = "That page is already open in the browser (opened a moment ago); opening it again would only add another tab. "
         + "Take a screenshot to see it. To go to a different page, call open_app again with that page's url."

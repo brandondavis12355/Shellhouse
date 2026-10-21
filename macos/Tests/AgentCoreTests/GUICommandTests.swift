@@ -97,8 +97,12 @@ final class ClickScriptTests: XCTestCase {
         echo "$@" >> '\(log.path)'
         case "$1" in
           getmouselocation) p=$(cat '\(pos.path)'); echo "X=${p%,*}"; echo "Y=${p#*,}"; echo "SCREEN=0"; echo "WINDOW=42" ;;
-          mousemove) shift; [ "$1" = "--sync" ] && shift; echo "$1,$2" > '\(pos.path)' ;;
           getwindowname) echo "Sign in" ;;
+          *) # a chain: the pointer ends where the last mousemove put it
+             while [ $# -gt 0 ]; do
+               if [ "$1" = "mousemove" ]; then shift; [ "$1" = "--sync" ] && shift; echo "$1,$2" > '\(pos.path)'; fi
+               shift
+             done ;;
         esac
         """
         let tool = dir.appendingPathComponent("xdotool")
@@ -116,14 +120,14 @@ final class ClickScriptTests: XCTestCase {
         return (((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init), report)
     }
 
-    func testThePointerTravelsSettlesPressesHoldsAndReleases() throws {
+    func testThePointerTravelsSettlesPressesHoldsAndReleasesInOneGesture() throws {
         let (log, report) = try run(from: (10, 10), to: (300, 200))
-        let moves = log.filter { $0.hasPrefix("mousemove") }
-        XCTAssertGreaterThan(moves.count, 8, "a path, not a jump")
-        let down = log.firstIndex(of: "mousedown 1"), up = log.firstIndex(of: "mouseup 1")
-        XCTAssertNotNil(down); XCTAssertNotNil(up)
-        if let down, let up { XCTAssertLessThan(down, up) }
-        if let down { XCTAssertEqual(log[down - 1], "mousemove --sync 300 200", "it is back exactly on the target just before the press") }
+        let gesture = try XCTUnwrap(log.first { $0.hasPrefix("mousemove") }, "the whole gesture is one xdotool command")
+        XCTAssertLessThanOrEqual(log.count, 4, "a process per step took sixteen seconds a click in the VM: \(log.count) calls")
+        XCTAssertGreaterThan(gesture.components(separatedBy: "mousemove").count - 1, 6, "a path, not a jump")
+        let down = try XCTUnwrap(gesture.range(of: "mousedown 1")), up = try XCTUnwrap(gesture.range(of: "mouseup 1"))
+        XCTAssertLessThan(down.lowerBound, up.lowerBound)
+        XCTAssertTrue(gesture[..<down.lowerBound].hasSuffix("mousemove --sync 300 200 sleep 0.05 "), "back exactly on the target just before the press")
         XCTAssertEqual((report["pointer"] as? [String: Int])?["x"], 300)
         XCTAssertEqual(report["landed"] as? Bool, true)
         XCTAssertEqual(report["window"] as? String, "Sign in")
@@ -131,7 +135,7 @@ final class ClickScriptTests: XCTestCase {
 
     func testAClickOnTheSpotItIsAlreadyOnStillPresses() throws {
         let (log, report) = try run(from: (50, 60), to: (50, 60))
-        XCTAssertTrue(log.contains("mousedown 1") && log.contains("mouseup 1"))
+        XCTAssertTrue(log.contains { $0.contains("mousedown 1") && $0.contains("mouseup 1") })
         XCTAssertEqual(report["landed"] as? Bool, true)
     }
 }
