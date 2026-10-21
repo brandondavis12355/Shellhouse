@@ -7,12 +7,12 @@
 #   sudo ./set-vm-dns.sh --dns 10.1.2.3 --allow-private
 #   ./set-vm-dns.sh --check-only                  # test the candidates, change nothing
 #
-#   sudo ./set-vm-dns.sh --allow-dest 10.12.132.170:3005   # let VMs open connections to that one address and port
-#   sudo ./set-vm-dns.sh --remove-dest 10.12.132.170:3005  # take it away again
-#   ./set-vm-dns.sh --check-only --allow-dest 10.12.132.170:3005   # can THIS host reach it? (changes nothing)
+#   sudo ./set-vm-dns.sh --allow-dest 10.0.0.80:8080   # let VMs open connections to that one address and port
+#   sudo ./set-vm-dns.sh --remove-dest 10.0.0.80:8080  # take it away again
+#   ./set-vm-dns.sh --check-only --allow-dest 10.0.0.80:8080   # can THIS host reach it? (changes nothing)
 #   (--allow-dest / --remove-dest alone leave DNS as it is; add --dns to change that too.)
 #
-#   sudo ./set-vm-dns.sh --search allegiantair.com   # short names resolve in VMs as on the host (host-name -> host-name.allegiantair.com)
+#   sudo ./set-vm-dns.sh --search corp.example.com   # short names resolve in VMs as on the host (host-name -> host-name.corp.example.com)
 #   sudo ./set-vm-dns.sh --search auto               # use this host's own search domains (Tailscale *.ts.net left out)
 #   (--search alone leaves DNS as it is. A VM's resolv.conf lists only the nameserver, so without this a short name
 #    that works on the host does not resolve in a VM. It is passed to each command as LOCALDOMAIN: no VM rebuild.)
@@ -119,7 +119,7 @@ if [ ${#DEST_ADD[@]} -gt 0 ] || [ ${#DEST_DEL[@]} -gt 0 ]; then
   done
   if [ "$CHECK_ONLY" = 1 ]; then
     for d in ${DEST_ADD[@]+"${DEST_ADD[@]}"}; do
-      if (exec 3<>"/dev/tcp/${d%%:*}/${d##*:}") 2>/dev/null; then echo "  $d   reachable from this host"; else echo "  $d   NOT reachable from this host (no firewall change on the VMs would help)"; fi
+      if python3 -c 'import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 3).close()' "${d%%:*}" "${d##*:}" 2>/dev/null; then echo "  $d   reachable from this host"; else echo "  $d   NOT reachable from this host (no firewall change on the VMs would help)"; fi
     done
     [ -z "$WANT" ] && exit 0
   else

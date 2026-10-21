@@ -12,10 +12,10 @@ fail=0
 ok() { echo "ok   $1"; }; bad() { echo "FAIL $1"; fail=1; }
 drop_line() { grep -n 'ip daddr { 0.0.0.0/8' "$tmp/agent-vm.nft" | cut -d: -f1; }
 
-printf '10.88.4.72\n' > "$tmp/dns-allow"; printf '10.12.132.170:3005\n10.12.132.170:8080\n' > "$tmp/dest-allow"
+printf '10.0.0.53\n' > "$tmp/dns-allow"; printf '10.0.0.80:8080\n10.0.0.80:9090\n' > "$tmp/dest-allow"
 "$here/set-vm-dns.sh" --reapply-allow
-grep -q 'ip daddr 10.88.4.72 meta l4proto { tcp, udp } th dport 53 accept' "$tmp/agent-vm.nft" && ok "dns exception written" || bad "dns exception"
-grep -q 'ip daddr 10.12.132.170 tcp dport 3005 accept' "$tmp/agent-vm.nft" && ok "destination exception written" || bad "destination exception"
+grep -q 'ip daddr 10.0.0.53 meta l4proto { tcp, udp } th dport 53 accept' "$tmp/agent-vm.nft" && ok "dns exception written" || bad "dns exception"
+grep -q 'ip daddr 10.0.0.80 tcp dport 8080 accept' "$tmp/agent-vm.nft" && ok "destination exception written" || bad "destination exception"
 last=$(grep -n 'shellhouse-dns-allow' "$tmp/agent-vm.nft" | tail -1 | cut -d: -f1)
 [ "$last" -lt "$(drop_line)" ] && ok "exceptions sit above the private-range drop" || bad "ordering"
 [ "$(grep -c 'shellhouse-dns-allow' "$tmp/agent-vm.nft")" = 3 ] && ok "three rules" || bad "rule count"
@@ -29,5 +29,5 @@ grep -q 'shellhouse-dns-allow' "$tmp/agent-vm.nft" && bad "removal" || ok "empti
 for d in 127.0.0.1:80 169.254.169.254:80 172.30.0.2:22 172.16.0.5:80 8.8.8.8:53 10.1.1.1:0 10.1.1.1:70000 10.1.1.1 abc:80; do
   if "$here/set-vm-dns.sh" --check-only --allow-dest "$d" >/dev/null 2>&1; then bad "$d should be refused"; else ok "refuses $d"; fi
 done
-"$here/set-vm-dns.sh" --check-only --allow-dest 10.12.132.170:3005 >/dev/null 2>&1 && ok "accepts a private address:port" || ok "accepts a private address:port (host not reachable from here; format accepted)"
+"$here/set-vm-dns.sh" --check-only --allow-dest 10.0.0.80:8080 >/dev/null 2>&1 && ok "accepts a private address:port" || ok "accepts a private address:port (host not reachable from here; format accepted)"
 exit $fail

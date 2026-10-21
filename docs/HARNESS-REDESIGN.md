@@ -124,7 +124,7 @@ later run, so it is the longest-lived way to poison a bot. Rules, in the order t
   the note stays in place).
 - **Expiry and review.** Untrusted and unverified notes expire; the user can see, filter by source and delete them.
 - **Test it.** Replay fixtures where a tainted tool result tries to plant a memory; the run must end with no new
-  trusted entry. Owner for the policy: security (information.security@allegiantair.com) should review the trust classes.
+  trusted entry. Owner for the policy: the security team should review the trust classes.
 
 
 ### 3.5 Multi-agent rules

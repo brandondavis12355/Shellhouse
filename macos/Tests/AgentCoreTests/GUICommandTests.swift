@@ -43,6 +43,40 @@ final class GUICommandTests: XCTestCase {
         XCTAssertTrue(script.hasSuffix("exit 5"))
     }
 
+    /// Runs the real open-app script with a fake `xdotool`, `pgrep` and launcher, to see what it does on a second call.
+    private func runOpen(_ script: String, in dir: URL) throws -> Int32 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", script]
+        p.environment = ["PATH": dir.path + ":/usr/bin:/bin", "DISPLAY": ":9"]
+        try p.run(); p.waitUntilExit()
+        return p.terminationStatus
+    }
+
+    func testTheSamePageIsNotOpenedTwiceButAnotherPageIs() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("open-once-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir); try? FileManager.default.removeItem(atPath: "/tmp/.shellhouse-opened-fakebrowser") }
+        func tool(_ name: String, _ body: String) throws {
+            let url = dir.appendingPathComponent(name)
+            try ("#!/bin/sh\n" + body + "\n").write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        try tool("xdotool", "exit 0")
+        try tool("pgrep", "exit 0")                                  // the browser is running
+        try tool("fakebrowser", "echo \"$@\" >> \(dir.path)/launches")
+        try? FileManager.default.removeItem(atPath: "/tmp/.shellhouse-opened-fakebrowser")
+        func open(_ url: String) -> String {
+            GUICommand.openApp(process: "fakebrowser", launch: "fakebrowser \(shellQuote(url))", once: url)
+        }
+        XCTAssertEqual(try runOpen(open("http://a/x"), in: dir), 0, "first time: opened")
+        XCTAssertEqual(try runOpen(open("http://a/x"), in: dir), Int32(GUICommand.alreadyOpenExit), "same page again: not opened")
+        XCTAssertEqual(try runOpen(open("http://a/y"), in: dir), 0, "another page: opened")
+        XCTAssertEqual(try runOpen(open("http://a/x"), in: dir), 0, "back to the first after a different one: opened")
+        let launches = (try String(contentsOf: dir.appendingPathComponent("launches"), encoding: .utf8)).split(separator: "\n")
+        XCTAssertEqual(launches.count, 3)
+    }
+
     func testTheTunnelBacksOffAndResetsAfterAGoodRun() {
         let waits = (1...8).map { SSHTunnel.restartDelaySeconds(failureStreak: $0, quick: false) }
         XCTAssertEqual(waits, [5, 10, 20, 40, 60, 60, 60, 60])

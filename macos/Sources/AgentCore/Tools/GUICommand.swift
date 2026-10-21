@@ -10,13 +10,27 @@ public enum GUICommand {
     public static func wrap(_ command: String) -> String { "export DISPLAY=\"${DISPLAY:-\(display)}\"; " + command }
 
     /// Exit codes of `openApp`'s script.
-    static let noDisplayExit = 4, didNotStartExit = 5
+    static let noDisplayExit = 4, didNotStartExit = 5, alreadyOpenExit = 7
 
     /// Opens an app and checks that it actually started: the old command backgrounded it and reported success whatever happened.
-    public static func openApp(process: String, launch: String) -> String {
-        wrap("xdotool getdisplaygeometry >/dev/null 2>&1 || exit \(noDisplayExit); nohup \(launch) >/dev/null 2>&1 & disown; "
-            + "for i in 1 2 3 4 5 6 7 8 9 10; do sleep 0.5; pgrep -x \(process) >/dev/null && exit 0; done; exit \(didNotStartExit)")
+    /// `once`: what is being opened (a URL). The same thing asked for again within three minutes, while the app is still
+    /// running, is not opened again: every repeat of `chromium URL` is another tab, and a bot that is unsure it worked
+    /// asks again and again.
+    public static func openApp(process: String, launch: String, once: String? = nil) -> String {
+        var script = "xdotool getdisplaygeometry >/dev/null 2>&1 || exit \(noDisplayExit); "
+        if let once, !once.isEmpty {
+            let marker = shellQuote("/tmp/.shellhouse-opened-\(process)")
+            script += "if pgrep -x \(process) >/dev/null && [ \"$(cat \(marker) 2>/dev/null)\" = \(shellQuote(once)) ] "
+                + "&& [ -n \"$(find \(marker) -mmin -3 2>/dev/null)\" ]; then exit \(alreadyOpenExit); fi; "
+                + "printf %s \(shellQuote(once)) > \(marker); "
+        }
+        script += "nohup \(launch) >/dev/null 2>&1 & disown; "
+            + "for i in 1 2 3 4 5 6 7 8 9 10; do sleep 0.5; pgrep -x \(process) >/dev/null && exit 0; done; exit \(didNotStartExit)"
+        return wrap(script)
     }
+
+    public static let alreadyOpenNote = "That page is already open in the browser (opened a moment ago); opening it again would only add another tab. "
+        + "Take a screenshot to see it. To go somewhere else in the same window, press_key ctrl+l, type_text the address, then press_key Return."
 
     public static let noDesktopMessage = "This VM has no running desktop (nothing is answering on the X display \(display)), so graphical apps, "
         + "screenshots, clicks and typing cannot work. That is a VM problem, not something to retry: tell the user, and for anything that "
