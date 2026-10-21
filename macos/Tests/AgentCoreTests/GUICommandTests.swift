@@ -83,3 +83,55 @@ final class GUICommandTests: XCTestCase {
         XCTAssertEqual(SSHTunnel.restartDelaySeconds(failureStreak: 0, quick: true), 1)
     }
 }
+
+/// The realistic click script, run for real against a fake `xdotool` that records what it is told.
+final class ClickScriptTests: XCTestCase {
+    private func run(from start: (Int, Int), to target: (Int, Int)) throws -> (log: [String], report: [String: Any]) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("click-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("log"), pos = dir.appendingPathComponent("pos")
+        try "\(start.0),\(start.1)".write(to: pos, atomically: true, encoding: .utf8)
+        let fake = """
+        #!/bin/sh
+        echo "$@" >> '\(log.path)'
+        case "$1" in
+          getmouselocation) p=$(cat '\(pos.path)'); echo "X=${p%,*}"; echo "Y=${p#*,}"; echo "SCREEN=0"; echo "WINDOW=42" ;;
+          mousemove) shift; [ "$1" = "--sync" ] && shift; echo "$1,$2" > '\(pos.path)' ;;
+          getwindowname) echo "Sign in" ;;
+        esac
+        """
+        let tool = dir.appendingPathComponent("xdotool")
+        try fake.write(to: tool, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", GUICommand.click(x: target.0, y: target.1, button: 1)]
+        p.environment = ["PATH": dir.path + ":/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "DISPLAY": ":1"]
+        let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+        try p.run(); p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0)
+        let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let report = (try? JSONSerialization.jsonObject(with: Data((text.split(separator: "\n").last.map(String.init) ?? "{}").utf8))) as? [String: Any] ?? [:]
+        return (((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init), report)
+    }
+
+    func testThePointerTravelsSettlesPressesHoldsAndReleases() throws {
+        let (log, report) = try run(from: (10, 10), to: (300, 200))
+        let moves = log.filter { $0.hasPrefix("mousemove") }
+        XCTAssertGreaterThan(moves.count, 8, "a path, not a jump")
+        let down = log.firstIndex(of: "mousedown 1"), up = log.firstIndex(of: "mouseup 1")
+        XCTAssertNotNil(down); XCTAssertNotNil(up)
+        if let down, let up { XCTAssertLessThan(down, up) }
+        if let down { XCTAssertEqual(log[down - 1], "mousemove --sync 300 200", "it is back exactly on the target just before the press") }
+        XCTAssertEqual((report["pointer"] as? [String: Int])?["x"], 300)
+        XCTAssertEqual(report["landed"] as? Bool, true)
+        XCTAssertEqual(report["window"] as? String, "Sign in")
+    }
+
+    func testAClickOnTheSpotItIsAlreadyOnStillPresses() throws {
+        let (log, report) = try run(from: (50, 60), to: (50, 60))
+        XCTAssertTrue(log.contains("mousedown 1") && log.contains("mouseup 1"))
+        XCTAssertEqual(report["landed"] as? Bool, true)
+    }
+}

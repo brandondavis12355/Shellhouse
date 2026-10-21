@@ -37,9 +37,9 @@ explains a problem. Not for text output (paste it), not the same view twice.
   `/workspace`).
 
 ## Check before you post
-- The screenshot you see has a ruler and a red pointer ring added for
+- The screenshot you see has a ruler and an arrow cursor and a ruler added for
   you. What `post_screenshot` sends is the clean capture, so don't
-  describe the ring or ruler to your user as part of the page.
+  describe the cursor or ruler to your user as part of the page.
 - Desktop: the address bar shows the right URL, and the page isn't
   blank, half-loaded, an error, a 404 or a login page. Not loaded? Wait
   and take another `screenshot`.

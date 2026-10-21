@@ -54,7 +54,7 @@ public struct ComputerView: NSViewRepresentable {
     }
 
     public func updateNSView(_ view: WKWebView, context: Context) {
-        if view.url != vncURL {
+        if view.url != vncURL.map(Self.withPointerDot) {
             load(vncURL, into: view)
         }
     }
@@ -62,7 +62,19 @@ public struct ComputerView: NSViewRepresentable {
     private func load(_ url: URL?, into view: WKWebView) {
         guard let url else { return }
         onLoadingChange(true)
-        view.load(URLRequest(url: url))
+        view.load(URLRequest(url: Self.withPointerDot(url)))
+    }
+
+    /// noVNC's "show dot when no cursor": if the server sends no pointer image (x11vnc started with `-noxfixes` does not), the
+    /// viewer still marks where the pointer is, so a person can see where a bot is clicking. A real cursor shape from the server
+    /// is drawn as it is and the dot stays out of the way.
+    static func withPointerDot(_ url: URL) -> URL {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        var items = parts.queryItems ?? []
+        guard !items.contains(where: { $0.name == "show_dot" }) else { return url }
+        items.append(URLQueryItem(name: "show_dot", value: "true"))
+        parts.queryItems = items
+        return parts.url ?? url
     }
 
     /// Surfaces load failures instead of leaving a silent black rectangle —

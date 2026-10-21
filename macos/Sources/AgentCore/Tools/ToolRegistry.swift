@@ -895,7 +895,8 @@ public struct ToolRegistry: Sendable {
     private static func captureScreenshot(
         sandboxID: String,
         sandbox: any SandboxProvider,
-        filenameHint: String? = nil
+        filenameHint: String? = nil,
+        clicked: Bool = false
     ) async -> (filename: String, bytes: Int, base64: String)? {
         let filename = sanitizeFilename(filenameHint) ?? "screenshot-\(Int(Date().timeIntervalSince1970)).png"
         let absolutePath = "/workspace/\(filename)"
@@ -905,7 +906,7 @@ public struct ToolRegistry: Sendable {
               let data = try? await sandbox.readFile(sandboxID, path: filename, maxBytes: 10_000_000) else {
             return nil
         }
-        let marked = ScreenOverlay.annotate(data, pointer: pointerPosition(in: captured.stdout))
+        let marked = ScreenOverlay.annotate(data, pointer: pointerPosition(in: captured.stdout), clicked: clicked)
         return (filename, data.count, compressedForModel(marked).base64EncodedString())
     }
 
@@ -1029,7 +1030,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "click",
-                description: "Click. With x and y: move the mouse to those screen coordinates and click. Without them: click where the pointer is now (use move_mouse first, check the screenshot, then click). Screenshots have a ruler (numbers every 100 px) and a red ring at the pointer, so you can read positions and see where a click will land. Take a screenshot first; coordinates from memory or an older screenshot are often wrong.",
+                description: "Click. With x and y: move the mouse to those screen coordinates and click. Without them: click where the pointer is now (use move_mouse first, check the screenshot, then click). Screenshots have a ruler (numbers every 100 px) and an arrow cursor at the pointer, with orange ripple rings after a click, so you can read positions and see where a click landed. A click result also says where the pointer ended and which window is under it. Take a screenshot first; coordinates from memory or an older screenshot are often wrong.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -1042,7 +1043,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "move_mouse",
-                description: "Move the mouse pointer to screen coordinates without clicking, and return a screenshot with the pointer marked by a red ring. Use it to check that the pointer is on the right thing (a field, a button), correct it if not, then click with no coordinates.",
+                description: "Move the mouse pointer to screen coordinates without clicking, and return a screenshot with the cursor drawn at the pointer. Use it to check that the pointer is on the right thing (a field, a button), correct it if not, then click with no coordinates.",
                 parameters: [
                     "type": "object",
                     "properties": ["x": ["type": "integer"], "y": ["type": "integer"]],
@@ -1341,15 +1342,26 @@ public struct ToolRegistry: Sendable {
                     // over VNC can see, in real time, that this click came
                     // from the agent and where it landed, not just from a
                     // static screenshot after the fact.
-                    let command = at.map { "python3 /usr/local/bin/ai-click.py \($0.0) \($0.1) \(button)" } ?? "xdotool click \(button)"
-                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap(command), timeout: 15, env: nil)
+                    let command = at.map { GUICommand.click(x: $0.0, y: $0.1, button: button) }
+                        ?? GUICommand.wrap("xdotool mousedown \(button); sleep 0.08; xdotool mouseup \(button); xdotool getmouselocation --shell")
+                    let result = try await sandbox.exec(sandboxID, command: command, timeout: 20, env: nil)
                     guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
                     // Always attached, not left to the model to remember to
                     // ask for — see captureScreenshot's doc comment.
-                    guard let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox) else {
-                        return ["ok": true, "screenshot_error": "click succeeded but the verification screenshot failed"]
+                    // Where the pointer really ended and what is under it, so a click that missed shows in the result.
+                    var report: [String: Any] = [:]
+                    if let data = result.stdout.split(separator: "\n").last.flatMap({ $0.data(using: .utf8) }),
+                       let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        if let pointer = parsed["pointer"] { report["pointer"] = pointer }
+                        if let window = parsed["window"] as? String, !window.isEmpty { report["window_under_pointer"] = window }
+                        if parsed["landed"] as? Bool == false {
+                            report["warning"] = "The pointer did not end where you aimed; the click may have hit something else. Check the screenshot."
+                        }
                     }
-                    return ["ok": true, "screenshot": shot.filename, "_base64": shot.base64]
+                    guard let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox, clicked: true) else {
+                        return report.merging(["ok": true, "screenshot_error": "click succeeded but the verification screenshot failed"]) { a, _ in a }
+                    }
+                    return report.merging(["ok": true, "screenshot": shot.filename, "_base64": shot.base64]) { a, _ in a }
                 } catch {
                     return ["error": error.localizedDescription]
                 }

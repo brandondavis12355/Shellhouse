@@ -15,7 +15,7 @@ user over VNC: they can watch and take over. Act deliberately.
   `/workspace`. It is for your eyes only; to show your user, call
   `post_screenshot` (see sharing-screenshots). The picture you see is
   marked: a ruler along the top and left edges (numbers every 100 px) and
-  a **red ring labelled "pointer x,y" where the mouse is**. The saved file
+  an **arrow cursor, its tip on the mouse position, labelled "pointer x,y"**; after a click, orange ripple rings around the click point labelled "clicked x,y". The saved file
   and what your user sees are unmarked.
 - `move_mouse(x, y)`: moves the pointer without clicking and returns a
   screenshot, so you can see where a click would land. Pairs with a
@@ -69,14 +69,14 @@ A click on the wrong thing can submit, delete or navigate away. For a
 small target (a link in a list, a small button, one of several close
 fields) or anything where a miss does harm:
 1. `move_mouse(x, y)` at the target.
-2. In the screenshot, is the red ring on it? If not, work out the
+2. In the screenshot, is the arrow's tip on it? If not, work out the
    difference against the ruler and `move_mouse` again.
-3. `click()` with no coordinates, which clicks where the ring is.
+3. `click()` with no coordinates, which clicks where the arrow is.
 A large, obvious target (a wide field or button) you can click directly.
 
 ## Typing
 - Click the field first and check the cursor is in it (a highlighted
-  border or a blinking cursor; the red ring is only the mouse). `type_text`
+  border or a blinking cursor; the arrow is only the mouse). `type_text`
   goes wherever the focus is: with no field focused, it lands in the page.
 - Type once. Typing again adds a second copy. To replace a field's
   contents: click it, `press_key("ctrl+a")`, then `type_text`. Submit with
@@ -90,7 +90,7 @@ never write a secret into a reply, file or command.
    e.g. `JIRA_PASSWORD`; you get only the username.
 2. Type the username with `type_text` (it is not a secret, so
    `type_secret` doesn't know it). Then `move_mouse` to the password
-   field, check the ring is on it, and `click()`.
+   field, check the arrow's tip is on it, and `click()`.
 3. `type_secret(name, window)`: `window` is part of the target window's
    title (from `list_windows`). It refuses if another window has focus.
    Your user approves every use, so expect a wait. **Once per field:** it

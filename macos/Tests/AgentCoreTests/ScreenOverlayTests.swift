@@ -37,14 +37,23 @@ final class ScreenOverlayTests: XCTestCase {
         XCTAssertTrue(size(out) == (1280, 800))
     }
 
-    func testARedRingIsDrawnAroundThePointerAndTheCentreStaysClear() {
+    func testAnArrowCursorIsDrawnWithItsTipOnThePointerAndNothingElseChanges() {
         let base = solidPNG(400, 300)
         let out = ScreenOverlay.annotate(base, pointer: (200, 150))
-        let onRing = pixel(out, 216, 150)          // 16 px right of the pointer: the ring
-        XCTAssertGreaterThan(onRing.r, 200); XCTAssertLessThan(onRing.g, 120); XCTAssertLessThan(onRing.b, 120)
-        let centre = pixel(out, 200, 150)
-        XCTAssertEqual(centre.r, pixel(base, 200, 150).r, accuracy: 3, "the pixel under the pointer is left as it was")
-        XCTAssertEqual(pixel(out, 300, 250).r, pixel(base, 300, 250).r, accuracy: 3, "away from the pointer nothing changes")
+        let body = pixel(out, 202, 160)             // inside the arrow, a few pixels below the tip
+        XCTAssertLessThan(body.r, 20); XCTAssertLessThan(body.g, 20); XCTAssertLessThan(body.b, 20, "black body")
+        let edge = pixel(out, 199, 158)             // just left of the tip's stem: the white outline
+        XCTAssertGreaterThan(edge.r, 200)
+        XCTAssertEqual(pixel(out, 300, 250).r, pixel(base, 300, 250).r, accuracy: 3, "away from the cursor nothing changes")
+        XCTAssertEqual(pixel(out, 218, 150).r, pixel(base, 218, 150).r, accuracy: 3, "no ripple unless a click happened")
+    }
+
+    func testAClickLeavesOrangeRipples() {
+        let base = solidPNG(400, 300)
+        let out = ScreenOverlay.annotate(base, pointer: (200, 150), clicked: true)
+        let ring = pixel(out, 218, 150)             // 18 px right of the click: the second ripple
+        XCTAssertGreaterThan(ring.r, 150); XCTAssertLessThan(ring.b, 120)
+        XCTAssertGreaterThan(ring.r, ring.g + 40, "orange, not grey")
     }
 
     func testTheRulerMarksTheTopAndLeftEdgesAndNotTheMiddle() {

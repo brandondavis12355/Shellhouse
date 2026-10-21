@@ -29,6 +29,54 @@ public enum GUICommand {
         return wrap(script)
     }
 
+    /// A click that behaves like a hand: the pointer travels along a curve with easing and a little wobble, settles on the
+    /// target for a moment (pages react to hover before a press), presses, holds for 60 to 110 ms, releases, and the script
+    /// reports where the pointer really ended and which window is under it. `xdotool click` pressed and released in the same
+    /// instant, which some pages ignore. Python is in the VM already; the script travels with the app, so existing VMs get it.
+    public static func click(x: Int, y: Int, button: Int) -> String {
+        wrap("python3 - \(x) \(y) \(button) <<'PY'\n\(clickScript)\nPY")
+    }
+
+    public static let clickScript = """
+    import json, math, random, subprocess, sys, time
+    tx, ty, button = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+    def xd(*a):
+        return subprocess.run(["xdotool", *a], capture_output=True, text=True, check=True).stdout
+    def where():
+        v = dict(l.split("=", 1) for l in xd("getmouselocation", "--shell").split() if "=" in l)
+        return int(v["X"]), int(v["Y"]), v.get("WINDOW", "")
+    sx, sy, _ = where()
+    dist = math.hypot(tx - sx, ty - sy)
+    steps = max(6, min(28, int(dist / 18) + 6))
+    # A quadratic curve: the control point is pushed sideways a little, more for a longer trip.
+    side = random.choice((-1, 1)) * min(60, dist * 0.12)
+    mx, my = (sx + tx) / 2, (sy + ty) / 2
+    nx, ny = (-(ty - sy) / (dist or 1), (tx - sx) / (dist or 1))
+    cx, cy = mx + nx * side, my + ny * side
+    for i in range(1, steps + 1):
+        t = i / steps
+        e = t * t * (3 - 2 * t)
+        x = (1 - e) ** 2 * sx + 2 * (1 - e) * e * cx + e * e * tx
+        y = (1 - e) ** 2 * sy + 2 * (1 - e) * e * cy + e * e * ty
+        if i < steps:
+            x += random.uniform(-1.2, 1.2); y += random.uniform(-1.2, 1.2)
+        xd("mousemove", str(round(x)), str(round(y)))
+        time.sleep(random.uniform(0.006, 0.014))
+    xd("mousemove", "--sync", str(tx), str(ty))
+    time.sleep(0.12)
+    xd("mousemove", "--sync", str(tx + 1), str(ty)); xd("mousemove", "--sync", str(tx), str(ty))
+    time.sleep(0.05)
+    xd("mousedown", button)
+    time.sleep(random.uniform(0.06, 0.11))
+    xd("mouseup", button)
+    x, y, win = where()
+    name = ""
+    if win:
+        try: name = xd("getwindowname", win).strip()
+        except Exception: pass
+    print(json.dumps({"pointer": {"x": x, "y": y}, "landed": abs(x - tx) <= 2 and abs(y - ty) <= 2, "window": name}))
+    """
+
     public static let alreadyOpenNote = "That page is already open in the browser (opened a moment ago); opening it again would only add another tab. "
         + "Take a screenshot to see it. To go to a different page, call open_app again with that page's url."
 
