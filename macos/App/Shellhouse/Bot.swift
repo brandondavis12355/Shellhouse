@@ -139,6 +139,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// Where the bot last moved or clicked the mouse on its desktop, drawn as an arrow over the computer pane (see `AgentPointerOverlay`).
     var agentPointer: AgentPointer?
     private var agentPointerCount = 0
+    private var lastPointerEventAt = Date.distantPast
+    private var pointerWatch: Task<Void, Never>?
     /// True while ANY `AgentRuntime` run is in flight for this bot — its own
     /// chat, a delegation reply, or a group-chat turn — not just the chat
     /// queue. Kept true continuously from `acquireRunLock()` to
@@ -3191,6 +3193,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         PointerBus.setHandler({ [weak self] x, y, clicked in
             Task { @MainActor in
                 guard let self else { return }
+                self.lastPointerEventAt = Date()
                 self.agentPointerCount += 1
                 self.agentPointer = AgentPointer(x: x, y: y, clicked: clicked, sequence: self.agentPointerCount)
             }
@@ -3200,6 +3203,7 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// A tool result reported the mouse position: show it on the desktop pane.
     func noteAgentPointer(_ toolName: String, _ resultJSON: String) {
         guard let report = PointerMapping.report(toolName: toolName, resultJSON: resultJSON) else { return }
+        lastPointerEventAt = Date()
         agentPointerCount += 1
         agentPointer = AgentPointer(x: report.x, y: report.y, clicked: report.clicked, sequence: agentPointerCount)
     }
@@ -3304,6 +3308,27 @@ final class Bot: Identifiable, @unchecked Sendable {
         messageQueue.append(QueuedMessage(text: text, images: images))
         guard !isDrainingQueue else { return }
         drainTask = Task { await drainQueue() }
+        startPointerWatch()
+    }
+
+    /// While a task runs, ask the VM where the mouse really is every second or so and move the on-screen pointer there if it is
+    /// not already (nothing announced or reported in the last two seconds, so a glide in progress is left alone). The pointer
+    /// stays on screen for the whole task, and always matches the real position rather than only what the last tool reported.
+    func startPointerWatch() {
+        guard pointerWatch == nil else { return }
+        pointerWatch = Task { @MainActor [weak self] in
+            while let self, self.isProcessingMessage, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                guard self.isProcessingMessage, Date().timeIntervalSince(self.lastPointerEventAt) > 2,
+                      let sandbox = self.sandbox, let id = self.handle?.id,
+                      let result = try? await sandbox.exec(id, command: GUICommand.wrap("xdotool getmouselocation --shell"), timeout: 8, env: nil),
+                      result.exitCode == 0, let spot = PointerMapping.location(in: result.stdout) else { continue }
+                if let now = self.agentPointer, abs(now.x - spot.x) <= 2, abs(now.y - spot.y) <= 2 { continue }
+                self.agentPointerCount += 1
+                self.agentPointer = AgentPointer(x: spot.x, y: spot.y, clicked: false, sequence: self.agentPointerCount)
+            }
+            self?.pointerWatch = nil
+        }
     }
 
     /// Stops whatever this bot's own chat is currently doing — cancels
@@ -3648,6 +3673,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             // Stop → quick resubmit: the new message was queued while this
             // (cancelled) loop was still unwinding. Start a clean one for it.
             drainTask = Task { await drainQueue() }
+            startPointerWatch()
         }
     }
 

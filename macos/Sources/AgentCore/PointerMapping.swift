@@ -20,6 +20,16 @@ public enum PointerMapping {
         return CGPoint(x: rect.minX + fx * rect.width, y: rect.minY + fy * rect.height)
     }
 
+    /// `X=…` and `Y=…` lines of `xdotool getmouselocation --shell`.
+    public static func location(in output: String) -> (x: Int, y: Int)? {
+        var x: Int?, y: Int?
+        for line in output.split(separator: "\n") {
+            if line.hasPrefix("X=") { x = Int(line.dropFirst(2)) } else if line.hasPrefix("Y=") { y = Int(line.dropFirst(2)) }
+        }
+        guard let x, let y else { return nil }
+        return (x, y)
+    }
+
     /// The pointer position a tool result reports (`"pointer": {"x": …, "y": …}`), and whether the action was a click.
     public static func report(toolName: String, resultJSON: String) -> (x: Int, y: Int, clicked: Bool)? {
         guard ["click", "move_mouse", "click_text", "fill_field"].contains(toolName),

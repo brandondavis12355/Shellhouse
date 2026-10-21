@@ -14,23 +14,33 @@ import WebKit
 /// point a view at. `WKWebView` embedding noVNC is the direct replacement:
 /// one extra network hop instead of zero, but no native VNC client dependency
 /// either.
+/// Where the desktop picture really is inside the web view, read from noVNC's canvas, so the pointer overlay lands on the right
+/// spot whatever noVNC's own layout (bars, scaling mode) does. Nil until the first reading; the overlay then assumes a centred fit.
+public final class ScreenFrame: ObservableObject {
+    @Published public var rect: CGRect?
+    public init() {}
+}
+
 public struct ComputerView: NSViewRepresentable {
+    private let frame: ScreenFrame?
     private let vncURL: URL?
     private let onLoadError: (String) -> Void
     private let onLoadingChange: (Bool) -> Void
 
     public init(
         vncURL: URL?,
+        frame: ScreenFrame? = nil,
         onLoadError: @escaping (String) -> Void = { _ in },
         onLoadingChange: @escaping (Bool) -> Void = { _ in }
     ) {
+        self.frame = frame
         self.vncURL = vncURL
         self.onLoadError = onLoadError
         self.onLoadingChange = onLoadingChange
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(onLoadError: onLoadError, onLoadingChange: onLoadingChange)
+        Coordinator(onLoadError: onLoadError, onLoadingChange: onLoadingChange, frame: frame)
     }
 
     public func makeNSView(context: Context) -> WKWebView {
@@ -51,6 +61,7 @@ public struct ComputerView: NSViewRepresentable {
         // doesn't have the same effect anyway, so this reverted back.)
         view.setValue(false, forKey: "drawsBackground")
         load(vncURL, into: view)
+        context.coordinator.watch(view)
         return view
     }
 
@@ -87,10 +98,28 @@ public struct ComputerView: NSViewRepresentable {
     public final class Coordinator: NSObject, WKNavigationDelegate {
         private let onLoadError: (String) -> Void
         private let onLoadingChange: (Bool) -> Void
+        private let frame: ScreenFrame?
+        private var timer: Timer?
 
-        init(onLoadError: @escaping (String) -> Void, onLoadingChange: @escaping (Bool) -> Void) {
+        init(onLoadError: @escaping (String) -> Void, onLoadingChange: @escaping (Bool) -> Void, frame: ScreenFrame?) {
             self.onLoadError = onLoadError
             self.onLoadingChange = onLoadingChange
+            self.frame = frame
+        }
+
+        deinit { timer?.invalidate() }
+
+        /// Reads the desktop canvas's box every half second (it moves when the pane is resized or noVNC re-lays out).
+        func watch(_ view: WKWebView) {
+            guard frame != nil, timer == nil else { return }
+            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self, weak view] _ in
+                guard let self, let view else { return }
+                view.evaluateJavaScript("(function(){var c=document.querySelector('#noVNC_canvas')||document.querySelector('canvas');if(!c)return null;var r=c.getBoundingClientRect();return [r.left,r.top,r.width,r.height];})()") { value, _ in
+                    guard let v = value as? [Double], v.count == 4, v[2] > 10, v[3] > 10 else { return }
+                    let rect = CGRect(x: v[0], y: v[1], width: v[2], height: v[3])
+                    DispatchQueue.main.async { if self.frame?.rect != rect { self.frame?.rect = rect } }
+                }
+            }
         }
 
         public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -128,13 +157,16 @@ public struct AgentPointer: Equatable {
 /// (the remote desktop sends no pointer image) and cannot be mistaken for your own mouse.
 struct AgentPointerOverlay: View {
     let pointer: AgentPointer?
+    @ObservedObject var frame: ScreenFrame
+    /// A task is running: the pointer stays on screen instead of fading after a few idle seconds.
+    let keepVisible: Bool
     @State private var visible = false
     @State private var rippling = false
 
     var body: some View {
         GeometryReader { geo in
             if let pointer {
-                let rect = PointerMapping.fit(into: geo.size)
+                let rect = frame.rect ?? PointerMapping.fit(into: geo.size)
                 let spot = PointerMapping.point(x: pointer.x, y: pointer.y, in: rect)
                 ZStack(alignment: .topLeading) {
                     if pointer.clicked {
@@ -165,12 +197,24 @@ struct AgentPointerOverlay: View {
         .onChange(of: pointer?.sequence) { _, _ in
             visible = true
             rippling = false
-            withAnimation(.easeOut(duration: 0.6)) { rippling = true }
-            let mark = pointer?.sequence
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 8_000_000_000)
-                if pointer?.sequence == mark { visible = false }
-            }
+            if pointer?.clicked == true { withAnimation(.easeOut(duration: 0.6)) { rippling = true } }
+            fadeLaterIfIdle()
+        }
+        .onChange(of: keepVisible) { _, keep in
+            if keep, pointer != nil { visible = true }
+            if !keep { fadeLaterIfIdle() }
+        }
+        .onAppear { if keepVisible, pointer != nil { visible = true } }
+    }
+}
+
+extension AgentPointerOverlay {
+    /// Once no task is running, fade the pointer out after a few idle seconds. While one is, it stays.
+    fileprivate func fadeLaterIfIdle() {
+        let mark = pointer?.sequence
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            if pointer?.sequence == mark, !keepVisible { visible = false }
         }
     }
 }
@@ -208,10 +252,13 @@ public struct ComputerPanel: View {
     @State private var isConnecting = true
 
     private let pointer: AgentPointer?
+    private let keepPointerVisible: Bool
+    @StateObject private var screenFrame = ScreenFrame()
 
-    public init(state: State, pointer: AgentPointer? = nil, onLoadError: @escaping (String) -> Void = { _ in }) {
+    public init(state: State, pointer: AgentPointer? = nil, keepPointerVisible: Bool = false, onLoadError: @escaping (String) -> Void = { _ in }) {
         self.state = state
         self.pointer = pointer
+        self.keepPointerVisible = keepPointerVisible
         self.onLoadError = onLoadError
     }
 
@@ -220,7 +267,7 @@ public struct ComputerPanel: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
-                .overlay { if case .running = state { AgentPointerOverlay(pointer: pointer) } }
+                .overlay { if case .running = state { AgentPointerOverlay(pointer: pointer, frame: screenFrame, keepVisible: keepPointerVisible) } }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if case .running = state {
@@ -259,6 +306,7 @@ public struct ComputerPanel: View {
             ZStack {
                 ComputerView(
                     vncURL: vncURL,
+                    frame: screenFrame,
                     onLoadError: onLoadError,
                     onLoadingChange: { isConnecting = $0 }
                 )
