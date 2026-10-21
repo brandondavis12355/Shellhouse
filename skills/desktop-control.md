@@ -128,6 +128,9 @@ your user instead.
   Fall back to `screenshot` and `click` only when they say `no_match` (the
   thing has no text, such as an icon or a canvas) or for programs that
   aren't the browser. Check a name first with `find_on_page`.
+- A popup that belongs to the browser itself (not the page), such as a
+  "save password" bubble or a notification request, can't be reached with
+  `click_text`. Press `Escape` to close it; don't click around for it.
 - `open_app("browser", ...)` starts Chromium so the page tools can control it
   (with its own profile: you may have to sign in once). A browser started
   any other way is closed and started again.

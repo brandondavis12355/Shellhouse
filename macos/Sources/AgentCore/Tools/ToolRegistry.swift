@@ -1353,7 +1353,8 @@ public struct ToolRegistry: Sendable {
                     let target = args["url"]?.asString.map { shellQuote($0) } ?? ""
                     command = GUICommand.openApp(
                         process: "chromium", launch: "chromium \(BrowserControl.launchFlags) \(target)", once: args["url"]?.asString,
-                        controllable: "curl -sf -m 2 http://127.0.0.1:\(BrowserControl.port)/json/version >/dev/null")
+                        controllable: "curl -sf -m 2 http://127.0.0.1:\(BrowserControl.port)/json/version >/dev/null",
+                        prepare: BrowserControl.quietProfile)
                 case "terminal":
                     command = GUICommand.openApp(process: "xfce4-terminal", launch: "xfce4-terminal --working-directory=/workspace")
                 case "files":

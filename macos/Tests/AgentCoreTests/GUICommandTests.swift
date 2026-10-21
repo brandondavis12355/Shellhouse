@@ -183,3 +183,23 @@ final class ClickScriptTests: XCTestCase {
         XCTAssertEqual(report["landed"] as? Bool, true)
     }
 }
+
+final class QuietProfileTests: XCTestCase {
+    func testThePasswordPromptsAreSwitchedOffInTheProfileAndExistingSettingsKept() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("quiet-\(UUID().uuidString)")
+        let dir = home.appendingPathComponent(".config/shellhouse-chromium/Default")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try #"{"profile":{"name":"Person 1"},"keep":1}"#.write(to: dir.appendingPathComponent("Preferences"), atomically: true, encoding: .utf8)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh"); p.arguments = ["-c", BrowserControl.quietProfile]
+        p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"]
+        try p.run(); p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0)
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("Preferences"))) as? [String: Any]
+        XCTAssertEqual(json?["credentials_enable_service"] as? Bool, false)
+        XCTAssertEqual((json?["profile"] as? [String: Any])?["password_manager_enabled"] as? Bool, false)
+        XCTAssertEqual((json?["profile"] as? [String: Any])?["name"] as? String, "Person 1")
+        XCTAssertEqual(json?["keep"] as? Int, 1)
+    }
+}

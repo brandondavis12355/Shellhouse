@@ -17,13 +17,16 @@ public enum GUICommand {
     /// `once`: what is being opened (a URL). The same thing asked for again within three minutes, while the app is still
     /// running, is not opened again: every repeat of `chromium URL` is another tab, and a bot that is unsure it worked
     /// asks again and again.
+    /// `prepare`: a command run just before a fresh start (the browser's settings).
     /// `controllable`: for the browser, a command that is true when it can be remote-controlled. A browser that is already running without that
     /// (started some other way) is closed first and started again with it, since the page tools can't reach it otherwise.
-    public static func openApp(process: String, launch: String, once: String? = nil, controllable: String? = nil) -> String {
+    public static func openApp(process: String, launch: String, once: String? = nil, controllable: String? = nil, prepare: String? = nil) -> String {
         var script = "xdotool getdisplaygeometry >/dev/null 2>&1 || exit \(noDisplayExit); "
         if let controllable {
             script += "if pgrep -x \(process) >/dev/null && ! \(controllable); then pkill -x \(process); sleep 1.5; fi; "
         }
+        // Runs only when the app is not running (it would overwrite a running browser's settings when it exits).
+        if let prepare { script += "if ! pgrep -x \(process) >/dev/null; then \(prepare); fi; " }
         if let once, !once.isEmpty {
             let marker = shellQuote("/tmp/.shellhouse-opened-\(process)")
             script += "if pgrep -x \(process) >/dev/null && [ \"$(cat \(marker) 2>/dev/null)\" = \(shellQuote(once)) ] "
