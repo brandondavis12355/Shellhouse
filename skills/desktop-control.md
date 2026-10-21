@@ -22,7 +22,9 @@ user over VNC: they can watch and take over. Act deliberately.
   coordinate-less `click()`.
 - `click(x, y, button)`: `button` 1 left (default), 2 middle, 3 right.
   Returns a fresh screenshot. With no `x`/`y` it clicks where the pointer
-  is now.
+  is now. **A click only fires after `move_mouse` put the pointer on that
+  spot** (the same coordinates, or none); otherwise it is refused and
+  nothing is clicked. Every click needs a fresh aim.
 - `type_text(text)`: types into the focused window. Returns a screenshot.
   Does not press Enter.
 - `scroll(direction, amount, x, y)`: `up`/`down`, `amount` wheel clicks
@@ -83,7 +85,8 @@ fields) or anything where a miss does harm:
 2. In the screenshot, is the arrow's tip on it? If not, work out the
    difference against the ruler and `move_mouse` again.
 3. `click()` with no coordinates, which clicks where the arrow is.
-A large, obvious target (a wide field or button) you can click directly.
+Every click on screen follows this (the harness refuses a click that
+wasn't aimed). Only `click_text` in the browser needs no aiming.
 
 ## Typing
 - Click the field first and check the cursor is in it (a highlighted

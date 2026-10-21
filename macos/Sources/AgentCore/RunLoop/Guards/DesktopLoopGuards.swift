@@ -63,6 +63,46 @@ public final class LookFirstGuard: Guard {
     }
 }
 
+/// A click fires only on a spot the bot has seen the pointer on. `move_mouse(x, y)` puts the pointer there and returns a
+/// screenshot with the arrow drawn on it; only then does `click` (with the same coordinates, or none) go through. Anything that
+/// changes the screen (a click, typing, scrolling, a key, a new page) clears the aim, so each click is aimed afresh.
+public final class AimFirstGuard: Guard {
+    public let id = "aim_first"
+    public static let tolerance = 6
+    private var aimed: (x: Int, y: Int)?
+    public init() {}
+
+    public func reset(_ scope: GuardReset) { aimed = nil }
+
+    public func beforeTool(_ call: ToolCall, _ ctx: RunContext) -> [GuardAction] {
+        guard call.name == "click", Reliability.isOn(.loopGuards) else { return [] }
+        let x = call.arguments["x"]?.asInt, y = call.arguments["y"]?.asInt
+        if let a = aimed {
+            if x == nil || y == nil || (abs(a.x - x!) <= Self.tolerance && abs(a.y - y!) <= Self.tolerance) { return [] }
+        }
+        let why = aimed == nil
+            ? "You have not moved the pointer onto the target yet."
+            : "The pointer is at (\(aimed!.x), \(aimed!.y)), not where you asked to click."
+        return [.replaceResult(runJSONString(["error": "\(why) Nothing was clicked. Call move_mouse(x, y) on the target, check in the screenshot "
+            + "that the arrow's tip is on it, then call click() with no coordinates. (In the browser, click_text needs no aiming.)"]), kind: "aim_first")]
+    }
+
+    public func afterTool(_ call: ToolCall, _ outcome: ToolOutcome, _ ctx: RunContext) -> [GuardAction] {
+        guard case .executed = outcome.kind else { return [] }
+        switch call.name {
+        case "move_mouse":
+            if outcome.raw["error"] == nil, let x = call.arguments["x"]?.asInt, let y = call.arguments["y"]?.asInt { aimed = (x, y) } else { aimed = nil }
+        case "screenshot", "find_on_page", "page_text", "list_windows":
+            break
+        case "click", "type_text", "type_secret", "scroll", "press_key", "open_app", "click_text", "fill_field":
+            aimed = nil
+        default:
+            break
+        }
+        return []
+    }
+}
+
 /// Clicking the same spot again and again (a pixel apart, so an exact-repeat check never fires) while the screen does not
 /// change. After three the bot is told to look at the screenshot and aim elsewhere or move focus with the keyboard.
 public final class NearRepeatClickGuard: Guard {
