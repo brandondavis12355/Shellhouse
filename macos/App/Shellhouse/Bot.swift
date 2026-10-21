@@ -3103,6 +3103,9 @@ final class Bot: Identifiable, @unchecked Sendable {
             result += "\n\n---\n\nAdditional instructions from the user for this bot (in addition to everything above):\n\n" + custom
         }
         let selected = availableSkills.filter { selectedSkillIDs.contains($0.id) }
+        // Said to the model here, not in the built-in prompt text (saved bots keep a copy of that one).
+        result += "\n\nWorking style: while you use tools, don't narrate. No \"Let me…\" or \"Now I need to…\" lines: call the next tool. "
+            + "Write a sentence between calls only when you saw something that changes the plan. Your last message is the answer, in plain words."
         result += SkillLibrary.promptIndex(selected)
         let userNotes = memoryBook.block(.user)
         let procedures = memoryBook.block(.procedures)

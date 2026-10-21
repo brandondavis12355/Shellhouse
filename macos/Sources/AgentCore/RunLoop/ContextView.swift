@@ -13,7 +13,7 @@ public struct ContextView: Sendable {
 
     /// Screenshots kept in the prompt (Anthropic's computer-use reference prunes to the newest few for the same reason).
     public static let maxRetainedImages = 2
-    /// Applies `ObservationPolicy.collapseStale` with its defaults to the finished rendering.
+    /// Applies `ObservationPolicy.collapseStale` and `dropStaleNarration` with their defaults to the finished rendering.
     public var collapseOldOutput: Bool
 
     public init(collapseOldOutput: Bool = true) {
@@ -60,7 +60,7 @@ public struct ContextView: Sendable {
                 break
             }
         }
-        if collapseOldOutput { out.messages = ObservationPolicy.collapseStale(out.messages) }
+        if collapseOldOutput { out.messages = ObservationPolicy.dropStaleNarration(ObservationPolicy.collapseStale(out.messages)) }
         return out
     }
 

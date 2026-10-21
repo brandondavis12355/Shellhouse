@@ -43,6 +43,21 @@ struct TranscriptView: View {
     /// Debug-mode editing; nil when not allowed right now.
     var onEdit: ((DisplayMessage) -> Void)?
     var onDelete: ((DisplayMessage) -> Void)?
+    /// A run is going on, and what it is doing now: the newest activity row shows a live line instead of a summary.
+    var isWorking = false
+    var liveStatus = ""
+
+    /// A chat message's kind, for `ActivityGrouping`.
+    private static func kind(of message: DisplayMessage) -> TranscriptKind {
+        if message.interBotPeerID != nil { return .interBot }
+        if message.role == .user { return .user }
+        if message.role == .tool { return .tool }
+        return message.isTaskSummary ? .summary : .assistantText
+    }
+
+    private var rows: [TranscriptRow<UUID>] {
+        ActivityGrouping.rows(messages.filter { $0.role != .system }.map { (id: $0.id, kind: Self.kind(of: $0)) })
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -50,8 +65,16 @@ struct TranscriptView: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(messages) { message in
-                                if message.role != .system {
+                            let byID = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                            let allRows = rows
+                            let lastActivity = allRows.lastIndex { if case .activity = $0 { return true } else { return false } }
+                            ForEach(Array(allRows.enumerated()), id: \.element.rowID) { index, row in
+                                switch row {
+                                case .activity(let ids):
+                                    ActivityRowView(steps: ids.compactMap { byID[$0] }, isLive: isWorking && index == lastActivity, liveStatus: liveStatus)
+                                        .id(ids.first)
+                                case .message(let id):
+                                    if let message = byID[id] {
                                     MessageBubble(
                                         message: message, botName: botName, botColorHex: botColorHex, botID: botID,
                                         mentionColors: mentionColors, peerAvatarStyles: peerAvatarStyles,
@@ -60,6 +83,7 @@ struct TranscriptView: View {
                                     .editableMessage(enabled: onEdit != nil, onEdit: { onEdit?(message) }, onDelete: { onDelete?(message) })
                                     .id(message.id)
                                     .transition(.messageArrival)
+                                    }
                                 }
                             }
                         }
@@ -400,5 +424,15 @@ enum TranscriptHighlighter {
                 .paragraphStyle: style,
             ]
         )
+    }
+}
+
+private extension TranscriptRow where ID == UUID {
+    /// Stable identity for the list: a row is its first message.
+    var rowID: UUID {
+        switch self {
+        case .message(let id): return id
+        case .activity(let ids): return ids.first ?? UUID()
+        }
     }
 }
