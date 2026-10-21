@@ -100,6 +100,8 @@ write_env() {
       pick FIRECRACKER_PARALLEL_BOOTS 2 '[1-9][0-9]?'
       pick FIRECRACKER_USE_JAILER true 'true|false'
       pick FIRECRACKER_DNS 1.1.1.1 '[0-9]{1,3}(\.[0-9]{1,3}){3}'
+      search="$(dotenv FIRECRACKER_SEARCH)"
+      if [[ "$search" =~ ^[A-Za-z0-9][A-Za-z0-9.\ -]{0,200}$ ]]; then echo "FIRECRACKER_SEARCH=$search"; elif [ -n "$search" ]; then echo "FIRECRACKER_SEARCH in $DOTENV is malformed; ignoring it" >&2; fi
       pick FIRECRACKER_IMPORT_DOCKER_WORKSPACES 1 '0|1'
       pick SANDBOX_ALLOW_SUDO 0 '0|1'
       pick SANDBOX_PORT_BASE 6100 '[1-9][0-9]{3,4}'

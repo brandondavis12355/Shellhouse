@@ -33,6 +33,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -61,6 +62,11 @@ FC_USE_JAILER = os.environ.get("FIRECRACKER_USE_JAILER", "true").lower() in ("1"
 FC_UID = int(os.environ.get("FIRECRACKER_UID", "0") or 0)
 FC_GID = int(os.environ.get("FIRECRACKER_GID", "0") or 0)
 FC_DNS = os.environ.get("FIRECRACKER_DNS", "1.1.1.1")
+# Search domains so a short name like `intranet-host` resolves as it does on the host (the guest's resolv.conf lists only
+# the nameserver). Passed to every command as LOCALDOMAIN, which glibc honours, so it works on VMs that already exist.
+# Letters, digits, dots and hyphens only, up to six, space-separated.
+_SEARCH = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,60}[A-Za-z0-9])?$")
+FC_SEARCH = " ".join([d for d in os.environ.get("FIRECRACKER_SEARCH", "").split() if _SEARCH.match(d) and ".." not in d][:6])
 
 # Per-VM resource limits. These are the hard ceiling the agent cannot exceed.
 FC_VCPUS = int(os.environ.get("FIRECRACKER_VCPUS", "2"))
@@ -576,6 +582,8 @@ class FirecrackerBackend:
         # show up in either side's process list. `timeout` also ends the
         # command in the guest, not just the SSH client here.
         lines = [f"export {key}={_q(str(value))}" for key, value in (env or {}).items()]
+        if FC_SEARCH and "LOCALDOMAIN" not in (env or {}):
+            lines.insert(0, f"export LOCALDOMAIN={_q(FC_SEARCH)}")
         lines.append(command)
         rc, out, err = await self._ssh_raw(
             slot, f"cd /workspace 2>/dev/null; exec timeout -k 5 {int(timeout)} bash -l -s",

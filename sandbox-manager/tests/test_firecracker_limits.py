@@ -137,3 +137,54 @@ def test_ssh_that_exits_early_returns_its_exit_code_under_uvloop(stdin):
             asyncio.create_subprocess_exec = real
 
     assert uvloop.run(run())[0] == 255
+
+
+# --- short names inside VMs: the search domain reaches every command as LOCALDOMAIN ---
+
+def _run_exec(monkeypatch, search, env=None):
+    monkeypatch.setattr(fc, "FC_SEARCH", search)
+    seen = {}
+
+    async def scenario():
+        b = fc.FirecrackerBackend()
+
+        async def running(_id):
+            return object()
+
+        async def raw(_slot, _remote, stdin=b"", timeout=0):
+            seen["stdin"] = stdin.decode()
+            return 0, b"", b""
+
+        monkeypatch.setattr(b, "_running", running)
+        monkeypatch.setattr(b, "_ssh_raw", raw)
+        await b.exec("vm", "getent hosts intranet-host", env=env)
+
+    asyncio.run(scenario())
+    return seen["stdin"].splitlines()
+
+
+def test_exec_sets_the_search_domain_first_when_configured(monkeypatch):
+    lines = _run_exec(monkeypatch, "example.com corp.example.com")
+    assert lines[0] == "export LOCALDOMAIN='example.com corp.example.com'"
+    assert lines[-1] == "getent hosts intranet-host"
+
+
+def test_exec_adds_nothing_when_no_search_domain_is_set(monkeypatch):
+    assert _run_exec(monkeypatch, "") == ["getent hosts intranet-host"]
+
+
+def test_a_secret_env_does_not_lose_the_search_domain(monkeypatch):
+    lines = _run_exec(monkeypatch, "example.com", env={"TOKEN": "x"})
+    assert lines[0].startswith("export LOCALDOMAIN=") and "export TOKEN=x" in lines
+
+
+def test_search_domains_from_the_environment_are_checked():
+    import importlib, os
+    old = os.environ.get("FIRECRACKER_SEARCH")
+    os.environ["FIRECRACKER_SEARCH"] = "ok.example.com bad;rm -rf x $(id) -lead a..b"
+    try:
+        mod = importlib.reload(fc)
+        assert mod.FC_SEARCH == "ok.example.com x"
+    finally:
+        os.environ.pop("FIRECRACKER_SEARCH", None) if old is None else os.environ.__setitem__("FIRECRACKER_SEARCH", old)
+        importlib.reload(fc)

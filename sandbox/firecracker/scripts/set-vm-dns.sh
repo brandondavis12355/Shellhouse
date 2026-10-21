@@ -12,6 +12,11 @@
 #   ./set-vm-dns.sh --check-only --allow-dest 10.12.132.170:3005   # can THIS host reach it? (changes nothing)
 #   (--allow-dest / --remove-dest alone leave DNS as it is; add --dns to change that too.)
 #
+#   sudo ./set-vm-dns.sh --search allegiantair.com   # short names resolve in VMs as on the host (host-name -> host-name.allegiantair.com)
+#   sudo ./set-vm-dns.sh --search auto               # use this host's own search domains (Tailscale *.ts.net left out)
+#   (--search alone leaves DNS as it is. A VM's resolv.conf lists only the nameserver, so without this a short name
+#    that works on the host does not resolve in a VM. It is passed to each command as LOCALDOMAIN: no VM rebuild.)
+#
 # A VM uses one resolver, `FIRECRACKER_DNS` (default 1.1.1.1). On a corporate network that address is often blocked, so
 # every lookup in every VM times out. This script finds a resolver that answers from this host, writes it to the
 # manager's settings and restarts the manager. VMs read it at boot, so a running VM keeps its old resolver until it
@@ -38,16 +43,17 @@ ENV_FILES=(/etc/agent-sandbox-manager.env)
 SERVICE=agent-sandbox-manager
 NET_SERVICE=shellhouse-vm-net
 
-WANT="" ALLOW_PRIVATE=0 CHECK_ONLY=0 REAPPLY=0 DEST_ADD=() DEST_DEL=()
+SEARCH="" WANT="" ALLOW_PRIVATE=0 CHECK_ONLY=0 REAPPLY=0 DEST_ADD=() DEST_DEL=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --dns) WANT="${2:?--dns needs an address}"; shift 2 ;;
     --allow-private) ALLOW_PRIVATE=1; shift ;;
     --check-only) CHECK_ONLY=1; shift ;;
+    --search) SEARCH="${2:?--search needs DOMAIN[,DOMAIN] or auto}"; shift 2 ;;
     --allow-dest) DEST_ADD+=("${2:?--allow-dest needs ADDRESS:PORT}"); shift 2 ;;
     --remove-dest) DEST_DEL+=("${2:?--remove-dest needs ADDRESS:PORT}"); shift 2 ;;
     --reapply-allow) REAPPLY=1; shift ;;   # used by setup-host.sh after it rewrites the firewall file
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -127,6 +133,34 @@ if [ ${#DEST_ADD[@]} -gt 0 ] || [ ${#DEST_DEL[@]} -gt 0 ]; then
   fi
 fi
 
+set_env() {  # KEY VALUE: in the manager's settings and in the stack's .env that install-manager.sh rebuilds them from
+  local key="$1" value="$2" f
+  for f in "${ENV_FILES[@]}" /home/*/shellhouse/.env; do
+    [ -f "$f" ] || continue
+    if grep -q "^$key=" "$f"; then
+      grep -v "^$key=" "$f" > "$f.new" || true; echo "$key=$value" >> "$f.new"; cat "$f.new" > "$f"; rm -f "$f.new"
+    else echo "$key=$value" >> "$f"; fi
+  done
+}
+
+if [ -n "$SEARCH" ]; then
+  if [ "$SEARCH" = auto ]; then
+    SEARCH="$( { sed -n 's/^search[[:space:]]*//p' /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null; } | tr ' ,' '\n\n' \
+      | grep -E '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' | grep -viE '\.ts\.net$' | awk '!seen[$0]++' | head -3 | tr '\n' ' ' | sed 's/ *$//' || true)"
+    [ -n "$SEARCH" ] || { echo "this host has no search domain to copy; give one: --search example.com" >&2; exit 3; }
+  fi
+  SEARCH="${SEARCH//,/ }"
+  [[ "$SEARCH" =~ ^[A-Za-z0-9][A-Za-z0-9.\ -]{0,200}$ ]] || { echo "--search: letters, digits, dots and hyphens only" >&2; exit 2; }
+  if [ "$CHECK_ONLY" = 1 ]; then echo "Would set the VMs' search domain to: $SEARCH"
+  else
+    for f in "${ENV_FILES[@]}"; do [ -f "$f" ] || { echo "missing $f (is the manager installed on this host?)" >&2; exit 1; }; done
+    set_env FIRECRACKER_SEARCH "$SEARCH"
+    systemctl restart "$SERVICE"
+    echo "VMs now search: $SEARCH  (the manager restarted; a short name should resolve in a VM straight away)"
+  fi
+  [ -z "$WANT" ] && exit 0
+fi
+
 # Candidates, in the order they are tried.
 candidates=()
 if [ -n "$WANT" ]; then
@@ -158,15 +192,8 @@ fi
 echo "Using $chosen"
 [ "$CHECK_ONLY" = 1 ] && exit 0
 
-for f in "${ENV_FILES[@]}"; do
-  [ -f "$f" ] || { echo "missing $f (is the manager installed on this host?)" >&2; exit 1; }
-  if grep -q '^FIRECRACKER_DNS=' "$f"; then sed -i "s/^FIRECRACKER_DNS=.*/FIRECRACKER_DNS=$chosen/" "$f"; else echo "FIRECRACKER_DNS=$chosen" >> "$f"; fi
-done
-# The source install-manager.sh rebuilds that file from: the user's stack .env.
-for env in /home/*/shellhouse/.env; do
-  [ -f "$env" ] || continue
-  if grep -q '^FIRECRACKER_DNS=' "$env"; then sed -i "s/^FIRECRACKER_DNS=.*/FIRECRACKER_DNS=$chosen/" "$env"; else echo "FIRECRACKER_DNS=$chosen" >> "$env"; fi
-done
+for f in "${ENV_FILES[@]}"; do [ -f "$f" ] || { echo "missing $f (is the manager installed on this host?)" >&2; exit 1; }; done
+set_env FIRECRACKER_DNS "$chosen"
 
 if is_private "$chosen"; then
   echo "$chosen" > "$ALLOW_FILE"
