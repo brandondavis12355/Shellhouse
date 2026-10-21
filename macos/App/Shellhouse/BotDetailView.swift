@@ -537,7 +537,7 @@ struct BotDetailView: View {
                 }
 
                 if showComputer {
-                    ComputerPanel(state: bot.state, pointer: bot.agentPointer) { error in
+                    ComputerPanel(state: bot.state, pointer: bot.agentPointer, keepPointerVisible: bot.isProcessingMessage) { error in
                         bot.status = "WKWebView load error: \(error)"
                     }
                     .frame(minWidth: computerExpanded ? nil : 480)

@@ -17,10 +17,14 @@ public enum PointerBus {
         handlers[sandboxID] = handler
     }
 
+    private static func handler(for sandboxID: String) -> Handler? {
+        lock.lock(); defer { lock.unlock() }
+        return handlers[sandboxID]
+    }
+
     /// Shows the pointer at (x, y) and waits for it to get there. Does nothing, and does not wait, when nothing is watching.
     public static func moveAndWait(sandboxID: String, x: Int, y: Int, clicked: Bool = false) async {
-        lock.lock(); let handler = handlers[sandboxID]; lock.unlock()
-        guard let handler else { return }
+        guard let handler = handler(for: sandboxID) else { return }
         handler(x, y, clicked)
         try? await Task.sleep(nanoseconds: UInt64(arrival * 1_000_000_000))
     }
