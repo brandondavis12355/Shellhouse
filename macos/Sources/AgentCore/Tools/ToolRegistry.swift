@@ -1368,7 +1368,10 @@ public struct ToolRegistry: Sendable {
 
             "click_text": { sandboxID, sandbox, args, _ in
                 guard let text = args["text"]?.asString, !text.isEmpty else { return ["error": "click_text requires 'text'"] }
+                // The "before" screenshot is taken here, so the bot need not take one first.
+                let before = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox)
                 var result = await runBrowser(.click, [text, String(args["index"]?.asInt ?? 0)], sandboxID: sandboxID, sandbox: sandbox)
+                if let before { result["before_screenshot"] = before.filename }
                 guard result["error"] == nil else { return result }
                 if let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox, clicked: true) {
                     result["screenshot"] = shot.filename; result["_base64"] = shot.base64
@@ -1381,7 +1384,9 @@ public struct ToolRegistry: Sendable {
                 guard let label = args["label"]?.asString, !label.isEmpty, let text = args["text"]?.asString else {
                     return ["error": "fill_field requires 'label' and 'text'"]
                 }
+                let before = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox)
                 var result = await runBrowser(.fill, [label, text] + ((args["submit"]?.asBool ?? false) ? ["submit"] : []), sandboxID: sandboxID, sandbox: sandbox)
+                if let before { result["before_screenshot"] = before.filename }
                 guard result["error"] == nil else { return result }
                 if let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox) {
                     result["screenshot"] = shot.filename; result["_base64"] = shot.base64

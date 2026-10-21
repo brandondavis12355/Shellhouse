@@ -72,7 +72,7 @@ final class DesktopLoopGuardTests: XCTestCase {
             guard case .replaceResult(let json, let kind)? = g.beforeTool(call(name), ctx).first else { return XCTFail("\(name) was allowed blind") }
             XCTAssertEqual(kind, "look_first"); XCTAssertTrue(json.contains("screenshot"))
         }
-        for name in ["press_key", "click_text", "fill_field", "type_secret"] {
+        for name in ["press_key", "type_secret"] {
             XCTAssertFalse(g.beforeTool(call(name), ctx).isEmpty, "\(name) changes the page, so it needs a before-screenshot")
         }
         XCTAssertTrue(g.beforeTool(call("screenshot"), ctx).isEmpty)
@@ -135,12 +135,14 @@ final class DesktopLoopGuardTests: XCTestCase {
         _ = g.afterTool(call("screenshot"), ran(), ctx)
         XCTAssertTrue(g.beforeTool(key("Return"), ctx).isEmpty)
         _ = g.afterTool(key("Return"), ran(["ok": true, "screenshot": "s.png"]), ctx)
-        XCTAssertTrue(g.beforeTool(call("click_text"), ctx).isEmpty, "the key's own screenshot is the next before")
+        XCTAssertTrue(g.beforeTool(call("click"), ctx).isEmpty, "the key's own screenshot is the next before")
         _ = g.afterTool(call("type_secret"), ran(), ctx)
         XCTAssertFalse(g.beforeTool(key("Return"), ctx).isEmpty, "a secret typed shows nothing: look before submitting")
         _ = g.afterTool(call("screenshot"), ran(), ctx)
         _ = g.afterTool(key("Return"), ran(["ok": true, "screenshot_error": "x"]), ctx)
-        XCTAssertFalse(g.beforeTool(call("fill_field"), ctx).isEmpty, "no screenshot came back, so look again")
+        XCTAssertFalse(g.beforeTool(call("click"), ctx).isEmpty, "no screenshot came back, so look again")
+        XCTAssertTrue(LookFirstGuard().beforeTool(call("click_text"), ctx).isEmpty, "the page tools take their own before-screenshot")
+        XCTAssertTrue(LookFirstGuard().beforeTool(call("fill_field"), ctx).isEmpty)
     }
 
     func testOneScreenshotOpensTheTurnAndAnActionResultCountsAsALook() {
