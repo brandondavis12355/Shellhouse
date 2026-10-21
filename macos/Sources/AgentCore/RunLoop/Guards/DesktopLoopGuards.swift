@@ -36,7 +36,7 @@ public final class RepeatedSecretGuard: Guard {
 
 /// Clicking or typing on a screen the bot has not looked at: coordinates from memory land on whatever is there (a run
 /// that opened a news site by clicking where a menu used to be), and text typed with no focus goes into the page. The
-/// first change of a turn (click, scroll, typing, a key, a page tool), and the first after opening an app or typing a secret,
+/// first change of a turn (click, scroll, typing, a key), and the first after opening an app,
 /// must follow a screenshot: the "before". Every change result carries its own screenshot, the "after", which is the next
 /// change's "before", so one look at the start is enough. `click_text` and `fill_field` take their own "before" screenshot,
 /// so they need no look first.
@@ -59,7 +59,7 @@ public final class LookFirstGuard: Guard {
 
     public func afterTool(_ call: ToolCall, _ outcome: ToolOutcome, _ ctx: RunContext) -> [GuardAction] {
         guard case .executed = outcome.kind else { return [] }
-        if call.name == "open_app" || call.name == "type_secret" { looked = false }
+        if call.name == "open_app" { looked = false }
         else if call.name == "press_key" { looked = outcome.raw["screenshot"] != nil && outcome.raw["error"] == nil }
         else if Self.showsScreen.contains(call.name), outcome.raw["error"] == nil { looked = true }
         return []
