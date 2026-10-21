@@ -54,9 +54,9 @@ public struct CredentialRequest: Sendable, Equatable {
         }
         guard !reason.isEmpty else { return .failure(ParseError("request_login needs a 'reason' your user can read")) }
         var site = (arguments["site"]?.asString ?? "").trimmingCharacters(in: .whitespaces).lowercased()
-        if let url = URL(string: site), let host = url.host { site = host }
+        if let url = URL(string: site.contains("://") ? site : "http://" + site), let host = url.host { site = host }
         if !site.isEmpty, site.count > 253 || site.range(of: #"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"#, options: .regularExpression) == nil {
-            return .failure(ParseError("'site' must be a domain like jira.example.com"))
+            return .failure(ParseError("'site' must be a domain or IP like jira.example.com (a port is fine)"))
         }
         let prefix = namePrefix(for: service)
         guard !prefix.isEmpty else { return .failure(ParseError("'service' needs at least one letter")) }
