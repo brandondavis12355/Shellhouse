@@ -22,6 +22,7 @@ public enum ScreenOverlay {
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         // Work in screen coordinates (origin top-left, y down).
         ctx.translateBy(x: 0, y: CGFloat(height)); ctx.scaleBy(x: 1, y: -1)
+        drawGrid(ctx, width: width, height: height)
         drawRuler(ctx, width: width, height: height)
         if let pointer { drawPointer(ctx, x: pointer.x, y: pointer.y, width: width, height: height, clicked: clicked) }
         guard let marked = ctx.makeImage() else { return imageData }
@@ -44,6 +45,32 @@ public enum ScreenOverlay {
         ctx.textPosition = CGPoint(x: x, y: y + size - 1)
         CTLineDraw(line, ctx)
         ctx.restoreGState()
+    }
+
+    /// Faint lines every 100 px, with the coordinates written at every second crossing: a target is then read off against the nearest
+    /// crossing ("a bit right of 400,300") instead of estimated from the edge ruler, which put clicks too low and too far left.
+    private static func drawGrid(_ ctx: CGContext, width: Int, height: Int) {
+        ctx.saveGState()
+        ctx.setLineWidth(1)
+        var x = rulerStep
+        while x < width {
+            ctx.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.18)); ctx.move(to: CGPoint(x: x + 1, y: 0)); ctx.addLine(to: CGPoint(x: x + 1, y: height)); ctx.strokePath()
+            ctx.setStrokeColor(CGColor(red: 1, green: 0.85, blue: 0, alpha: 0.32)); ctx.move(to: CGPoint(x: x, y: 0)); ctx.addLine(to: CGPoint(x: x, y: height)); ctx.strokePath()
+            x += rulerStep
+        }
+        var y = rulerStep
+        while y < height {
+            ctx.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.18)); ctx.move(to: CGPoint(x: 0, y: y + 1)); ctx.addLine(to: CGPoint(x: width, y: y + 1)); ctx.strokePath()
+            ctx.setStrokeColor(CGColor(red: 1, green: 0.85, blue: 0, alpha: 0.32)); ctx.move(to: CGPoint(x: 0, y: y)); ctx.addLine(to: CGPoint(x: width, y: y)); ctx.strokePath()
+            y += rulerStep
+        }
+        ctx.restoreGState()
+        var gx = 2 * rulerStep
+        while gx < width {
+            var gy = 2 * rulerStep
+            while gy < height { drawText(ctx, "\(gx),\(gy)", x: CGFloat(gx) + 3, y: CGFloat(gy) + 2, size: 9); gy += 2 * rulerStep }
+            gx += 2 * rulerStep
+        }
     }
 
     private static func drawRuler(_ ctx: CGContext, width: Int, height: Int) {

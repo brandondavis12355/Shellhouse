@@ -44,8 +44,17 @@ final class ScreenOverlayTests: XCTestCase {
         XCTAssertLessThan(body.r, 20); XCTAssertLessThan(body.g, 20); XCTAssertLessThan(body.b, 20, "black body")
         let edge = pixel(out, 199, 158)             // just left of the tip's stem: the white outline
         XCTAssertGreaterThan(edge.r, 200)
-        XCTAssertEqual(pixel(out, 300, 250).r, pixel(base, 300, 250).r, accuracy: 3, "away from the cursor nothing changes")
+        XCTAssertEqual(pixel(out, 330, 270).r, pixel(base, 330, 270).r, accuracy: 3, "away from the cursor and the grid nothing changes")
         XCTAssertEqual(pixel(out, 218, 150).r, pixel(base, 218, 150).r, accuracy: 3, "no ripple unless a click happened")
+    }
+
+    func testFaintGridLinesRunEveryHundredPixelsAndStaySubtle() {
+        let base = solidPNG(400, 300)
+        let out = ScreenOverlay.annotate(base, pointer: nil)
+        let on = pixel(out, 300, 50), off = pixel(base, 300, 50)
+        XCTAssertNotEqual(on.b, off.b, "a line is drawn at x = 300")
+        XCTAssertLessThan(abs(on.r - off.r), 120, "but only faintly")
+        XCTAssertEqual(pixel(out, 330, 50).r, pixel(base, 330, 50).r, accuracy: 3)
     }
 
     func testAClickLeavesOrangeRipples() {
