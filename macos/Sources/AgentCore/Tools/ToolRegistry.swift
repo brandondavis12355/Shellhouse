@@ -899,12 +899,24 @@ public struct ToolRegistry: Sendable {
     ) async -> (filename: String, bytes: Int, base64: String)? {
         let filename = sanitizeFilename(filenameHint) ?? "screenshot-\(Int(Date().timeIntervalSince1970)).png"
         let absolutePath = "/workspace/\(filename)"
-        guard let captured = try? await sandbox.exec(sandboxID, command: GUICommand.wrap("scrot \(shellQuote(absolutePath))"), timeout: 20, env: nil),
+        // The pointer's position comes back with the capture, to be drawn into the copy the model sees (scrot leaves it out).
+        guard let captured = try? await sandbox.exec(sandboxID, command: GUICommand.wrap("scrot \(shellQuote(absolutePath)) && { xdotool getmouselocation --shell 2>/dev/null || true; }"), timeout: 20, env: nil),
               captured.exitCode == 0,
               let data = try? await sandbox.readFile(sandboxID, path: filename, maxBytes: 10_000_000) else {
             return nil
         }
-        return (filename, data.count, compressedForModel(data).base64EncodedString())
+        let marked = ScreenOverlay.annotate(data, pointer: pointerPosition(in: captured.stdout))
+        return (filename, data.count, compressedForModel(marked).base64EncodedString())
+    }
+
+    /// `X=…` and `Y=…` lines of `xdotool getmouselocation --shell`.
+    static func pointerPosition(in output: String) -> (x: Int, y: Int)? {
+        var x: Int?, y: Int?
+        for line in output.split(separator: "\n") {
+            if line.hasPrefix("X=") { x = Int(line.dropFirst(2)) } else if line.hasPrefix("Y=") { y = Int(line.dropFirst(2)) }
+        }
+        guard let x, let y else { return nil }
+        return (x, y)
     }
 
     /// PNG -> JPEG (q≈0.7) at the SAME pixel dimensions, for what's sent
@@ -1017,7 +1029,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "click",
-                description: "Move the mouse to absolute screen coordinates and click. Take a screenshot first and aim at what it shows; coordinates from memory or an older screenshot are often wrong.",
+                description: "Click. With x and y: move the mouse to those screen coordinates and click. Without them: click where the pointer is now (use move_mouse first, check the screenshot, then click). Screenshots have a ruler (numbers every 100 px) and a red ring at the pointer, so you can read positions and see where a click will land. Take a screenshot first; coordinates from memory or an older screenshot are often wrong.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -1025,6 +1037,15 @@ public struct ToolRegistry: Sendable {
                         "y": ["type": "integer"],
                         "button": ["type": "integer", "description": "1=left, 2=middle, 3=right. Default 1."],
                     ],
+                    "required": [],
+                ]
+            ),
+            ToolSchema(
+                name: "move_mouse",
+                description: "Move the mouse pointer to screen coordinates without clicking, and return a screenshot with the pointer marked by a red ring. Use it to check that the pointer is on the right thing (a field, a button), correct it if not, then click with no coordinates.",
+                parameters: [
+                    "type": "object",
+                    "properties": ["x": ["type": "integer"], "y": ["type": "integer"]],
                     "required": ["x", "y"],
                 ]
             ),
@@ -1295,11 +1316,24 @@ public struct ToolRegistry: Sendable {
                 }
             },
 
-            "click": { sandboxID, sandbox, args, _ in
-                guard let x = args["x"]?.asInt, let y = args["y"]?.asInt else {
-                    return ["error": "click requires 'x' and 'y'"]
+            "move_mouse": { sandboxID, sandbox, args, _ in
+                guard let x = args["x"]?.asInt, let y = args["y"]?.asInt else { return ["error": "move_mouse requires 'x' and 'y'"] }
+                do {
+                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap("xdotool mousemove \(x) \(y)"), timeout: 10, env: nil)
+                    guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
+                    guard let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox) else {
+                        return ["ok": true, "screenshot_error": "the pointer moved but the screenshot failed"]
+                    }
+                    return ["ok": true, "pointer": ["x": x, "y": y], "screenshot": shot.filename, "_base64": shot.base64]
+                } catch {
+                    return ["error": error.localizedDescription]
                 }
+            },
+
+            "click": { sandboxID, sandbox, args, _ in
                 let button = args["button"]?.asInt ?? 1
+                let at = (args["x"]?.asInt).flatMap { x in (args["y"]?.asInt).map { (x, $0) } }
+                if args["x"] != nil || args["y"] != nil, at == nil { return ["error": "click needs both 'x' and 'y', or neither (to click where the pointer is)"] }
                 do {
                     // ai-click.py animates the pointer to (x, y) instead of
                     // warping it instantly, clicks, and flashes a transient
@@ -1307,9 +1341,8 @@ public struct ToolRegistry: Sendable {
                     // over VNC can see, in real time, that this click came
                     // from the agent and where it landed, not just from a
                     // static screenshot after the fact.
-                    let result = try await sandbox.exec(
-                        sandboxID, command: GUICommand.wrap("python3 /usr/local/bin/ai-click.py \(x) \(y) \(button)"), timeout: 15, env: nil
-                    )
+                    let command = at.map { "python3 /usr/local/bin/ai-click.py \($0.0) \($0.1) \(button)" } ?? "xdotool click \(button)"
+                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap(command), timeout: 15, env: nil)
                     guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
                     // Always attached, not left to the model to remember to
                     // ask for — see captureScreenshot's doc comment.

@@ -303,7 +303,7 @@ public enum ActionClassifier {
         case "screenshot", "list_windows", "focus_window", "scroll":
             return Classification(findings: [Finding(.observe, "tool.\(tool)", "observes the desktop", clean: .allow, tainted: .allow)])
 
-        case "click", "press_key":
+        case "click", "move_mouse", "press_key":
             return Classification(findings: [Finding(.ui, "tool.\(tool)", "drives the sandbox desktop", clean: .allow, tainted: .allow)])
 
         case "type_text":

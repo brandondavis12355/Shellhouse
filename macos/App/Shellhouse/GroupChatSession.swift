@@ -916,7 +916,7 @@ final class GroupChatSession: Identifiable {
 
     static let coordinatorWithheldTools = [
         "run_shell", "read_file", "write_file", "edit_file", "search_files", "find_files", "list_files", "check_job", "stop_job",
-        "screenshot", "click", "type_text", "type_secret", "press_key", "scroll", "open_app", "list_windows", "focus_window", "request_login",
+        "screenshot", "click", "move_mouse", "type_text", "type_secret", "press_key", "scroll", "open_app", "list_windows", "focus_window", "request_login",
     ]
 
     private func goalPrompt(for goal: GroupGoal, botID: String) -> String {

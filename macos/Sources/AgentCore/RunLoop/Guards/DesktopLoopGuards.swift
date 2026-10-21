@@ -45,8 +45,8 @@ public final class LookFirstGuard: Guard {
 
     public func reset(_ scope: GuardReset) { looked = false }
 
-    private static let needsLook: Set<String> = ["click", "scroll", "type_text"]
-    private static let showsScreen: Set<String> = ["screenshot", "click", "scroll", "type_text"]
+    private static let needsLook: Set<String> = ["click", "move_mouse", "scroll", "type_text"]
+    private static let showsScreen: Set<String> = ["screenshot", "click", "move_mouse", "scroll", "type_text"]
 
     public func beforeTool(_ call: ToolCall, _ ctx: RunContext) -> [GuardAction] {
         guard !looked, Self.needsLook.contains(call.name), Reliability.isOn(.loopGuards) else { return [] }

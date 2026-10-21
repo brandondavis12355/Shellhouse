@@ -21,7 +21,7 @@ struct ActivityRowView: View {
 
     static func symbol(for tool: String) -> String {
         switch tool {
-        case "click", "scroll": return "cursorarrow.click"
+        case "click", "move_mouse", "scroll": return "cursorarrow.click"
         case "type_text", "type_secret", "press_key": return "keyboard"
         case "screenshot", "list_windows", "focus_window": return "camera.viewfinder"
         case "open_app": return "macwindow"
@@ -36,7 +36,7 @@ struct ActivityRowView: View {
     /// "4 clicks", "2 typed", "5 screenshots", "3 commands" … by kind, in a fixed order, so the chips read the same every time.
     private var counts: [(symbol: String, label: String)] {
         let groups: [(String, String, Set<String>)] = [
-            ("cursorarrow.click", "click", ["click", "scroll"]),
+            ("cursorarrow.click", "click", ["click", "move_mouse", "scroll"]),
             ("keyboard", "typed", ["type_text", "type_secret", "press_key"]),
             ("camera.viewfinder", "screenshot", ["screenshot", "list_windows", "focus_window"]),
             ("terminal", "command", ["run_shell", "check_job", "stop_job"]),
