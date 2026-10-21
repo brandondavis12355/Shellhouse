@@ -1118,7 +1118,7 @@ public struct ToolRegistry: Sendable {
             ),
             ToolSchema(
                 name: "press_key",
-                description: "Press a key or key combo (xdotool syntax, e.g. 'Return', 'ctrl+l').",
+                description: "Press a key or key combo (xdotool syntax, e.g. 'Return', 'ctrl+l'). Returns a screenshot of the result.",
                 parameters: [
                     "type": "object",
                     "properties": ["key": ["type": "string"]],
@@ -1504,8 +1504,13 @@ public struct ToolRegistry: Sendable {
                     return ["error": "invalid key name '\(key)'"]
                 }
                 do {
-                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap("xdotool key \(key)"), timeout: 10, env: nil)
-                    return result.exitCode == 0 ? ["ok": true] : ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)]
+                    let result = try await sandbox.exec(sandboxID, command: GUICommand.wrap("xdotool key \(key); sleep 0.5"), timeout: 10, env: nil)
+                    guard result.exitCode == 0 else { return ["error": GUICommand.failure(result.stderr, exitCode: result.exitCode)] }
+                    guard let shot = await captureScreenshot(sandboxID: sandboxID, sandbox: sandbox) else {
+                        return ["ok": true, "screenshot_error": "the key was pressed but the verification screenshot failed; take a screenshot"]
+                    }
+                    return ["ok": true, "screenshot": shot.filename, "_base64": shot.base64]
+                        .merging(GUICommand.reaction(shot.changed, after: "press_key")) { a, _ in a }
                 } catch {
                     return ["error": error.localizedDescription]
                 }
