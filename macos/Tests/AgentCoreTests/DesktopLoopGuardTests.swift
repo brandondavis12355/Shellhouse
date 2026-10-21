@@ -81,6 +81,33 @@ final class DesktopLoopGuardTests: XCTestCase {
 
     private func at(_ name: String, _ x: Int, _ y: Int) -> ToolCall { ToolCall(name: name, arguments: ["x": AnyCodable(x), "y": AnyCodable(y)]) }
 
+    func testAUsernameIsNeverMadeUp() {
+        let g = KnownUsernameGuard(); var ctx = RunContext()
+        func fill(_ label: String, _ text: String) -> ToolCall { ToolCall(name: "fill_field", arguments: ["label": AnyCodable(label), "text": AnyCodable(text)]) }
+        XCTAssertFalse(g.beforeTool(fill("Username", "admin"), ctx).isEmpty)
+        XCTAssertTrue(g.beforeTool(fill("Serial or asset tag", "C123"), ctx).isEmpty, "only login-like fields are checked")
+        ctx.messages = [ChatMessage(role: .assistant, content: "I will use admin")]
+        XCTAssertFalse(g.beforeTool(fill("Username", "admin"), ctx).isEmpty, "the bot's own words don't count")
+        ctx.messages.append(ChatMessage(role: .user, content: "log in as Jdoe please"))
+        XCTAssertTrue(g.beforeTool(fill("Username or email", "jdoe"), ctx).isEmpty)
+        ctx.messages.append(ChatMessage(role: .tool, content: "{\"values\":{\"SITE_USERNAME\":\"svc-box\"}}"))
+        XCTAssertTrue(g.beforeTool(fill("User name", "svc-box"), ctx).isEmpty)
+    }
+
+    func testASecretIsTypedOnlyAfterTheFieldWasClicked() {
+        let g = FocusBeforeSecretGuard(); let ctx = RunContext()
+        let secret = ToolCall(name: "type_secret", arguments: ["name": AnyCodable("SITE_PASSWORD")])
+        XCTAssertFalse(g.beforeTool(secret, ctx).isEmpty)
+        _ = g.afterTool(at("move_mouse", 5, 5), ran(), ctx)
+        XCTAssertFalse(g.beforeTool(secret, ctx).isEmpty, "hovering is not focus")
+        _ = g.afterTool(call("click_text"), ran(), ctx)
+        XCTAssertTrue(g.beforeTool(secret, ctx).isEmpty)
+        _ = g.afterTool(key("Return"), ran(), ctx)
+        XCTAssertFalse(g.beforeTool(secret, ctx).isEmpty, "after a submit the page is new")
+        _ = g.afterTool(key("Tab"), ran(), ctx)
+        XCTAssertTrue(g.beforeTool(secret, ctx).isEmpty)
+    }
+
     func testAClickWaitsForThePointerToBeMovedOntoTheTarget() {
         let g = AimFirstGuard(); let ctx = RunContext()
         guard case .replaceResult(let json, let kind)? = g.beforeTool(at("click", 200, 300), ctx).first else { return XCTFail("clicked unaimed") }

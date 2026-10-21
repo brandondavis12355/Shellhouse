@@ -24,6 +24,8 @@ public enum GuardSet {
             NearRepeatClickGuard(),
             LookFirstGuard(),
             AimFirstGuard(),
+            FocusBeforeSecretGuard(),
+            KnownUsernameGuard(),
         ] + (onMissingPath.map { [MissingPathGuard(onMissing: $0)] as [any Guard] } ?? []) + [
             UnverifiedChangeGuard(),
             EmptySummaryGuard(),
