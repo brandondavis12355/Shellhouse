@@ -125,6 +125,15 @@ public final class SSHTunnel: @unchecked Sendable {
     /// A first restart is quick (a blip shouldn't stall commands); repeated failures back off.
     private let quickRestartDelay: UInt64 = 1_000_000_000
     private let restartDelay: UInt64 = 5_000_000_000  // 5s, in nanoseconds
+    /// Drops in a row without the tunnel staying up for 30 s. Each one doubles the wait (5, 10, 20, 40, then 60 s).
+    private var failureStreak = 0
+
+    /// How long to wait before the next attempt: a blip after a long uptime is retried at once; a host that keeps
+    /// refusing is not hammered every 5 s for as long as the network is down.
+    static func restartDelaySeconds(failureStreak: Int, quick: Bool) -> Int {
+        if quick { return 1 }
+        return min(60, 5 << max(0, min(failureStreak - 1, 4)))
+    }
     private var lastStart: Date?
 
     private let lock = NSLock()
@@ -318,10 +327,12 @@ public final class SSHTunnel: @unchecked Sendable {
         let shouldRestart = !stopped
         // Up for a while before dropping: a blip, reconnect at once. Dying right after starting: back off.
         let quick = lastStart.map { Date().timeIntervalSince($0) > 30 } ?? false
+        failureStreak = quick ? 0 : failureStreak + 1
+        let seconds = Self.restartDelaySeconds(failureStreak: failureStreak, quick: quick)
         lock.unlock()
         guard shouldRestart else { return }
-        onStderr("tunnel dropped (ssh exit \(status.map(String.init) ?? "?")); reconnecting in \(quick ? 1 : 5) s")
-        scheduleRestart(quick: quick)
+        onStderr("tunnel dropped (ssh exit \(status.map(String.init) ?? "?")); reconnecting in \(seconds) s")
+        scheduleRestart(seconds: seconds)
     }
 
     /// `NSLock.lock()/unlock()` are `NS_SWIFT_UNAVAILABLE_FROM_ASYNC` — calling
@@ -333,8 +344,8 @@ public final class SSHTunnel: @unchecked Sendable {
         return !stopped
     }
 
-    private func scheduleRestart(quick: Bool = false) {
-        let delay = quick ? quickRestartDelay : restartDelay
+    private func scheduleRestart(quick: Bool = false, seconds: Int? = nil) {
+        let delay = seconds.map { UInt64($0) * 1_000_000_000 } ?? (quick ? quickRestartDelay : restartDelay)
         restartTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: delay)
             guard let self, !Task.isCancelled else { return }

@@ -147,6 +147,8 @@ table inet agentvm {
     }
 }
 NFT
+# Keep a DNS-server exception that set-vm-dns.sh added: the file above was just rewritten without it.
+[[ -f "$LIB_DIR/dns-allow" ]] && bash "$(dirname "${BASH_SOURCE[0]}")/set-vm-dns.sh" --reapply-allow || true
 cat > "$LIB_DIR/vm-net.sh" <<'SH'
 #!/bin/sh
 # up | down | docker-user  (shellhouse-vm-net.service, and Docker's own unit after it restarts)
