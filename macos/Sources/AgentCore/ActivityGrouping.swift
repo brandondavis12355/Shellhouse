@@ -11,6 +11,8 @@ public enum TranscriptKind: Sendable, Equatable {
     case summary
     /// A "Messaged <bot>" notice: always its own row.
     case interBot
+    /// A stop or error notice: always its own message, never folded away.
+    case notice
 }
 
 public enum TranscriptRow<ID: Hashable>: Equatable {
@@ -25,10 +27,14 @@ public enum TranscriptRow<ID: Hashable>: Equatable {
 /// no tool call is untouched. Display only: the messages themselves, the saved transcript and the model's context are
 /// not changed by this.
 public enum ActivityGrouping {
-    public static func rows<ID: Hashable>(_ items: [(id: ID, kind: TranscriptKind)]) -> [TranscriptRow<ID>] {
+    ///
+    /// Narration is folded in too: only the turn's last text (the answer) stays a message, plus notices and notes to other
+    /// bots. While `live`, the newest turn has no answer yet, so all of its text is activity until the run ends.
+    public static func rows<ID: Hashable>(_ items: [(id: ID, kind: TranscriptKind)], live: Bool = false) -> [TranscriptRow<ID>] {
         var rows: [TranscriptRow<ID>] = []
         var turnStart = 0
         func flush(upTo end: Int) {
+            let isNewest = end == items.count
             guard turnStart < end else { return }
             let turn = Array(items[turnStart..<end])
             guard let lastTool = turn.lastIndex(where: { $0.kind == .tool }) else {
@@ -36,8 +42,11 @@ public enum ActivityGrouping {
             }
             var group: [ID] = []
             func closeGroup() { if !group.isEmpty { rows.append(.activity(group)); group = [] } }
+            let isText: (TranscriptKind) -> Bool = { $0 == .assistantText || $0 == .summary }
+            let answer = (live && isNewest) ? nil : turn.indices.last { $0 > lastTool && isText(turn[$0].kind) }
+            let foldedUpTo = answer ?? (live && isNewest ? turn.count : lastTool + 1)
             for (offset, item) in turn.enumerated() {
-                let inActivity = offset <= lastTool && (item.kind == .tool || item.kind == .assistantText || item.kind == .summary)
+                let inActivity = offset < foldedUpTo && (item.kind == .tool || isText(item.kind))
                 if inActivity { group.append(item.id) } else { closeGroup(); rows.append(.message(item.id)) }
             }
             closeGroup()

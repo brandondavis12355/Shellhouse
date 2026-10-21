@@ -27,6 +27,16 @@ final class ActivityGroupingTests: XCTestCase {
                        "when another tool runs, the text before it moves into the activity row")
     }
 
+    func testStalledNarrationFoldsIntoTheActivityAndNoticesStayVisible() {
+        let r = rows([.user, .tool, .assistantText, .assistantText, .assistantText, .notice])
+        XCTAssertEqual(r, [.message(0), .activity([1, 2, 3]), .message(4), .message(5)])
+    }
+
+    func testWhileLiveTheNewestTurnsTextIsAllActivity() {
+        let r = ActivityGrouping.rows([(0, TranscriptKind.user), (1, .tool), (2, .assistantText)], live: true)
+        XCTAssertEqual(r, [.message(0), .activity([1, 2])])
+    }
+
     func testANoticeToAnotherBotStaysItsOwnRowAndSplitsTheActivity() {
         let r = rows([.user, .tool, .interBot, .tool, .assistantText])
         XCTAssertEqual(r, [.message(0), .activity([1]), .message(2), .activity([3]), .message(4)])

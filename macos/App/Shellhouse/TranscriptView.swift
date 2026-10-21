@@ -52,11 +52,12 @@ struct TranscriptView: View {
         if message.interBotPeerID != nil { return .interBot }
         if message.role == .user { return .user }
         if message.role == .tool { return .tool }
+        if message.text.hasPrefix("Stopped:") || message.text.hasPrefix("(stopped") { return .notice }
         return message.isTaskSummary ? .summary : .assistantText
     }
 
     private var rows: [TranscriptRow<UUID>] {
-        ActivityGrouping.rows(messages.filter { $0.role != .system }.map { (id: $0.id, kind: Self.kind(of: $0)) })
+        ActivityGrouping.rows(messages.filter { $0.role != .system }.map { (id: $0.id, kind: Self.kind(of: $0)) }, live: isWorking)
     }
 
     var body: some View {

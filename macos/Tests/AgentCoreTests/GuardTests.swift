@@ -138,7 +138,7 @@ final class GuardTests: XCTestCase {
         let run = await replay(Array(repeating: say("ok."), count: 8))
         XCTAssertEqual(run.aborted, "kept replying in plain text without using a tool or finishing")
         XCTAssertTrue(run.nudgeKinds.contains("missing_tool"))
-        XCTAssertTrue(run.events.contains { if case .nudge(_, let text, _, _, _) = $0.kind { return text.contains("three times without calling a tool") } else { return false } },
+        XCTAssertTrue(run.events.contains { if case .nudge(_, let text, _, _, _) = $0.kind { return text.contains("three times in words without calling a tool") } else { return false } },
                       "the third miss gets the stuck detector's wording")
         XCTAssertEqual(run.modelCalls, 5)
     }

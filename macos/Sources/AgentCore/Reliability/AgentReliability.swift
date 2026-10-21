@@ -237,7 +237,7 @@ public struct StuckDetector: Sendable {
     public mutating func recordPlainReply() -> Verdict {
         plainRepliesInARow += 1
         switch plainRepliesInARow {
-        case 3: return .nudge("You have replied three times without calling a tool. Either call the next tool you need, or call finish_task with your final answer.")
+        case 3: return .nudge("You have replied three times in words without calling a tool: saying what you will do does not do it. Emit the tool call itself now (for example the fill_field or click_text you just described), or call finish_task with your final answer.")
         case 5...: return .abort("kept replying in plain text without using a tool or finishing")
         default: return .fine
         }
