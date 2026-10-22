@@ -22,6 +22,7 @@ public enum GuardSet {
             RepeatedReadGuard(),
             RepeatedSecretGuard(),
             NearRepeatClickGuard(),
+            DesktopCycleGuard(),
             LookFirstGuard(),
             AimFirstGuard(),
             FocusBeforeSecretGuard(),
