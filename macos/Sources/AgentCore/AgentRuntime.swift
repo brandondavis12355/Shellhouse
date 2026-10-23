@@ -148,6 +148,13 @@ public actor AgentRuntime {
     private var messages: [ChatMessage] { rendered.messages }
     /// The model reply appended last, so a guard can ask for it to be left out of the prompt.
     private var lastReplyEventID: Int?
+    /// Samples taken of the step after the no-progress guard fires (`ActionVote`); 1 = off.
+    private let actionVotes: Int
+    private var voteNextStep = false
+    /// Whether the model reasons before each step (`ThinkingMode`); `.auto` decides per step.
+    private let thinkingMode: ThinkingMode
+    private var firstStepOfTask = false
+    private var troubleSinceLastStep = false
     private var iterations = 0
     private var tokensUsed = 0
     /// For local models, `maxTokens` counts new work: replies plus what was added to the conversation since
@@ -323,8 +330,12 @@ public actor AgentRuntime {
         seenResults: SeenResults = SeenResults(),
         runLogSink: (any RunLogSink)? = nil,
         onMissingPath: (@Sendable (String) -> Void)? = nil,
-        guards: [any Guard]? = nil
+        guards: [any Guard]? = nil,
+        actionVotes: Int = 1,
+        thinkingMode: ThinkingMode = .off
     ) {
+        self.actionVotes = max(1, actionVotes)
+        self.thinkingMode = thinkingMode
         self.runLogSink = runLogSink
         self.log = RunLog(sink: runLogSink)
         self.guards = guards ?? GuardSet.standard(plainReplyEndsTurn: plainReplyEndsTurn, answerEndsTurnAfterTools: answerEndsTurnAfterTools, seenResults: seenResults, onMissingPath: onMissingPath)
@@ -394,6 +405,7 @@ public actor AgentRuntime {
         await gate.setTask(goal)
         toolCallsThisTurn = 0
         plan = []
+        firstStepOfTask = true; troubleSinceLastStep = false
         guards.forEach { $0.reset(.turn); $0.reset(.run) }
         stopReason = nil
         await loop()
@@ -411,6 +423,7 @@ public actor AgentRuntime {
         await gate.setTask(userMessage)
         toolCallsThisTurn = 0
         plan = []
+        firstStepOfTask = true; troubleSinceLastStep = false
         // Loop-detection is meant to catch a model stuck repeating the SAME call within one reasoning task, not across
         // entirely separate turns: a call with no arguments, made legitimately on separate days, must not add up.
         guards.forEach { $0.reset(.turn) }
@@ -460,6 +473,8 @@ public actor AgentRuntime {
 
     /// A correction reaches the model as the next user turn, and is counted.
     private func apply(_ nudge: Nudge) {
+        if nudge.kind == "no_progress" || nudge.kind == "no_progress_insist" { voteNextStep = actionVotes > 1 }
+        if ThinkingPolicy.troubleKinds.contains(nudge.kind) { troubleSinceLastStep = true }
         Telemetry.recorder.loopEvent(nudge.kind)
         let repeated = nudge.skipIfRepeat && messages.last?.content == nudge.text
         log.append(.nudge(kind: nudge.kind, text: nudge.text, escalation: nudge.escalation.rawValue, supersedes: nil, inContext: !repeated))
@@ -467,6 +482,7 @@ public actor AgentRuntime {
 
     /// A guard acted without adding a turn to the prompt (it answered a call or changed a result): still logged and counted.
     private func recordFiring(kind: String, detail: String) {
+        if ThinkingPolicy.troubleKinds.contains(kind) { troubleSinceLastStep = true }
         Telemetry.recorder.loopEvent(kind)
         log.append(.nudge(kind: kind, text: detail, escalation: Escalation.specific.rawValue, supersedes: nil, inContext: false))
     }
@@ -530,6 +546,11 @@ public actor AgentRuntime {
             }
             onEvent(.status(.executing(iteration: iterations, maxIterations: budgets.maxIterations)))
 
+            // Think on this step? (`.auto`: the first step of a task and the steps after a guard fired.)
+            let think = ThinkingPolicy(mode: thinkingMode, firstStepOfTask: firstStepOfTask, troubleSinceLastStep: troubleSinceLastStep).shouldThink
+            firstStepOfTask = false; troubleSinceLastStep = false
+            if think { Telemetry.recorder.loopEvent("thinking_step") }
+            let temperature = think ? ModelThinking.thinkingTemperature : 0.2
             var reply: ModelReply
             var loopBroken = false
             var attempt = 0
@@ -541,16 +562,16 @@ public actor AgentRuntime {
                     let schemas = toolSchemas
                     let history = messages
                     let name = modelName
-                    let work = Task { [onEvent] in
+                    let work = ModelThinking.$override.withValue(think) { Task { [onEvent] in
                         try await backend.chatStream(
-                            messages: history, tools: schemas, model: name, temperature: 0.2,
+                            messages: history, tools: schemas, model: name, temperature: temperature,
                             onDelta: { delta in
                                 streamed.append(delta)
                                 onEvent(.messageDelta(delta))
                                 if loopGuard.feed(delta) { streamed.cancelStream() }
                             }
                         )
-                    }
+                    } }
                     streamed.onStop { work.cancel() }
                     do {
                         reply = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
@@ -577,6 +598,10 @@ public actor AgentRuntime {
                 }
             }
             chargeUsage(reply.usage)
+            if voteNextStep {
+                voteNextStep = false
+                if !loopBroken { reply = await votedReply(first: reply, tools: toolSchemas, thinking: think) }
+            }
 
             // The guards read the reply before it is recorded: a call written as text becomes the call it meant.
             var queued: [GuardAction] = []
@@ -634,6 +659,28 @@ public actor AgentRuntime {
             for guardian in guards { afterTurn += guardian.afterTurn(ranTools: ranSomething, makeContext()) }
             if applyAfterReply(afterTurn) == .endRun { return }
         }
+    }
+
+    /// The step after a no-progress nudge, sampled `actionVotes` times: the first reply is the one just made, the others are
+    /// asked for the same prompt at a higher temperature, and the action most of them agree on is used (`ActionVote`).
+    /// Extra samples are not streamed. A failed sample is simply not a vote.
+    private func votedReply(first: ModelReply, tools toolSchemas: [ToolSchema], thinking: Bool) async -> ModelReply {
+        let history = messages, name = modelName, backend = model, extras = actionVotes - 1
+        let samples = await withTaskGroup(of: ModelReply?.self) { group -> [ModelReply] in
+            for _ in 0..<extras {
+                group.addTask { await ModelThinking.$override.withValue(thinking) { try? await backend.chat(messages: history, tools: toolSchemas, model: name, temperature: GateVote.temperature) } }
+            }
+            var collected: [ModelReply] = []
+            for await reply in group { if let reply { collected.append(reply) } }
+            return collected
+        }
+        for sample in samples { if let usage = sample.usage { tokensUsed += countsResentContext ? usage.total : usage.completionTokens } }
+        let all = [first] + samples
+        let winner = ActionVote.pick(all)
+        let agreeing = all.filter { ActionVote.key($0) == ActionVote.key(all[winner]) }.count
+        Telemetry.recorder.loopEvent(agreeing == all.count ? "action_vote_unanimous" : (agreeing * 2 > all.count ? "action_vote_majority" : "action_vote_split"))
+        log.append(.stateNote("action vote after no progress: \(agreeing) of \(all.count) chose the same action; used sample \(winner)"))
+        return all[winner]
     }
 
     /// The model asked to finish: a guard may answer the call instead (the first to do so wins).
@@ -943,7 +990,8 @@ public actor AgentRuntime {
 
         let summaryText: String
         do {
-            let reply = try await model.chat(messages: summaryRequest, tools: [], model: modelName, temperature: 0.2)
+            // A summary is written, not reasoned out: never think for it.
+            let reply = try await ModelThinking.$override.withValue(false) { try await model.chat(messages: summaryRequest, tools: [], model: modelName, temperature: 0.2) }
             if let usage = reply.usage { tokensUsed += countsResentContext ? usage.total : usage.completionTokens }
             summaryText = ContextBudget.cleanSummary(reply.message.content)
         } catch {

@@ -116,6 +116,8 @@ final class Bot: Identifiable, @unchecked Sendable {
     /// As a goal owner, whether this bot re-checks members' submitted steps itself. Off for a manager that only
     /// coordinates: a validator member does the checking (see `GroupGoal.validatorName`).
     var checksGoalWorkItself = true
+    /// Whether this bot's model reasons before it acts (Settings → Model). Off by default: it makes each step much slower.
+    var thinkingMode: ThinkingMode = .off
     /// Sidebar section header this bot is filed under (e.g. "General").
     /// Organizational only — bots in the same group don't share anything;
     /// there's no multi-bot group-chat mechanism behind this.
@@ -195,7 +197,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         [
             modelProvider.rawValue, selectedModel, String(modelHasVision), remoteBaseURLText,
             maxTokensText, maxIterationsText, String(remoteAPIKeyInput.hashValue), engine.rawValue,
-            String(systemPromptText.hashValue), selectedSkillIDs.sorted().joined(separator: ","),
+            String(systemPromptText.hashValue), selectedSkillIDs.sorted().joined(separator: ","), thinkingMode.rawValue,
             fallbackProvider?.rawValue ?? "", fallbackModel, fallbackBaseURLText, String(fallbackHasVision), String(fallbackAPIKeyInput.hashValue),
         ].joined(separator: "|")
     }
@@ -427,6 +429,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         engine = config.engine ?? .builtin
         remoteBaseURLText = config.remoteBaseURLText ?? ""
         checksGoalWorkItself = config.checksGoalWorkItself ?? true
+        thinkingMode = config.thinkingMode ?? .off
         fallbackProvider = config.fallbackProvider
         fallbackModel = config.fallbackModel ?? ""
         fallbackBaseURLText = config.fallbackBaseURLText ?? ""
@@ -453,6 +456,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         engine = config.engine ?? .builtin
         remoteBaseURLText = config.remoteBaseURLText ?? ""
         checksGoalWorkItself = config.checksGoalWorkItself ?? true
+        thinkingMode = config.thinkingMode ?? .off
         fallbackProvider = config.fallbackProvider
         fallbackModel = config.fallbackModel ?? ""
         fallbackBaseURLText = config.fallbackBaseURLText ?? ""
@@ -484,6 +488,7 @@ final class Bot: Identifiable, @unchecked Sendable {
         modelProvider = template.modelProvider ?? .ollama
         remoteBaseURLText = template.remoteBaseURLText ?? ""
         checksGoalWorkItself = template.checksGoalWorkItself ?? true
+        thinkingMode = template.thinkingMode ?? .off
         fallbackProvider = template.fallbackProvider
         fallbackModel = template.fallbackModel ?? ""
         fallbackBaseURLText = template.fallbackBaseURLText ?? ""
@@ -514,7 +519,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             systemPromptText: systemPromptText, selectedSkillIDs: selectedSkillIDs, selectedModel: selectedModel,
             modelHasVision: modelHasVision, maxTokensText: maxTokensText, maxIterationsText: maxIterationsText,
             memories: memories, routines: routines, modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText,
-            checksGoalWorkItself: checksGoalWorkItself, fallbackProvider: fallbackProvider, fallbackModel: fallbackModel,
+            checksGoalWorkItself: checksGoalWorkItself, thinkingMode: thinkingMode, fallbackProvider: fallbackProvider, fallbackModel: fallbackModel,
             fallbackBaseURLText: fallbackBaseURLText, fallbackHasVision: fallbackHasVision
         )
     }
@@ -534,7 +539,7 @@ final class Bot: Identifiable, @unchecked Sendable {
             systemPromptText: systemPromptText, selectedSkillIDs: selectedSkillIDs, selectedModel: selectedModel,
             modelHasVision: modelHasVision, maxTokensText: maxTokensText, maxIterationsText: maxIterationsText,
             modelProvider: modelProvider, remoteBaseURLText: remoteBaseURLText,
-            engine: engine, knownSkillIDs: Set(availableSkills.map(\.id)), checksGoalWorkItself: checksGoalWorkItself,
+            engine: engine, knownSkillIDs: Set(availableSkills.map(\.id)), checksGoalWorkItself: checksGoalWorkItself, thinkingMode: thinkingMode,
             fallbackProvider: fallbackProvider, fallbackModel: fallbackModel, fallbackBaseURLText: fallbackBaseURLText,
             fallbackHasVision: fallbackHasVision
         )
@@ -2244,11 +2249,18 @@ final class Bot: Identifiable, @unchecked Sendable {
             "required": ["answer"],
         ]
         let messages = [ChatMessage(role: .system, content: system), ChatMessage(role: .user, content: user)]
-        guard let raw = try? await ollama.chatStructured(messages: messages, model: model, schema: schema),
-              let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let answer = (object["answer"] as? String)?.uppercased() else { return nil }
-        return answer == "YES"
+        let ask: @Sendable (Double) async -> Bool? = { temperature in
+            guard let raw = try? await ollama.chatStructured(messages: messages, model: model, schema: schema, temperature: temperature),
+                  let data = raw.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let answer = (object["answer"] as? String)?.uppercased() else { return nil }
+            return answer == "YES"
+        }
+        let votes = GateVote.samples()
+        // One greedy answer plus sampled ones, majority wins (`GateVote`). A tie or no answers falls through to the
+        // callers' single-call path.
+        if votes > 1 { return await GateVote.decide(count: votes, ask: { _, temperature in await ask(temperature) }).answer }
+        return await ask(0)
     }
 
     /// Fast path for small talk and short questions in a group: ONE tool-less model call with a
@@ -2924,7 +2936,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                 // Goal work must still record its steps, so only without a goal.
                 answerEndsTurnAfterTools: goalHandler == nil,
                 seenResults: seenResults,
-                onMissingPath: { [weak self] path in Task { @MainActor in self?.flagNotesMentioning(path: path) } }
+                onMissingPath: { [weak self] path in Task { @MainActor in self?.flagNotesMentioning(path: path) } },
+                thinkingMode: thinkingMode
             )
 
             taintProbe.runtime = runtime
@@ -3624,7 +3637,9 @@ final class Bot: Identifiable, @unchecked Sendable {
                         answerEndsTurnAfterTools: true,
                         seenResults: seenResults,
                         runLogSink: RunLogFileSink(url: TranscriptStore.runLogURL(for: id)),
-                        onMissingPath: { [weak self] path in Task { @MainActor in self?.flagNotesMentioning(path: path) } }
+                        onMissingPath: { [weak self] path in Task { @MainActor in self?.flagNotesMentioning(path: path) } },
+                        actionVotes: ActionVote.samples(),
+                        thinkingMode: thinkingMode
                     )
                 }
                 runtime = newRuntime

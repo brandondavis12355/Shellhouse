@@ -144,6 +144,20 @@ public actor OllamaBackend: ModelBackend {
     ]
 
     private let thinking: Bool
+    /// Models Ollama refused `think` for ("does not support thinking"): asked without it from then on.
+    private var noThinkingModels: Set<String> = []
+
+    /// The runtime's per-step choice (`ModelThinking.override`) wins over the backend's own setting.
+    private func effectiveThinking(for model: String) -> Bool {
+        (ModelThinking.override ?? thinking) && !noThinkingModels.contains(model)
+    }
+
+    /// A model that has no thinking mode answers a `think: true` request with a 400. Remember that and retry without.
+    private func refusedThinking(status: Int, detail: String, model: String, asked: Bool) -> Bool {
+        guard asked, status == 400, detail.lowercased().contains("think") else { return false }
+        noThinkingModels.insert(model)
+        return true
+    }
 
     public init(
         baseURL: URL = URL(string: "http://127.0.0.1:11434")!,
@@ -203,7 +217,7 @@ public actor OllamaBackend: ModelBackend {
             tools: tools.isEmpty ? nil : tools.map(OllamaTool.init),
             stream: false,
             options: Self.requestOptions(temperature: temperature),
-            think: thinking
+            think: effectiveThinking(for: model ?? defaultModel)
         )
         request.httpBody = try ModelRequestEncoding.encode(body)
 
@@ -217,6 +231,9 @@ public actor OllamaBackend: ModelBackend {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             let detail = String(data: data, encoding: .utf8) ?? ""
+            if refusedThinking(status: status, detail: detail, model: modelName, asked: body.think) {
+                return try await chat(messages: messages, tools: tools, model: model, temperature: temperature)
+            }
             Telemetry.recorder.modelCall(model: modelName, promptTokens: 0, completionTokens: 0, seconds: Date().timeIntervalSince(started), error: "HTTP \(status)")
             throw ModelError.requestFailed(status: status, detail: detail)
         }
@@ -297,7 +314,7 @@ public actor OllamaBackend: ModelBackend {
             tools: tools.isEmpty ? nil : tools.map(OllamaTool.init),
             stream: true,
             options: Self.requestOptions(temperature: temperature),
-            think: thinking
+            think: effectiveThinking(for: model ?? defaultModel)
         )
         request.httpBody = try ModelRequestEncoding.encode(body)
 
@@ -310,7 +327,11 @@ public actor OllamaBackend: ModelBackend {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             var firstLine = ""
             for try await line in bytes.lines { firstLine = line; break }
-            throw ModelError.requestFailed(status: (response as? HTTPURLResponse)?.statusCode ?? -1, detail: firstLine)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if refusedThinking(status: status, detail: firstLine, model: model ?? defaultModel, asked: body.think) {
+                return try await chatStream(messages: messages, tools: tools, model: model, temperature: temperature, onDelta: onDelta)
+            }
+            throw ModelError.requestFailed(status: status, detail: firstLine)
         }
 
         var content = ""
