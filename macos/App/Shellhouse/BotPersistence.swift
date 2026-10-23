@@ -46,6 +46,8 @@ struct BotConfig: Codable, Equatable {
     var knownSkillIDs: Set<String>? = nil
     /// `nil` (saved before this existed) means true.
     var checksGoalWorkItself: Bool? = nil
+    /// `nil` (saved before this existed) means off.
+    var thinkingMode: ThinkingMode? = nil
     /// The fallback model (all `nil` in configs saved before it existed: no fallback). Its API key is in the Keychain.
     var fallbackProvider: ModelProvider? = nil
     var fallbackModel: String? = nil
@@ -81,6 +83,7 @@ struct BotTemplate: Codable {
     var modelProvider: ModelProvider?
     var remoteBaseURLText: String?
     var checksGoalWorkItself: Bool? = nil
+    var thinkingMode: ThinkingMode? = nil
     var fallbackProvider: ModelProvider? = nil
     var fallbackModel: String? = nil
     var fallbackBaseURLText: String? = nil

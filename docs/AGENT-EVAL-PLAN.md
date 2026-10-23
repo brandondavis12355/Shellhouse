@@ -163,6 +163,10 @@ Metric for every live test, plus four dedicated ones. Record **steps before the 
   `gate_vote_failed`; a split rate near zero means voting buys nothing. The next-action vote after a no-progress nudge is
   **off by default** (`reliability.actionVotes`, 1 = off, 3 = on); counters `action_vote_unanimous`, `action_vote_majority`,
   `action_vote_split`. Turn it on for a model only after group I shows it lowers steps-with-no-information.
+- **Thinking (built):** per-bot setting Off / On / Auto (Settings → Model). Auto reasons on the first step of a task and on
+  steps after a guard fired (`ThinkingPolicy.troubleKinds`), and skips it on routine steps; thinking steps run at 0.6
+  and are counted as `thinking_step`. A model without a thinking mode is asked once, then remembered and asked without
+  it. Compare Off / Auto / On per model in the suite: pass^5, steps, seconds per step.
 - **Prefer text over pixels:** when a browser is open, steer to `find_on_page` / `click_text` / `fill_field` (H8). Not built.
 - Capability profiles (3.6): smaller or compressed models get the tighter version of these guards. Not built.
 

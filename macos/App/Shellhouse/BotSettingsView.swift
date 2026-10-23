@@ -295,6 +295,16 @@ struct BotSettingsTab: View {
                         CardDivider()
                         ToggleRow(title: "Vision", subtitle: "Whether this model can see screenshots. Ollama doesn't advertise this, so it's manual.", isOn: $bot.modelHasVision)
                             .disabled(bot.isBusy)
+                        CardDivider()
+                        SettingRow("Thinking", subtitle: bot.thinkingMode.detail + " Only for models that support it; others run without it.") {
+                            Picker("Thinking", selection: $bot.thinkingMode) {
+                                ForEach(ThinkingMode.allCases, id: \.self) { Text($0.label).tag($0) }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 220)
+                            .disabled(bot.isBusy)
+                        }
                     } else {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(spacing: 8) {
