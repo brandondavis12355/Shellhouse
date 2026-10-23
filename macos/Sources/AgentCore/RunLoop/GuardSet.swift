@@ -20,6 +20,7 @@ public enum GuardSet {
             FailureStreakGuard(),
             stale,
             RepeatedReadGuard(),
+            NoProgressGuard(),
             RepeatedSecretGuard(),
             NearRepeatClickGuard(),
             DesktopCycleGuard(),

@@ -104,7 +104,7 @@ final class GuardTests: XCTestCase {
     func testGuardsRunInOneFixedOrder() {
         XCTAssertEqual(GuardSet.standard().map(\.id), [
             "context_budget", "tool_call_recovery", "narration", "repeated_calls", "tool_validation", "memory_write_gate", "trash_warning",
-            "same_error", "failure_streak", "stale_results", "repeated_read", "repeated_secret", "near_repeat_click", "desktop_cycle", "look_first", "aim_first", "focus_before_secret", "known_username", "unverified_change", "empty_summary", "open_plan",
+            "same_error", "failure_streak", "stale_results", "repeated_read", "no_progress", "repeated_secret", "near_repeat_click", "desktop_cycle", "look_first", "aim_first", "focus_before_secret", "known_username", "unverified_change", "empty_summary", "open_plan",
         ])
     }
 
@@ -457,6 +457,87 @@ final class GuardTests: XCTestCase {
         XCTAssertTrue(run.transcript.contains { $0.content.hasPrefix("[earlier output") })
         XCTAssertEqual(run.events.filter { if case .toolResult(_, let c) = $0.kind { return c.hasPrefix("[earlier output") } else { return false } }.count, 0,
                        "the log still has every result in full")
+    }
+
+    // MARK: no progress
+
+    private func noInfo(_ guardian: NoProgressGuard, seeding call: ToolCall = ToolCall(name: "run_shell", arguments: [:])) -> [GuardAction] {
+        // A look at something already seen: the first call seeds `seen`, later ones repeat it.
+        let outcome = ToolOutcome(kind: .executed(isObservation: true), raw: ["stdout": "the same listing"], shown: [:])
+        _ = guardian.afterReply(ModelReply(message: calls(call), usage: nil), cutOff: false, RunContext())
+        _ = guardian.afterTool(call, outcome, RunContext())
+        return guardian.afterTurn(ranTools: true, RunContext())
+    }
+
+    private func nudgeKinds(_ actions: [GuardAction]) -> [String] {
+        actions.compactMap { if case .nudge(let nudge) = $0 { return nudge.kind } else { return nil } }
+    }
+
+    func testNoProgressNudgesAtThreeAndInsistsAtSixOnce() {
+        let guardian = NoProgressGuard()
+        _ = noInfo(guardian)                       // first sight: new information
+        var fired: [String] = []
+        for _ in 0..<9 { fired += nudgeKinds(noInfo(guardian)) }
+        XCTAssertEqual(fired, ["no_progress", "no_progress_insist"])
+    }
+
+    func testRepliesWithoutACallAndRefusedCallsCountToo() {
+        let guardian = NoProgressGuard()
+        var fired: [String] = []
+        let plain = ModelReply(message: say("Let me think about it."), usage: nil)
+        fired += nudgeKinds(guardian.afterReply(plain, cutOff: false, RunContext()))
+        // A call answered by another guard (duplicate, refused) never reaches afterTool.
+        _ = guardian.afterReply(ModelReply(message: calls(shell("ls")), usage: nil), cutOff: false, RunContext())
+        fired += nudgeKinds(guardian.afterTurn(ranTools: false, RunContext()))
+        fired += nudgeKinds(guardian.afterReply(plain, cutOff: false, RunContext()))
+        XCTAssertEqual(fired, ["no_progress"], "three steps of three different kinds add up")
+    }
+
+    func testAChangeOrNewInformationStartsTheCountOver() {
+        let guardian = NoProgressGuard()
+        _ = noInfo(guardian)
+        _ = noInfo(guardian); _ = noInfo(guardian)
+        let write = ToolCall(name: "write_file", arguments: [:])
+        _ = guardian.afterReply(ModelReply(message: calls(write), usage: nil), cutOff: false, RunContext())
+        _ = guardian.afterTool(write, ToolOutcome(kind: .executed(isObservation: false), raw: ["ok": true], shown: [:]), RunContext())
+        XCTAssertTrue(guardian.afterTurn(ranTools: true, RunContext()).isEmpty)
+        XCTAssertTrue(nudgeKinds(noInfo(guardian)).isEmpty)
+        XCTAssertTrue(nudgeKinds(noInfo(guardian)).isEmpty, "two since the change: not yet")
+        XCTAssertEqual(nudgeKinds(noInfo(guardian)), ["no_progress"])
+    }
+
+    func testDesktopStepsAreLeftToTheDesktopGuards() {
+        let guardian = NoProgressGuard()
+        let look = ToolCall(name: "screenshot", arguments: [:])
+        for _ in 0..<10 {
+            XCTAssertTrue(nudgeKinds(noInfo(guardian, seeding: look)).isEmpty)
+        }
+    }
+
+    func testANewTurnStartsTheCountOverButNotWhatWasSeen() {
+        let guardian = NoProgressGuard()
+        _ = noInfo(guardian); _ = noInfo(guardian); _ = noInfo(guardian)
+        guardian.reset(.turn)
+        XCTAssertTrue(nudgeKinds(noInfo(guardian)).isEmpty)
+        XCTAssertTrue(nudgeKinds(noInfo(guardian)).isEmpty)
+        XCTAssertEqual(nudgeKinds(noInfo(guardian)), ["no_progress"], "the listing is still known: still no new information")
+        guardian.reset(.conversation)
+        XCTAssertTrue(nudgeKinds(noInfo(guardian)).isEmpty, "a new conversation sees it as new again")
+    }
+
+    func testAMixOfSlowStepsIsCaughtThoughNoSingleGuardWouldBe() async {
+        // New information, then: a look at the same thing, an announcement, a look at the same thing.
+        let run = await replay([calls(shell("ls /a")), calls(shell("ls /b")), say("Let me look at it again."), calls(shell("ls /c")),
+                                calls(GuardTests.finish())], exec: { _ in ExecResult(exitCode: 0, stdout: "the very same directory listing, again", stderr: "") })
+        XCTAssertTrue(run.nudgeKinds.contains("no_progress"), "\(run.nudgeKinds)")
+        XCTAssertFalse(run.nudgeKinds.contains("repeat_call"))
+        XCTAssertNil(run.aborted)
+    }
+
+    func testStepsThatKeepFindingThingsNeverTrigger() async {
+        let run = await replay([calls(shell("ls /a")), calls(shell("ls /b")), calls(shell("ls /c")), calls(shell("ls /d")), calls(shell("ls /e"))],
+                               exec: { command in ExecResult(exitCode: 0, stdout: "listing of \(command) " + UUID().uuidString, stderr: "") })
+        XCTAssertFalse(run.nudgeKinds.contains("no_progress"))
     }
 
     // MARK: every firing is counted
