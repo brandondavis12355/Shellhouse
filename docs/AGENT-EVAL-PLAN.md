@@ -158,6 +158,11 @@ Metric for every live test, plus four dedicated ones. Record **steps before the 
 - **No-progress guard: built** (`NoProgressGuard`, nudge at 3 steps with nothing new and more firmly at 6, counting
   announcements, seen-before results, refused or duplicate calls and plan rewrites together). Group I measures it.
   It never stops a run by itself.
+- **Voting (built):** the two yes/no gates (reply gate, goal-intake check) take 3 votes by default: one greedy, two sampled at
+  0.7 (`defaults write <app> reliability.gateVotes 1` turns it off). Counters: `gate_vote_unanimous`, `gate_vote_split`,
+  `gate_vote_failed`; a split rate near zero means voting buys nothing. The next-action vote after a no-progress nudge is
+  **off by default** (`reliability.actionVotes`, 1 = off, 3 = on); counters `action_vote_unanimous`, `action_vote_majority`,
+  `action_vote_split`. Turn it on for a model only after group I shows it lowers steps-with-no-information.
 - **Prefer text over pixels:** when a browser is open, steer to `find_on_page` / `click_text` / `fill_field` (H8). Not built.
 - Capability profiles (3.6): smaller or compressed models get the tighter version of these guards. Not built.
 

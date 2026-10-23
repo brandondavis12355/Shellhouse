@@ -2244,11 +2244,18 @@ final class Bot: Identifiable, @unchecked Sendable {
             "required": ["answer"],
         ]
         let messages = [ChatMessage(role: .system, content: system), ChatMessage(role: .user, content: user)]
-        guard let raw = try? await ollama.chatStructured(messages: messages, model: model, schema: schema),
-              let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let answer = (object["answer"] as? String)?.uppercased() else { return nil }
-        return answer == "YES"
+        let ask: @Sendable (Double) async -> Bool? = { temperature in
+            guard let raw = try? await ollama.chatStructured(messages: messages, model: model, schema: schema, temperature: temperature),
+                  let data = raw.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let answer = (object["answer"] as? String)?.uppercased() else { return nil }
+            return answer == "YES"
+        }
+        let votes = GateVote.samples()
+        // One greedy answer plus sampled ones, majority wins (`GateVote`). A tie or no answers falls through to the
+        // callers' single-call path.
+        if votes > 1 { return await GateVote.decide(count: votes, ask: { _, temperature in await ask(temperature) }).answer }
+        return await ask(0)
     }
 
     /// Fast path for small talk and short questions in a group: ONE tool-less model call with a
@@ -3624,7 +3631,8 @@ final class Bot: Identifiable, @unchecked Sendable {
                         answerEndsTurnAfterTools: true,
                         seenResults: seenResults,
                         runLogSink: RunLogFileSink(url: TranscriptStore.runLogURL(for: id)),
-                        onMissingPath: { [weak self] path in Task { @MainActor in self?.flagNotesMentioning(path: path) } }
+                        onMissingPath: { [weak self] path in Task { @MainActor in self?.flagNotesMentioning(path: path) } },
+                        actionVotes: ActionVote.samples()
                     )
                 }
                 runtime = newRuntime

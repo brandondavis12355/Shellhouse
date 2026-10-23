@@ -148,6 +148,9 @@ public actor AgentRuntime {
     private var messages: [ChatMessage] { rendered.messages }
     /// The model reply appended last, so a guard can ask for it to be left out of the prompt.
     private var lastReplyEventID: Int?
+    /// Samples taken of the step after the no-progress guard fires (`ActionVote`); 1 = off.
+    private let actionVotes: Int
+    private var voteNextStep = false
     private var iterations = 0
     private var tokensUsed = 0
     /// For local models, `maxTokens` counts new work: replies plus what was added to the conversation since
@@ -323,8 +326,10 @@ public actor AgentRuntime {
         seenResults: SeenResults = SeenResults(),
         runLogSink: (any RunLogSink)? = nil,
         onMissingPath: (@Sendable (String) -> Void)? = nil,
-        guards: [any Guard]? = nil
+        guards: [any Guard]? = nil,
+        actionVotes: Int = 1
     ) {
+        self.actionVotes = max(1, actionVotes)
         self.runLogSink = runLogSink
         self.log = RunLog(sink: runLogSink)
         self.guards = guards ?? GuardSet.standard(plainReplyEndsTurn: plainReplyEndsTurn, answerEndsTurnAfterTools: answerEndsTurnAfterTools, seenResults: seenResults, onMissingPath: onMissingPath)
@@ -460,6 +465,7 @@ public actor AgentRuntime {
 
     /// A correction reaches the model as the next user turn, and is counted.
     private func apply(_ nudge: Nudge) {
+        if nudge.kind == "no_progress" || nudge.kind == "no_progress_insist" { voteNextStep = actionVotes > 1 }
         Telemetry.recorder.loopEvent(nudge.kind)
         let repeated = nudge.skipIfRepeat && messages.last?.content == nudge.text
         log.append(.nudge(kind: nudge.kind, text: nudge.text, escalation: nudge.escalation.rawValue, supersedes: nil, inContext: !repeated))
@@ -577,6 +583,10 @@ public actor AgentRuntime {
                 }
             }
             chargeUsage(reply.usage)
+            if voteNextStep {
+                voteNextStep = false
+                if !loopBroken { reply = await votedReply(first: reply, tools: toolSchemas) }
+            }
 
             // The guards read the reply before it is recorded: a call written as text becomes the call it meant.
             var queued: [GuardAction] = []
@@ -634,6 +644,28 @@ public actor AgentRuntime {
             for guardian in guards { afterTurn += guardian.afterTurn(ranTools: ranSomething, makeContext()) }
             if applyAfterReply(afterTurn) == .endRun { return }
         }
+    }
+
+    /// The step after a no-progress nudge, sampled `actionVotes` times: the first reply is the one just made, the others are
+    /// asked for the same prompt at a higher temperature, and the action most of them agree on is used (`ActionVote`).
+    /// Extra samples are not streamed. A failed sample is simply not a vote.
+    private func votedReply(first: ModelReply, tools toolSchemas: [ToolSchema]) async -> ModelReply {
+        let history = messages, name = modelName, backend = model, extras = actionVotes - 1
+        let samples = await withTaskGroup(of: ModelReply?.self) { group -> [ModelReply] in
+            for _ in 0..<extras {
+                group.addTask { try? await backend.chat(messages: history, tools: toolSchemas, model: name, temperature: GateVote.temperature) }
+            }
+            var collected: [ModelReply] = []
+            for await reply in group { if let reply { collected.append(reply) } }
+            return collected
+        }
+        for sample in samples { if let usage = sample.usage { tokensUsed += countsResentContext ? usage.total : usage.completionTokens } }
+        let all = [first] + samples
+        let winner = ActionVote.pick(all)
+        let agreeing = all.filter { ActionVote.key($0) == ActionVote.key(all[winner]) }.count
+        Telemetry.recorder.loopEvent(agreeing == all.count ? "action_vote_unanimous" : (agreeing * 2 > all.count ? "action_vote_majority" : "action_vote_split"))
+        log.append(.stateNote("action vote after no progress: \(agreeing) of \(all.count) chose the same action; used sample \(winner)"))
+        return all[winner]
     }
 
     /// The model asked to finish: a guard may answer the call instead (the first to do so wins).
